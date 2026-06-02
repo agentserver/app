@@ -1,0 +1,8 @@
+body { font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 720px; margin: 40px auto; padding: 0 20px; color: #222; }
+.step { padding: 12px; border: 1px solid #ddd; margin: 8px 0; border-radius: 6px; }
+.step.active { border-color: #0066cc; background: #f0f7ff; }
+.step.done { color: #888; }
+button { padding: 8px 16px; border: 0; background: #0066cc; color: white; border-radius: 4px; cursor: pointer; }
+button:disabled { background: #aaa; }
+.error { color: #b00; margin-top: 8px; }
+progress { width: 100%; }
