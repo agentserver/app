@@ -33,6 +33,45 @@ func (c *Client) ListProjects(ctx context.Context, accessToken string) ([]Projec
 	return wrap.Data, nil
 }
 
+func (c *Client) CreateProject(ctx context.Context, token, name string) (Project, error) {
+	var wrap struct {
+		Data Project `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodPost, "/api/v1/projects", token,
+		map[string]string{"name": name}, &wrap); err != nil {
+		return Project{}, err
+	}
+	return wrap.Data, nil
+}
+
+func (c *Client) CreateAPIKey(ctx context.Context, token, projectID, name string) (APIKey, error) {
+	var wrap struct {
+		Data APIKey `json:"data"`
+		Key  string `json:"key"`
+	}
+	if err := c.do(ctx, http.MethodPost,
+		"/api/v1/projects/"+projectID+"/keys", token,
+		map[string]any{"name": name}, &wrap); err != nil {
+		return APIKey{}, err
+	}
+	wrap.Data.Secret = wrap.Key
+	return wrap.Data, nil
+}
+
+// PickOrCreateProject finds a project named `name`; if none, creates it.
+func (c *Client) PickOrCreateProject(ctx context.Context, token, name string) (Project, error) {
+	ps, err := c.ListProjects(ctx, token)
+	if err != nil {
+		return Project{}, err
+	}
+	for _, p := range ps {
+		if p.Name == name {
+			return p, nil
+		}
+	}
+	return c.CreateProject(ctx, token, name)
+}
+
 // do is the shared JSON request helper.
 func (c *Client) do(ctx context.Context, method, path, token string,
 	body, out any) error {
