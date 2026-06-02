@@ -68,6 +68,22 @@ func TestEnsureVSCode_AlreadyInstalled(t *testing.T) {
 	}
 }
 
+func TestFinalize_NoDepsJustMarksComplete(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	r := &realOrchestrator{d: Deps{State: store}}
+	if err := r.Finalize(context.Background()); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	s, _ := store.Load()
+	if s.Onboarding.Status != state.StatusComplete {
+		t.Errorf("status %q want %q", s.Onboarding.Status, state.StatusComplete)
+	}
+	if !s.Onboarding.HasCompleted("shortcuts_created") {
+		t.Errorf("step not added")
+	}
+}
+
 // Used by the SSE handler indirectly; keep imports referenced.
 var _ = httptest.NewServer
 var _ = http.StatusOK

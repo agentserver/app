@@ -12,6 +12,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
+	"github.com/agentserver/agentserver-pkg/internal/shortcut"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
@@ -247,7 +248,39 @@ func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
 	})
 }
 func (r *realOrchestrator) Finalize(ctx context.Context) error {
+	if r.d.LauncherExePath != "" {
+		if err := shortcut.EnsureDesktopShortcut(shortcut.DesktopInput{
+			Name:      "agentserver-vscode",
+			TargetExe: r.d.LauncherExePath,
+			IconPath:  r.d.IconPath,
+		}); err != nil {
+			return err
+		}
+		if err := r.d.State.Update(func(s *state.State) error {
+			s.Shortcuts.DesktopCreated = true
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if r.d.OpenFolderExePath != "" {
+		if err := shortcut.InstallContextMenu(shortcut.ContextMenuInput{
+			MenuLabel:         "用 agentserver-vscode 打开",
+			HandlerExe:        r.d.OpenFolderExePath,
+			IconPath:          r.d.IconPath,
+			RegistryKeySuffix: "AgentserverVscode",
+		}); err != nil {
+			return err
+		}
+		if err := r.d.State.Update(func(s *state.State) error {
+			s.Shortcuts.ContextMenuInstalled = true
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
 	return r.d.State.Update(func(s *state.State) error {
+		s.Onboarding.AddCompleted("shortcuts_created")
 		s.Onboarding.Status = state.StatusComplete
 		return nil
 	})
