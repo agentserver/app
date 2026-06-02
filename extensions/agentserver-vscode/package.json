@@ -1,0 +1,60 @@
+{
+  "name": "agentserver-vscode",
+  "displayName": "agentserver-vscode",
+  "description": "agentserver-vscode integration: codex terminal + folder picker + panel pruning",
+  "publisher": "agentserver",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.85.0" },
+  "main": "./out/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch":   "tsc -watch -p ./",
+    "package": "vsce package --out agentserver-vscode-$npm_package_version.vsix --no-dependencies",
+    "test":    "node ./out/test/runTest.js",
+    "pretest": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node":     "^20.0.0",
+    "@types/vscode":   "^1.85.0",
+    "@types/mocha":    "^10.0.6",
+    "@vscode/test-electron": "^2.3.9",
+    "@vscode/vsce":    "^2.24.0",
+    "mocha":           "^10.2.0",
+    "typescript":      "^5.3.3"
+  },
+  "contributes": {
+    "configuration": {
+      "title": "agentserver-vscode",
+      "properties": {
+        "agentserverVscode.startup.openFolderIfEmpty": {
+          "type": "boolean", "default": true,
+          "description": "If true, prompt to pick a folder when starting without a workspace."
+        },
+        "agentserverVscode.terminal.respawnOnClose": {
+          "type": "boolean", "default": true,
+          "description": "If true, reopen the codex terminal when closed."
+        },
+        "agentserverVscode.terminal.profileName": {
+          "type": "string", "default": "codex",
+          "description": "Name of the terminal profile to use."
+        },
+        "agentserverVscode.panel.hideViews": {
+          "type": "array",
+          "default": [
+            "workbench.panel.repl",
+            "workbench.debug.console",
+            "workbench.panel.comments",
+            "ports",
+            "workbench.panel.testResults"
+          ],
+          "description": "Panel view IDs to keep focus away from."
+        }
+      }
+    },
+    "commands": [
+      { "command": "agentserverVscode.doctor", "title": "agentserver-vscode: 诊断" },
+      { "command": "agentserverVscode.reopenCodexTerminal", "title": "agentserver-vscode: 重开 codex 终端" }
+    ]
+  }
+}
