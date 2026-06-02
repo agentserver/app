@@ -32,6 +32,7 @@ type OnboardingState struct {
 	LastError      string   `json:"last_error,omitempty"`
 }
 
+// AddCompleted idempotently appends step to CompletedSteps if not already present. Uses a pointer receiver because it mutates the slice.
 func (o *OnboardingState) AddCompleted(step string) {
 	for _, s := range o.CompletedSteps {
 		if s == step {
@@ -41,6 +42,7 @@ func (o *OnboardingState) AddCompleted(step string) {
 	o.CompletedSteps = append(o.CompletedSteps, step)
 }
 
+// HasCompleted reports whether step is in CompletedSteps. O(n) — acceptable for the small step count this state tracks.
 func (o OnboardingState) HasCompleted(step string) bool {
 	for _, s := range o.CompletedSteps {
 		if s == step {
