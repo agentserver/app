@@ -3,12 +3,17 @@ package ui
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
+	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/download"
+	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
+	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
 
 type Deps struct {
@@ -141,13 +146,105 @@ func (r *realOrchestrator) PollAgentserverLogin(ctx context.Context) (agentserve
 	return key, nil
 }
 
-// EnsureVSCode + ConfigureVSCode bodies are wired in P9.2.
-// Finalize is wired in P9.3. For now: stubs.
 func (r *realOrchestrator) EnsureVSCode(ctx context.Context, ch chan<- ProgressEvent) error {
-	return fmt.Errorf("EnsureVSCode: not wired yet (P9.2)")
+	det, _ := vscode.Detect()
+	if det.Installed {
+		if err := r.d.State.Update(func(s *state.State) error {
+			s.VSCode.Path = det.Path
+			s.VSCode.Version = det.Version
+			s.VSCode.InstalledByUs = false
+			s.Onboarding.AddCompleted("vscode_installed")
+			return nil
+		}); err != nil {
+			return err
+		}
+		return nil
+	}
+	plan := vscode.PlanInstall()
+	cache := filepath.Join(r.d.VSCodeUserDataDir, "..", "cache",
+		"vscode-"+vscode.LockedVersion+plan.FileExt)
+	if err := download.DownloadResumable(ctx, plan.URL, cache, plan.SHA256,
+		downloadAdapter(ch)); err != nil {
+		return fmt.Errorf("download VS Code: %w", err)
+	}
+	if err := vscode.SilentInstall(ctx, cache, plan); err != nil {
+		return fmt.Errorf("install VS Code: %w", err)
+	}
+	det2, err := vscode.Detect()
+	if err != nil {
+		return fmt.Errorf("post-install detect: %w", err)
+	}
+	return r.d.State.Update(func(s *state.State) error {
+		s.VSCode.Path = det2.Path
+		s.VSCode.Version = det2.Version
+		s.VSCode.InstalledByUs = true
+		s.Onboarding.AddCompleted("vscode_installed")
+		return nil
+	})
 }
+
+func downloadAdapter(ui chan<- ProgressEvent) chan<- download.ProgressEvent {
+	if ui == nil {
+		return nil
+	}
+	out := make(chan download.ProgressEvent, 16)
+	go func() {
+		for ev := range out {
+			ui <- ProgressEvent{
+				Stage: ev.Stage, Downloaded: ev.Downloaded, Total: ev.Total,
+				SpeedBps: ev.SpeedBps, Msg: ev.Msg,
+			}
+		}
+	}()
+	return out
+}
+
 func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
-	return fmt.Errorf("ConfigureVSCode: not wired yet (P9.2)")
+	s, err := r.d.State.Load()
+	if err != nil {
+		return err
+	}
+	if s.VSCode.Path == "" {
+		return fmt.Errorf("ConfigureVSCode: vscode.Path unknown — run EnsureVSCode first")
+	}
+	// Write settings.json
+	settingsPath := filepath.Join(r.d.VSCodeUserDataDir, "User", "settings.json")
+	if err := vscode.WriteSettings(settingsPath, vscode.SettingsInput{
+		CodexAbsPath: r.d.CodexAbsPath,
+	}); err != nil {
+		return err
+	}
+	// Write/merge ~/.codex/config.toml
+	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.Settings{
+		Provider: "modelserver", Model: "gpt-5.5",
+		BaseURL: "https://code.ai.cs.ac.cn/v1",
+		EnvKey:  "OPENAI_API_KEY", WireAPI: "responses",
+	}); err != nil {
+		return err
+	}
+	// Setx OPENAI_API_KEY (no-op on non-Windows)
+	if r.d.Secrets != nil {
+		apiKey, err := r.d.Secrets.Get("modelserver_api_key")
+		if err == nil {
+			_ = env.PersistUserEnv("OPENAI_API_KEY", apiKey)
+		}
+	}
+	// Install zh-hans language pack + our embedded .vsix
+	if err := vscode.InstallExtensions(ctx, vscode.Installer{
+		CodeExe:       s.VSCode.Path,
+		UserDataDir:   r.d.VSCodeUserDataDir,
+		ExtensionsDir: r.d.VSCodeExtDir,
+		Extensions: []string{
+			"MS-CEINTL.vscode-language-pack-zh-hans",
+			r.d.EmbeddedVSIXPath,
+		},
+	}); err != nil {
+		return err
+	}
+	return r.d.State.Update(func(s *state.State) error {
+		s.Onboarding.AddCompleted("vscode_configured")
+		return nil
+	})
 }
 func (r *realOrchestrator) Finalize(ctx context.Context) error {
 	return r.d.State.Update(func(s *state.State) error {
