@@ -65,6 +65,8 @@ func (s *Store) saveLocked(st *State) error {
 }
 
 // Update is a read-modify-write under the store mutex.
+// fn must NOT call any Store method (Load/Save/Update) on the same receiver:
+// the mutex is non-reentrant and the goroutine will deadlock.
 func (s *Store) Update(fn func(*State) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -109,5 +111,9 @@ func writeFile(path string, b []byte) error {
 		os.Remove(tmp.Name())
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return fmt.Errorf("rename tmp to %s: %w", path, err)
+	}
+	return nil
 }

@@ -10,8 +10,8 @@ func TestStateRoundtrip(t *testing.T) {
 		SchemaVersion: 1,
 		InstallID:     "abc-123",
 		Onboarding: OnboardingState{
-			Status:          StatusPending,
-			CompletedSteps:  []string{"modelserver_login"},
+			Status:         StatusPending,
+			CompletedSteps: []string{"modelserver_login"},
 		},
 		Modelserver: ModelserverState{
 			BaseURL:      "https://code.cs.ac.cn",

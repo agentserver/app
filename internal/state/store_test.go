@@ -1,6 +1,7 @@
 package state
 
 import (
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -88,4 +89,23 @@ func TestStoreCorruptionRecovery(t *testing.T) {
 
 func writeBytes(path string, b []byte) error {
 	return writeFile(path, b)
+}
+
+func TestStoreSaveRenameFailureCleansTmp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	// Force rename to fail by making the destination a directory.
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(path)
+	err := store.Save(&State{SchemaVersion: CurrentSchemaVersion, InstallID: "x"})
+	if err == nil {
+		t.Fatal("expected save error when target is a directory")
+	}
+	// No .tmp leftovers in dir
+	matches, _ := filepath.Glob(filepath.Join(dir, "state.json.*.tmp"))
+	if len(matches) != 0 {
+		t.Errorf("tmp files leaked: %v", matches)
+	}
 }
