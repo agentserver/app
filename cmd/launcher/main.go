@@ -56,17 +56,19 @@ func run() error {
 func serveOnboarding(p paths.Paths, store *state.Store) error {
 	sec := secrets.New(p.SecretsFile)
 
-	// modelserver: device-code flow at /oauth/device/* (NOT under /api/v1).
-	// client_id must be pre-registered in Hydra by ops; see
-	// scripts/register-device-flow-client.sh in the modelserver repo.
-	// Default scopes for the device-flow client are project:inference +
-	// offline_access (matches internal/admin/device_flow.go:123).
-	msOAuth := oauth.Config{
-		Endpoint:  "https://code.cs.ac.cn",
-		AuthPath:  "/oauth/device/code",
-		TokenPath: "/oauth/device/token",
-		ClientID:  "device-flow-client",
-		Scope:     "project:inference offline_access",
+	// modelserver: authorization_code + PKCE, public client registered by
+	// ops on 2026-06-03 (see docs/ops/modelserver-oauth-client-registration.md).
+	// 8 fixed callback ports because ops registered explicit redirect_uris
+	// rather than wildcard 127.0.0.1.
+	msOAuth := oauth.AuthCodeConfig{
+		Endpoint:     "https://codeapi.cs.ac.cn",
+		AuthPath:     "/oauth2/auth",
+		TokenPath:    "/oauth2/token",
+		ClientID:     "5321f7e6-3d79-4ac9-a742-04809dbf9025",
+		Scope:        "project:inference offline_access",
+		CallbackPath: "/oauth/modelserver/callback",
+		Ports:        []int{53428, 53429, 53430, 53431, 53432, 53433, 53434, 53435},
+		// LoginTimeout: 0 → defaults to 10 * time.Minute in StartListening
 	}
 	// agentserver: device-code flow at /api/oauth2/device/auth, proxied
 	// to Hydra. The CLI client `agentserver-agent-cli` is pre-registered
@@ -93,6 +95,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		AS:                agentserver.New("https://agent.cs.ac.cn"),
 		MSOAuth:           msOAuth,
 		ASOAuth:           asOAuth,
+		OpenBrowser:       func(url string) { _ = browser.Open(url) },
 		CodexConfigPath:   p.CodexConfigFile,
 		VSCodeUserDataDir: p.VSCodeUserDataDir,
 		VSCodeExtDir:      p.VSCodeExtDir,
