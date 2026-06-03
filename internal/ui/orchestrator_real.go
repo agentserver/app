@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
@@ -17,6 +18,18 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
 
+// codexDownloadURL is the URL we fetch codex.exe from. Pinned to a
+// specific release tag so the install is reproducible. Bumping the
+// version requires updating the tag below; openai/codex does NOT
+// publish a SHA256 for the standalone .exe (only for -package-.tar.gz),
+// so verification relies on HTTPS + GitHub trust.
+const codexReleaseTag = "rust-v0.136.0"
+
+func codexDownloadURL() string {
+	return "https://github.com/openai/codex/releases/download/" +
+		codexReleaseTag + "/codex-x86_64-pc-windows-msvc.exe"
+}
+
 type Deps struct {
 	State             *state.Store
 	Secrets           secrets.Store
@@ -29,6 +42,10 @@ type Deps struct {
 	VSCodeExtDir      string
 	EmbeddedVSIXPath  string
 	CodexAbsPath      string
+	// CodexDownloadURL overrides the default GitHub Releases URL when set.
+	// Empty = use the pinned default (codexDownloadURL()). Tests inject a
+	// local httptest URL here to avoid a 246MB real download.
+	CodexDownloadURL  string
 
 	// Used by Finalize (set by launcher; see P9.3)
 	LauncherExePath   string
@@ -207,6 +224,26 @@ func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
 	}
 	if s.VSCode.Path == "" {
 		return fmt.Errorf("ConfigureVSCode: vscode.Path unknown — run EnsureVSCode first")
+	}
+	// Download codex.exe to r.d.CodexAbsPath if missing.
+	if r.d.CodexAbsPath != "" {
+		if _, statErr := os.Stat(r.d.CodexAbsPath); os.IsNotExist(statErr) {
+			if err := os.MkdirAll(filepath.Dir(r.d.CodexAbsPath), 0o755); err != nil {
+				return fmt.Errorf("mkdir codex bin dir: %w", err)
+			}
+			url := r.d.CodexDownloadURL
+			if url == "" {
+				url = codexDownloadURL()
+			}
+			// SHA256 left empty: openai/codex publishes SHA256SUMS only for
+			// the -package- .tar.gz variants, not the standalone .exe.
+			// We trust HTTPS + GitHub Releases. Upgrade path: pin a sha
+			// once OpenAI publishes one for the .exe.
+			if err := download.DownloadResumable(ctx, url,
+				r.d.CodexAbsPath, "", nil); err != nil {
+				return fmt.Errorf("download codex: %w", err)
+			}
+		}
 	}
 	// Write settings.json
 	settingsPath := filepath.Join(r.d.VSCodeUserDataDir, "User", "settings.json")

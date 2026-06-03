@@ -21,6 +21,14 @@ func TestConfigureVSCodeWritesSettings(t *testing.T) {
 	codeExe := filepath.Join(dir, "code")
 	os.WriteFile(codeExe, []byte("#!/bin/bash\nexit 0\n"), 0o755)
 
+	// fake codex download server (avoid hitting real GitHub for 246MB)
+	fakeCodexBody := []byte("fake-codex-binary-body")
+	codexSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "22")
+		w.Write(fakeCodexBody)
+	}))
+	defer codexSrv.Close()
+
 	store := state.NewStore(filepath.Join(dir, "state.json"))
 	store.Update(func(s *state.State) error {
 		s.VSCode.Path = codeExe
@@ -32,9 +40,11 @@ func TestConfigureVSCodeWritesSettings(t *testing.T) {
 	vsix := filepath.Join(dir, "stub.vsix")
 	os.WriteFile(vsix, []byte("PK\x03\x04stub"), 0o644)
 
+	codexPath := filepath.Join(dir, "bin", "codex")
 	r := &realOrchestrator{d: Deps{
 		State:             store,
-		CodexAbsPath:      filepath.Join(dir, "bin", "codex"),
+		CodexAbsPath:      codexPath,
+		CodexDownloadURL:  codexSrv.URL + "/codex",
 		VSCodeUserDataDir: filepath.Join(dir, "data"),
 		VSCodeExtDir:      filepath.Join(dir, "ext"),
 		EmbeddedVSIXPath:  vsix,
@@ -46,6 +56,16 @@ func TestConfigureVSCodeWritesSettings(t *testing.T) {
 	settings := filepath.Join(dir, "data", "User", "settings.json")
 	if _, err := os.Stat(settings); err != nil {
 		t.Errorf("settings not written: %v", err)
+	}
+	// codex.exe got downloaded to the right place
+	if got, err := os.ReadFile(codexPath); err != nil {
+		t.Errorf("codex not downloaded: %v", err)
+	} else if string(got) != string(fakeCodexBody) {
+		t.Errorf("codex content mismatch: got %q", got)
+	}
+	// Second call should be a no-op (codex already present); no re-download
+	if err := r.ConfigureVSCode(context.Background()); err != nil {
+		t.Fatalf("re-configure: %v", err)
 	}
 }
 
