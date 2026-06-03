@@ -134,3 +134,23 @@ func TestFinishPKCE_Success(t *testing.T) {
 		t.Errorf("redirect_uri = %q", gotBody.Get("redirect_uri"))
 	}
 }
+
+func TestFinishPKCE_InvalidGrant(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"invalid_grant","error_description":"code used or expired"}`))
+	}))
+	defer srv.Close()
+
+	cfg := AuthCodeConfig{Endpoint: srv.URL, TokenPath: "/oauth2/token", ClientID: "x"}
+	sess := &PKCESession{Verifier: "v", RedirectURI: "http://127.0.0.1:1/cb"}
+
+	_, err := FinishPKCE(context.Background(), cfg, sess, "stale-code")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid_grant") {
+		t.Errorf("error = %q, want to contain 'invalid_grant'", err.Error())
+	}
+}
