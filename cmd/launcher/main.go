@@ -56,17 +56,28 @@ func run() error {
 func serveOnboarding(p paths.Paths, store *state.Store) error {
 	sec := secrets.New(p.SecretsFile)
 
+	// modelserver: device-code flow at /oauth/device/* (NOT under /api/v1).
+	// client_id must be pre-registered in Hydra by ops; see
+	// scripts/register-device-flow-client.sh in the modelserver repo.
+	// Default scopes for the device-flow client are project:inference +
+	// offline_access (matches internal/admin/device_flow.go:123).
 	msOAuth := oauth.Config{
-		Endpoint: "https://code.cs.ac.cn",
-		AuthPath: "/api/oauth2/device/auth", TokenPath: "/api/oauth2/token",
-		ClientID: "agentserver-vscode",
-		Scope:    "openid profile offline_access",
+		Endpoint:  "https://code.cs.ac.cn",
+		AuthPath:  "/oauth/device/code",
+		TokenPath: "/oauth/device/token",
+		ClientID:  "device-flow-client",
+		Scope:     "project:inference offline_access",
 	}
+	// agentserver: device-code flow at /api/oauth2/device/auth, proxied
+	// to Hydra. The CLI client `agentserver-agent-cli` is pre-registered
+	// by the Helm chart with grant=device_code, public (no secret),
+	// scopes=openid profile agent:register.
 	asOAuth := oauth.Config{
-		Endpoint: "https://agent.cs.ac.cn",
-		AuthPath: "/api/oauth2/device/auth", TokenPath: "/api/oauth2/token",
-		ClientID: "agentserver-vscode",
-		Scope:    "openid profile agent:register",
+		Endpoint:  "https://agent.cs.ac.cn",
+		AuthPath:  "/api/oauth2/device/auth",
+		TokenPath: "/api/oauth2/token",
+		ClientID:  "agentserver-agent-cli",
+		Scope:     "openid profile agent:register",
 	}
 
 	installDir, err := os.Executable()
