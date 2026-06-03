@@ -37,8 +37,8 @@ func TestServerStepEndpoint(t *testing.T) {
 	}
 	var body map[string]any
 	json.NewDecoder(resp.Body).Decode(&body)
-	if body["user_code"] != "TEST" {
-		t.Errorf("got %+v", body)
+	if body["state"] != "started" {
+		t.Errorf("got %+v, want state=started", body)
 	}
 }
 
