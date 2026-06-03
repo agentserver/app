@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net/url"
 	"time"
 )
 
@@ -65,8 +66,15 @@ func StartPKCE(cfg AuthCodeConfig, redirectURI string) (*PKCESession, error) {
 
 // buildAuthURL composes the OAuth /oauth2/auth URL with all PKCE params.
 func buildAuthURL(cfg AuthCodeConfig, sess *PKCESession) string {
-	// Defined fully in Task 2; stubbed here so the first test compiles.
-	return cfg.AuthURL()
+	q := url.Values{}
+	q.Set("response_type", "code")
+	q.Set("client_id", cfg.ClientID)
+	q.Set("redirect_uri", sess.RedirectURI)
+	q.Set("scope", cfg.Scope)
+	q.Set("state", sess.State)
+	q.Set("code_challenge", sess.Challenge)
+	q.Set("code_challenge_method", "S256")
+	return cfg.AuthURL() + "?" + q.Encode()
 }
 
 // randomURLSafe returns n bytes of crypto/rand encoded as base64url-without-padding.
