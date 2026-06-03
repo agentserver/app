@@ -1,221 +1,158 @@
-# 请帮我在 modelserver (code.cs.ac.cn) 启用 Device Flow + 注册一个 OAuth Client
+# 请帮我在 modelserver (code.cs.ac.cn) 启用 Device Flow
 
-为 `agentserver-vscode` 安装包的"一键登录"做后端配置。这是 RFC 8628
-"OAuth 2.0 Device Authorization Grant" 标准做法 — GitHub CLI 的
-`gh auth login`、Azure CLI 的 `az login`、kubectl 装 OIDC 都用同一套。
+(2026-06-03 修订版 v3 — 上一版要你动 Hydra `urls.device.verification`,
+是我搞错了,**请回滚**。本版是正确的做法。)
 
-需要做两件事:
-
-1. **在 modelserver 的 config 里启用 Device Flow** (现在生产环境是关的,
-   `POST https://codeapi.cs.ac.cn/oauth/device/code` 返回 404 就是因为
-   `internal/admin/routes.go:230` 的 `if cfg.Auth.OAuth.Hydra.DeviceFlow.ClientID != ""`
-   守卫不通过)
-2. **在管理后台 "OAuth Clients" 注册一个 device flow client**
+为 `agentserver-vscode` 安装包做 RFC 8628 device flow,让用户扫码登录后
+codex 直接拿到 modelserver API token,全程零复制粘贴。
 
 ---
 
-## 真实状况
+## 关键决策:用 modelserver 自带的 device-flow 包装,不用 Hydra 原生的
 
-**修订** (2026-06-03 测出来):
+**Hydra 原生的 device flow** (`/oauth2/device/*`) 需要配置一个外部"验证 UI"
+(通过 `urls.device.verification`) 来引导用户。如果让 Hydra 直接 host UI,
+它会陷入死循环;如果让 Hydra 转给 modelserver 的页面 UI,我们就要写一个
+新页面 — 但其实 modelserver 项目已经写好了一套 device-flow 包装,直接用
+最省事。
 
-不需要改 modelserver 的 `device_flow.client_id` (那是 modelserver 自己包了一层
-device-flow handler 在 `/oauth/device/*`,我们用不上);真正的 device-flow
-端点是 **Hydra 原生** 的,位于:
+modelserver 自己在 `/oauth/device/*` 下提供了 5 个端点(`internal/admin/routes.go:53-62`):
 
-- `POST https://codeapi.cs.ac.cn/oauth2/device/auth` — 申请 device_code
-- `POST https://codeapi.cs.ac.cn/oauth2/token` — 轮询拿 access_token
+```go
+if cfg.Auth.OAuth.Hydra.DeviceFlow.ClientID != "" {
+    deviceHandler, err := NewDeviceFlowHandler(hydraClient, st, encKey, cfg)
+    if err != nil { panic(...) }
+    r.Post("/oauth/device/code",     deviceHandler.HandleDeviceAuthorize)  // CLI 申请 device_code
+    r.Get ("/oauth/device",          deviceHandler.HandleVerificationPage) // 用户访问的 UI
+    r.Post("/oauth/device",          deviceHandler.HandleVerifyUserCode)   // 用户提交 user_code
+    r.Get ("/oauth/device/callback", deviceHandler.HandleCallback)         // Hydra OAuth 完后回调
+    r.Post("/oauth/device/token",    deviceHandler.HandleTokenPoll)        // CLI 轮询拿 token
+    deviceHandler.StartCleanup(context.Background())
+}
+```
 
-可以从 `https://codeapi.cs.ac.cn/.well-known/openid-configuration` 看到
-`device_authorization_endpoint` 字段确认。
+**只有 `cfg.Auth.OAuth.Hydra.DeviceFlow.ClientID` 不为空时,这些路由才注册。**
+我们之前测出来 `/oauth/device/code` 是 404 就是因为这个 `if` 守卫不过。
 
-**但是**:Hydra 自己有一项配置 **必须** 设置才能跑 device flow:
+---
 
-### 必须改 Hydra 配置:`urls.device.verification`
+## 需要做两件事
 
-实测时浏览器访问 `https://codeapi.cs.ac.cn/oauth2/device/verify?user_code=...`
-报错:
+### 1. (回滚) Hydra `urls.device.verification`
 
-> The request could not be executed because a mandatory configuration key
-> is missing or malformed.
-> You are seeing this page because configuration key `urls.device.verification`
-> is not set.
-
-请在 Hydra 的 `hydra.yml` (或 Helm values, 看你们怎么注的) 加上:
+上一版我让你加的这行,**请删掉或者改回原值**:
 
 ```yaml
+# 删掉这一段 ↓
 urls:
   device:
     verification: https://codeapi.cs.ac.cn/oauth2/device/verify
-    # 或者用你们自己的页面 (modelserver 有 /oauth/device GET handler 可以做这个),
-    # 但 Hydra 默认页就够用,先填它最简单。
 ```
 
-Hydra 文档参考:
-- https://www.ory.sh/docs/hydra/reference/configuration#urlsdeviceverification
+理由:这一项是给 Hydra 原生 device flow 用的。我们走 modelserver 的包装,
+Hydra 不需要知道我们的 UI 在哪。留着会让 `codeapi.cs.ac.cn/oauth2/device/verify`
+进入 302 死循环 (它指向自己)。
 
-这一项必须填,不然 device flow 跑不起来 — 跟我们 client 注册无关,是 Hydra
-服务端的初始化必填项。
+### 2. 启用 modelserver 自带的 device flow
+
+在 modelserver 的 `config.yml` (或 Helm values / env,看你们部署用啥),
+找到 `auth.oauth.hydra.device_flow` 字段,**只需要填一个 client_id 进去**:
+
+```yaml
+auth:
+  oauth:
+    hydra:
+      # ...其他 hydra 配置...
+
+      device_flow:
+        client_id: 5321f7e6-3d79-4ac9-a742-04809dbf9025
+        # 可选,默认是 600 / 5 (秒)
+        # code_ttl_seconds: 600
+        # poll_interval_seconds: 5
+```
+
+值就是你之前注册 OAuth Client 时的 `client_id`。一旦填进去,modelserver
+重启后,5 个 `/oauth/device/*` 路由就会注册。
+
+实际配置字段名见 `internal/config/config.go` 里的 `DeviceFlow struct`,
+应该是 `client_id` (snake_case)。如果跑起来还是 404,把启动日志贴给我,
+我看是不是字段名拼错。
 
 ---
 
-## 注册 OAuth Client (已完成)
+## OAuth Client 注册 (已完成 ✅)
 
-*(原始注册表单内容保留如下,运维已经按这个完成注册,client_id 是
-`5321f7e6-3d79-4ac9-a742-04809dbf9025`)*
+`5321f7e6-3d79-4ac9-a742-04809dbf9025` 已经注册好,grant_types 含 device_code,
+token_endpoint_auth_method=none。这部分不用动。
 
-modelserver 管理后台 → **OAuth Clients** → **Create OAuth Client**,
-逐项填:
+唯一可以再清理的地方:**redirect_uris 留着对 device flow 没用**(device
+flow 走 polling,不走 callback)。你如果想清理就把 `redirect_uris` 设为
+`[]` 和 `grant_types` 去掉 `authorization_code`。不清理也完全 OK,留着
+对 device flow 没影响。
 
-### Client Name (必填)
+---
 
-```
-agentserver-vscode
-```
+## 启用后的验证步骤 (我做)
 
-### Client ID
+运维改完 config + 重启 modelserver,告诉我之后:
 
-请填**固定值**(不要 auto-generate):
+```bash
+# 1. 验证路由注册了
+curl -X POST 'https://codeapi.cs.ac.cn/oauth/device/code' \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'client_id=5321f7e6-3d79-4ac9-a742-04809dbf9025&scope=project:inference+offline_access'
 
-```
-agentserver-vscode
-```
+# 期望返回 JSON,包含 device_code/user_code/verification_uri/verification_uri_complete
+# verification_uri 应该是 https://codeapi.cs.ac.cn/oauth/device (没有 /oauth2/)
 
-固定值的原因:这个值要跟第一步 config.yml 里 `device_flow.client_id`
-完全一致;同时要写进安装包源码每次发版用同一个。auto-generate 一个 UUID
-要我去改源码重打包,没必要。
+# 2. 把 verification_uri_complete 用浏览器打开 → 应该看到一个登录页 (不报错、不死循环)
 
-### Redirect URIs
+# 3. 登录 + 同意后,CLI 轮询 token endpoint:
+curl -X POST 'https://codeapi.cs.ac.cn/oauth/device/token' \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=...&device_code=...'
 
-**留空。** Device flow 不需要 redirect。这是 device flow 相对 authorization
-code flow 的最大优势 — 用户机器不用开本地 HTTP server 接 callback。
-
-### Grant Types
-
-只勾这两个:
-
-- ☐ Authorization Code   ← **不要**
-- ☑ **Device Code**      ← 必须
-- ☑ **Refresh Token**    ← 必须 (offline_access 让 token 可以 1h 续期)
-- ☐ Client Credentials   ← **不要**
-
-### Response Types
-
-**全不勾。** Device flow 不用 response_type 参数。如果系统强制要选一个,
-随便给个 `code` 也无所谓 — Device flow 走不到 response_type 这一步。
-
-- ☐ Code
-- ☐ Token
-
-### Scope
-
-```
-project:inference offline_access
-```
-
-(modelserver device_flow handler 默认就是这两个 scope,见
-`internal/admin/device_flow.go:122`:
-```go
-if len(scopes) == 0 {
-    scopes = []string{"project:inference", "offline_access"}
-}
-```
-跟 agentserver connect modelserver 时申请的也一样。)
-
-### Token Endpoint Auth Method
-
-```
-none
-```
-
-⚠️ **请务必从默认的 `client_secret_post` 改成 `none`**。
-
-理由:安装包是 RFC 8252 native public client,装在每个用户的 Windows
-机器上。代码可反编译,流量可抓包,**根本无法保密 client_secret**。
-正确做法是不发 secret,安全靠以下三层:
-
-1. **用户必须主动同意** — 每次 device flow 都会让用户去浏览器输入 user_code
-   并登录确认,看到 modelserver 的 consent page。攻击者拿走 client_id 也
-   生成不了 token,因为 token 必须有真实用户同意才能签发。
-2. **PKCE-free 但 user_code 等效** — device flow 的 user_code 短期一次性,
-   只在合法用户浏览器里出现,攻击者拿不到。
-3. **scope 已最小化** — 只能调用 inference 端点,做不了管理操作。
-
-如果系统下拉框里没有 `none` 选项,退而求其次用 `client_secret_post`,
-生成 secret 后**把 secret 回传给我**,我写进安装包 (知道这只是名义上
-的 secret,实际靠用户授权保护)。
-
-### (可选) Audience
-
-如果有 "Audience" 字段,留空,或者填:
-
-```
-https://codeapi.cs.ac.cn
+# 期望返回 {access_token, refresh_token, expires_in}
 ```
 
 ---
 
-## 创建后请回传给我
-
-1. **Client ID** — 应该就是 `agentserver-vscode`,确认一下
-2. **Client Secret** — **只有** Token Endpoint Auth Method 不是 `none`
-   时才有;`none` 的情况下没有
-3. **Device authorization endpoint** — 我猜
-   `https://codeapi.cs.ac.cn/oauth/device/code`,请确认
-4. **Token endpoint** — 我猜
-   `https://codeapi.cs.ac.cn/oauth/device/token`,请确认
-5. **Verification URI** — `POST /oauth/device/code` 返回里会有
-   `verification_uri` 字段。从源码看应该是
-   `https://codeapi.cs.ac.cn/oauth/device`,请确认是不是这个
-   (或者帮我从 device_flow.go 的 `verificationURI` 变量看一眼实际值)
-
----
-
-## 安装包完成后的用户体验
+## 完整用户体验
 
 ```
 1. 用户双击桌面快捷方式 agentserver-vscode
-2. 浏览器弹出引导页 (本地 127.0.0.1:RANDPORT)
+2. 浏览器弹出本地引导页 (127.0.0.1:RANDPORT)
 3. 用户点 "登录 modelserver"
-4. 引导页跳出一个新标签页:
-   https://codeapi.cs.ac.cn/oauth/device?user_code=ABCD-EFGH
-5. 用户在 modelserver 网站登录 (扫码/邮箱/GitHub/OIDC,任意配好的方式)
-6. modelserver 让用户选 project
-7. 用户点 "同意"
-8. (后台) 安装包 poll /oauth/device/token,拿到 access_token
-9. (后台) 安装包写 ~/.codex/config.toml + setx OPENAI_API_KEY=<token>
-10. 完成。codex 可以直接调 modelserver 的 LLM
+4. 引导页弹新标签 →  https://codeapi.cs.ac.cn/oauth/device?user_code=ABCDE
+5. 用户在 modelserver 网站完成登录 + 选 project + 点同意
+6. 后台: 安装包轮询 token endpoint 直到拿到 access_token
+7. 后台: 写 ~/.codex/config.toml + setx OPENAI_API_KEY=<token>
+8. 完成。codex 直接能调 modelserver 的 LLM
 ```
 
-**全程零复制粘贴。** 用户只在浏览器里做两件事:登录 + 选 project + 点同意。
+**全程零复制粘贴。**
 
 ---
 
-## 安全说明 (回答常见疑问)
+## 安全说明
 
-- ✅ **client_id 写在安装包里不算泄露**:OAuth 2.0 public client 设计就
-  允许 client_id 公开,GitHub CLI 的 client_id `178c6fc778ccc68e1d6a` 就
-  硬编码在源码里 — [示例](https://github.com/cli/oauth/blob/trunk/device/device_flow.go)。
-- ✅ **拿到 client_id 也不能伪造 token**:每个 token 都对应一次真实用户
-  在浏览器 consent page 上的同意。攻击者就算拿走 client_id 也只能让某个
-  合法用户去走 OAuth — 用户能看清这是 `agentserver-vscode` 在请求,可以
-  拒绝。
-- ✅ **限流按用户算**:modelserver 按 `sub` (user_id) 限流,不按 client_id。
-- ⚠️ **唯一风险是冒名** — 别人能做一个软件,弹 OAuth 框声称是
-  `agentserver-vscode`。这是 consent page 上 client name 是否清晰的问题,
-  不是 secret 泄露问题。
+- ✅ `client_id` 写进安装包不算泄露 — public client (RFC 8252) 设计就允许;
+  GitHub CLI 的 client_id `178c6fc778ccc68e1d6a` 也是硬编码在源码里
+- ✅ 拿到 client_id 不能伪造 token — 每个 token 都要真实用户在 consent
+  page 同意才签发
+- ✅ 限流按 user 算,不按 client_id 算
+- ⚠️ 唯一风险是冒名 — consent page 上 client name 是否清晰是 UX 问题,
+  不是 secret 泄露
 
 ---
 
 ## 参考
 
-- modelserver device-flow handler 源码:
+- modelserver device-flow 实现:
   `https://github.com/modelserver/modelserver/blob/main/internal/admin/device_flow.go`
 - modelserver 路由注册:
   `https://github.com/modelserver/modelserver/blob/main/internal/admin/routes.go` (搜 `DeviceFlow`)
-- RFC 8628 (OAuth Device Authorization Grant):
+- RFC 8628 OAuth 2.0 Device Authorization Grant:
   https://datatracker.ietf.org/doc/html/rfc8628
-- RFC 8252 (OAuth 2.0 for Native Apps):
+- RFC 8252 OAuth 2.0 for Native Apps:
   https://datatracker.ietf.org/doc/html/rfc8252
-- agentserver 同样模式注册的 Hydra client (供对照):
-  `https://github.com/agentserver/agentserver/blob/main/deploy/helm/agentserver/templates/hydra.yaml`
-  (client_id = `agentserver-agent-cli`, 也是 public + device_code)
