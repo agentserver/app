@@ -18,6 +18,16 @@ func TestPlanInstall_Windows(t *testing.T) {
 	if len(p.SilentArgs) == 0 {
 		t.Errorf("silent args empty")
 	}
+	if len(p.URLs) < 2 {
+		t.Errorf("expected at least 2 mirror URLs (prss + update.code), got %v", p.URLs)
+	}
+	if p.URL != p.URLs[0] {
+		t.Errorf("URL should equal URLs[0] for back-compat: got URL=%q URLs[0]=%q", p.URL, p.URLs[0])
+	}
+	// prss CDN URL should be tried first (fastest in CN per P13.4 measurements)
+	if !strings.Contains(p.URLs[0], "prss.microsoft.com") {
+		t.Errorf("expected prss URL first, got %q", p.URLs[0])
+	}
 }
 
 func TestPlanInstall_Unsupported(t *testing.T) {

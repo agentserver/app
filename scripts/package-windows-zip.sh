@@ -6,7 +6,11 @@
 # Output: dist/agentserver-vscode-<ver>-portable.zip containing:
 #   launcher.exe, onboarding-server.exe, agentctl.exe, open-folder.exe
 #   agentserver-vscode.vsix
+#   codex.exe  (246MB, bundled to avoid GitHub download from CN)
 #   icon.ico, install.ps1, LICENSE.zh.txt, README.txt
+#
+# codex.exe is cached in dist/cache/ across builds so re-packaging doesn't
+# re-fetch the 246MB binary. Delete dist/cache/ to force re-download.
 #
 # User flow on Windows:
 #   1. Unzip
@@ -21,13 +25,37 @@ OUT="dist"
 STAGE="$OUT/agentserver-vscode-$VERSION-portable"
 ZIP="$OUT/agentserver-vscode-$VERSION-portable.zip"
 
+CODEX_RELEASE="rust-v0.136.0"
+CODEX_ASSET="codex-x86_64-pc-windows-msvc.exe"
+CODEX_URL="https://github.com/openai/codex/releases/download/$CODEX_RELEASE/$CODEX_ASSET"
+CODEX_CACHE="$OUT/cache/$CODEX_RELEASE/$CODEX_ASSET"
+
+# Cache codex.exe so re-packaging doesn't re-fetch 246MB
+if [[ ! -f "$CODEX_CACHE" ]]; then
+  mkdir -p "$(dirname "$CODEX_CACHE")"
+  echo "Fetching codex.exe (246MB, one-time) ..."
+  echo "  URL: $CODEX_URL"
+  if ! curl --fail --location --progress-bar --output "$CODEX_CACHE.part" "$CODEX_URL"; then
+    rm -f "$CODEX_CACHE.part"
+    echo "ERROR: failed to download codex.exe" >&2
+    echo "If you're in China and direct GitHub is blocked, try:" >&2
+    echo "  curl -fL -o $CODEX_CACHE 'https://gh-proxy.com/$CODEX_URL'" >&2
+    exit 2
+  fi
+  mv "$CODEX_CACHE.part" "$CODEX_CACHE"
+  echo "cached at: $CODEX_CACHE"
+fi
+codex_size=$(stat -c%s "$CODEX_CACHE")
+echo "codex.exe: $codex_size bytes (cached)"
+
 # Pre-flight
 for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          dist/windows/agentctl.exe dist/windows/open-folder.exe \
          extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \
          packaging/windows/install.ps1 \
          packaging/windows/icon.ico \
-         packaging/windows/LICENSE.zh.txt; do
+         packaging/windows/LICENSE.zh.txt \
+         "$CODEX_CACHE"; do
   [[ -e "$f" ]] || { echo "missing: $f"; exit 1; }
 done
 
@@ -39,6 +67,9 @@ cp dist/windows/launcher.exe          "$STAGE/"
 cp dist/windows/onboarding-server.exe "$STAGE/"
 cp dist/windows/agentctl.exe          "$STAGE/"
 cp dist/windows/open-folder.exe       "$STAGE/"
+
+# Bundled codex.exe (avoids GitHub round-trip during install)
+cp "$CODEX_CACHE" "$STAGE/codex.exe"
 
 # VS Code extension
 cp extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \

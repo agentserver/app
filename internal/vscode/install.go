@@ -7,6 +7,11 @@ import (
 )
 
 type InstallPlan struct {
+	// URLs is the ordered list of mirrors to try; first reachable wins.
+	// Callers should iterate in order and break on first 200/206 response.
+	URLs          []string
+	// URL is URLs[0] — kept for backwards compatibility with existing
+	// download.DownloadResumable callers that take a single URL.
 	URL           string
 	SHA256        string
 	InstallerType string   // "InnoSetup"
@@ -17,6 +22,10 @@ type InstallPlan struct {
 // LockedVersion is the VS Code version we ship. Bumping requires updating
 // the SHA256 below (fetch from https://code.visualstudio.com/sha?build=stable).
 const LockedVersion = "1.96.0"
+
+// lockedCommitWin64User is the immutable VS Code git commit for LockedVersion.
+// Used in the direct-CDN mirror URL.
+const lockedCommitWin64User = "138f619c86f1199955d53b4166bef66ef252935c"
 
 // lockedSHA256Win64User MUST be updated when LockedVersion changes.
 // Fetch with:
@@ -32,9 +41,19 @@ func planInstallFor(goos, goarch string) InstallPlan {
 	if goos != "windows" || goarch != "amd64" {
 		panic(fmt.Sprintf("vscode install: unsupported %s/%s in v1", goos, goarch))
 	}
-	return InstallPlan{
-		URL: "https://update.code.visualstudio.com/" + LockedVersion +
+	// Mirror selection: tried in order, first that responds wins.
+	// prss is the direct CDN that update.code.visualstudio.com redirects to;
+	// using it directly skips a 302 hop and was 170ms vs 1029ms on the
+	// test machine in CN (see docs/superpowers/notes/2026-06-03-p13-4-findings.md).
+	urls := []string{
+		"https://vscode.download.prss.microsoft.com/dbazure/download/stable/" +
+			lockedCommitWin64User + "/VSCodeUserSetup-x64-" + LockedVersion + ".exe",
+		"https://update.code.visualstudio.com/" + LockedVersion +
 			"/win32-x64-user/stable",
+	}
+	return InstallPlan{
+		URLs:          urls,
+		URL:           urls[0],
 		SHA256:        lockedSHA256Win64User,
 		InstallerType: "InnoSetup",
 		FileExt:       ".exe",
