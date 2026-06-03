@@ -105,7 +105,10 @@ func (r *realOrchestrator) LoginModelserver(ctx context.Context) error {
 		_ = ln.Close()
 		return err
 	}
-	ch, shutdown := oauth.StartListening(ctx, ln, r.d.MSOAuth, sess.State)
+	// Use context.Background() so the PKCE listener outlives the POST
+	// request that started the login. The listener shuts itself down via
+	// LoginTimeout or an explicit cleanup call.
+	ch, shutdown := oauth.StartListening(context.Background(), ln, r.d.MSOAuth, sess.State)
 	r.msSession = sess
 	r.msCallback = ch
 	r.msShutdown = shutdown
