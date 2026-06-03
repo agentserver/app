@@ -38,6 +38,10 @@ func Start() *Server {
 	mux.HandleFunc("/api/v1/projects", s.handleProjects)
 	mux.HandleFunc("/api/v1/projects/", s.handleProjectsSub) // .../keys
 
+	// ---- PKCE / Hydra routes ----
+	mux.HandleFunc("/oauth2/auth", s.handlePKCEAuth)       // PKCE: GET, bounces to callback
+	mux.HandleFunc("/oauth2/token", s.handlePKCETokenSwap) // PKCE: POST authorization_code
+
 	// ---- agentserver routes ----
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("/api/workspaces/", s.handleWorkspacesSub) // .../api-keys
@@ -174,6 +178,48 @@ func (s *Server) handleWorkspacesSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+// handlePKCEAuth emulates Hydra's /oauth2/auth: instead of issuing a 302 to
+// the redirect_uri (which would require a real browser to follow), it spins
+// off a goroutine that HTTP GETs the installer's callback URL directly,
+// mimicking what a browser would do after following Hydra's redirect.
+// The test's injected OpenBrowser hits this endpoint instead of opening a
+// real browser; this handler completes the double-bounce deterministically.
+func (s *Server) handlePKCEAuth(w http.ResponseWriter, r *http.Request) {
+	redirectURI := r.URL.Query().Get("redirect_uri")
+	state := r.URL.Query().Get("state")
+	if redirectURI == "" || state == "" {
+		http.Error(w, "missing redirect_uri or state", 400)
+		return
+	}
+	// Simulate the browser following Hydra's 302 to the installer's callback.
+	go func() {
+		_, _ = http.Get(fmt.Sprintf("%s?code=fake-pkce-code&state=%s",
+			redirectURI, state))
+	}()
+	w.WriteHeader(204) // No content; the fake browser is "elsewhere".
+}
+
+// handlePKCETokenSwap emulates Hydra's /oauth2/token for
+// grant_type=authorization_code. Returns fixed tokens; tests don't
+// crypto-verify the PKCE verifier.
+func (s *Server) handlePKCETokenSwap(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	if r.PostForm.Get("grant_type") != "authorization_code" {
+		http.Error(w, "wrong grant_type", 400)
+		return
+	}
+	if r.PostForm.Get("code") == "" || r.PostForm.Get("code_verifier") == "" {
+		http.Error(w, "missing code or code_verifier", 400)
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"access_token":  "fake-pkce-at",
+		"token_type":    "Bearer",
+		"expires_in":    3600,
+		"refresh_token": "fake-pkce-rt",
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
