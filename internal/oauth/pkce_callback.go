@@ -1,10 +1,14 @@
 package oauth
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"sync"
+	"time"
 )
 
 // ErrAllPortsBusy is returned by ReservePort when none of cfg.Ports could be bound.
@@ -33,4 +37,94 @@ func callbackPage(name string) []byte {
 		panic("oauth: missing embedded template " + name + ": " + err.Error())
 	}
 	return b
+}
+
+// CallbackResult is what arrives at the redirect_uri.
+// Sent on the channel returned by StartListening.
+type CallbackResult struct {
+	Code  string
+	State string
+	Error string // OAuth error code if present (e.g. "access_denied")
+}
+
+// StartListening serves cfg.CallbackPath on ln. The handler:
+//   - On valid code+state match → send {Code, State} on channel, serve success.html
+//   - On error= → send {Error} on channel, serve denied.html
+//   - On state mismatch → DO NOT send, serve state_mismatch.html (caller times out)
+//   - On missing code & no error → DO NOT send, serve missing_code.html
+//
+// The channel receives at most one value. It is closed either when shutdown() is
+// called or when cfg.LoginTimeout (default 10m) elapses.
+// Caller MUST call shutdown(); idempotent.
+func StartListening(ctx context.Context, ln net.Listener, cfg AuthCodeConfig, expectedState string) (
+	ch <-chan CallbackResult, shutdown func(),
+) {
+	timeout := cfg.LoginTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+
+	out := make(chan CallbackResult, 1)
+	srv := &http.Server{}
+
+	var once sync.Once
+	sendOnce := func(r CallbackResult) {
+		select {
+		case out <- r:
+		default:
+		}
+	}
+	closeOnce := func() { once.Do(func() { close(out) }) }
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(cfg.CallbackPath, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if e := q.Get("error"); e != "" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(callbackPage("denied"))
+			sendOnce(CallbackResult{Error: e})
+			return
+		}
+		state := q.Get("state")
+		if state != expectedState {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(callbackPage("state_mismatch"))
+			return // no send → caller will time out
+		}
+		code := q.Get("code")
+		if code == "" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(callbackPage("missing_code"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(callbackPage("success"))
+		sendOnce(CallbackResult{Code: code, State: state})
+	})
+	srv.Handler = mux
+
+	go func() { _ = srv.Serve(ln) }()
+
+	// Watcher: close channel + shut server when ctx expires.
+	go func() {
+		<-ctx.Done()
+		// srv.Shutdown blocks until all in-flight ServeHTTP calls return,
+		// so handler's sendOnce has finished before we run closeOnce below.
+		// Without that ordering, sendOnce's `select { case out <- r: default: }`
+		// would panic if `out` were closed (default does NOT protect a closed channel).
+		_ = srv.Shutdown(context.Background())
+		closeOnce()
+	}()
+
+	shutdown = func() {
+		cancel()
+		// srv.Shutdown blocks until all in-flight ServeHTTP calls return,
+		// so handler's sendOnce has finished before we run closeOnce below.
+		// Without that ordering, sendOnce's `select { case out <- r: default: }`
+		// would panic if `out` were closed (default does NOT protect a closed channel).
+		_ = srv.Shutdown(context.Background())
+		closeOnce()
+	}
+	return out, shutdown
 }

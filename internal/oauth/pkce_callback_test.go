@@ -1,11 +1,15 @@
 package oauth
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReservePort_FirstFree(t *testing.T) {
@@ -62,10 +66,6 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
-// Silence unused for now (used in later tasks).
-var _ = fmt.Sprintf
-var _ = freePort
-
 func TestCallbackPages_AllPresent(t *testing.T) {
 	for _, name := range []string{"success", "denied", "state_mismatch", "missing_code"} {
 		b := callbackPage(name)
@@ -75,5 +75,41 @@ func TestCallbackPages_AllPresent(t *testing.T) {
 		if !strings.Contains(string(b), "<html") {
 			t.Errorf("page %s is not HTML", name)
 		}
+	}
+}
+
+func TestStartListening_Success(t *testing.T) {
+	cfg := AuthCodeConfig{
+		CallbackPath: "/oauth/modelserver/callback",
+		Ports:        []int{freePort(t)},
+		LoginTimeout: 2 * time.Second,
+	}
+	port, ln, err := ReservePort(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, shutdown := StartListening(ctx, ln, cfg, "state-x")
+	defer shutdown()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/oauth/modelserver/callback?code=foo&state=state-x", port)
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "登录成功") {
+		t.Errorf("body did not contain success page: %s", body)
+	}
+
+	select {
+	case res := <-ch:
+		if res.Code != "foo" || res.State != "state-x" || res.Error != "" {
+			t.Errorf("result = %+v", res)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("channel did not receive")
 	}
 }
