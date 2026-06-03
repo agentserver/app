@@ -14,43 +14,54 @@
 
 ---
 
-## 第一步:启用 Device Flow 配置
+## 真实状况
 
-modelserver 的 `config.yml` 里(或者 Helm values / env,看你们怎么注的),
-找到 `auth.oauth.hydra.device_flow` 一节,填入:
+**修订** (2026-06-03 测出来):
+
+不需要改 modelserver 的 `device_flow.client_id` (那是 modelserver 自己包了一层
+device-flow handler 在 `/oauth/device/*`,我们用不上);真正的 device-flow
+端点是 **Hydra 原生** 的,位于:
+
+- `POST https://codeapi.cs.ac.cn/oauth2/device/auth` — 申请 device_code
+- `POST https://codeapi.cs.ac.cn/oauth2/token` — 轮询拿 access_token
+
+可以从 `https://codeapi.cs.ac.cn/.well-known/openid-configuration` 看到
+`device_authorization_endpoint` 字段确认。
+
+**但是**:Hydra 自己有一项配置 **必须** 设置才能跑 device flow:
+
+### 必须改 Hydra 配置:`urls.device.verification`
+
+实测时浏览器访问 `https://codeapi.cs.ac.cn/oauth2/device/verify?user_code=...`
+报错:
+
+> The request could not be executed because a mandatory configuration key
+> is missing or malformed.
+> You are seeing this page because configuration key `urls.device.verification`
+> is not set.
+
+请在 Hydra 的 `hydra.yml` (或 Helm values, 看你们怎么注的) 加上:
 
 ```yaml
-auth:
-  oauth:
-    hydra:
-      device_flow:
-        # 必填:与下面 OAuth Client 注册的 Client ID 完全一致。
-        client_id: agentserver-vscode
-
-        # 可选,默认就好。device_code 有效期 (秒)、轮询间隔 (秒)。
-        # code_ttl: 600
-        # poll_interval: 5
+urls:
+  device:
+    verification: https://codeapi.cs.ac.cn/oauth2/device/verify
+    # 或者用你们自己的页面 (modelserver 有 /oauth/device GET handler 可以做这个),
+    # 但 Hydra 默认页就够用,先填它最简单。
 ```
 
-`client_id` 不能留空 — 留空的话路由根本不会注册,我们就拿不到 device-flow
-端点。
+Hydra 文档参考:
+- https://www.ory.sh/docs/hydra/reference/configuration#urlsdeviceverification
 
-启用后,这些路由会出现在 `https://codeapi.cs.ac.cn/`:
-
-```
-POST /oauth/device/code        — 安装包请求 device_code + user_code
-GET  /oauth/device             — 用户浏览器去的验证页 (modelserver 自带 UI)
-POST /oauth/device             — 用户在验证页提交 user_code
-GET  /oauth/device/callback    — Hydra 登录完后内部回调
-POST /oauth/device/token       — 安装包轮询拿 access_token
-```
-
-我只用第 1、5 两个,中间三个是 modelserver 自己渲染的 UI / Hydra 内部流转,
-不用我管。
+这一项必须填,不然 device flow 跑不起来 — 跟我们 client 注册无关,是 Hydra
+服务端的初始化必填项。
 
 ---
 
-## 第二步:注册 OAuth Client
+## 注册 OAuth Client (已完成)
+
+*(原始注册表单内容保留如下,运维已经按这个完成注册,client_id 是
+`5321f7e6-3d79-4ac9-a742-04809dbf9025`)*
 
 modelserver 管理后台 → **OAuth Clients** → **Create OAuth Client**,
 逐项填:
