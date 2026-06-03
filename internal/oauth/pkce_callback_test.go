@@ -113,3 +113,134 @@ func TestStartListening_Success(t *testing.T) {
 		t.Fatal("channel did not receive")
 	}
 }
+
+func TestStartListening_OAuthError(t *testing.T) {
+	cfg := AuthCodeConfig{
+		CallbackPath: "/oauth/modelserver/callback",
+		Ports:        []int{freePort(t)},
+		LoginTimeout: time.Second,
+	}
+	port, ln, err := ReservePort(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, shutdown := StartListening(ctx, ln, cfg, "state-y")
+	defer shutdown()
+
+	resp, _ := http.Get(fmt.Sprintf(
+		"http://127.0.0.1:%d/oauth/modelserver/callback?error=access_denied&error_description=user+refused",
+		port))
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "登录被拒绝") {
+		t.Errorf("body did not contain denied page: %s", body)
+	}
+	select {
+	case res := <-ch:
+		if res.Error != "access_denied" {
+			t.Errorf("result = %+v", res)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("channel did not receive")
+	}
+}
+
+func TestStartListening_StateMismatch(t *testing.T) {
+	cfg := AuthCodeConfig{
+		CallbackPath: "/oauth/modelserver/callback",
+		Ports:        []int{freePort(t)},
+		LoginTimeout: 500 * time.Millisecond,
+	}
+	port, ln, err := ReservePort(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, shutdown := StartListening(ctx, ln, cfg, "state-correct")
+	defer shutdown()
+
+	resp, _ := http.Get(fmt.Sprintf(
+		"http://127.0.0.1:%d/oauth/modelserver/callback?code=foo&state=state-wrong",
+		port))
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "会话状态不匹配") {
+		t.Errorf("body did not contain state_mismatch page: %s", body)
+	}
+	// Channel should ONLY close on timeout, no result.
+	select {
+	case res, ok := <-ch:
+		if ok {
+			t.Errorf("unexpected result on state mismatch: %+v", res)
+		}
+		// channel was closed by timeout — acceptable
+	case <-time.After(time.Second):
+		t.Fatal("channel neither closed nor received (timeout should fire)")
+	}
+}
+
+func TestStartListening_MissingCode(t *testing.T) {
+	cfg := AuthCodeConfig{
+		CallbackPath: "/oauth/modelserver/callback",
+		Ports:        []int{freePort(t)},
+		LoginTimeout: 500 * time.Millisecond,
+	}
+	port, ln, err := ReservePort(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch, shutdown := StartListening(ctx, ln, cfg, "state-x")
+	defer shutdown()
+
+	// state matches but no code / no error → handler should serve missing_code page
+	// and NOT send.
+	resp, _ := http.Get(fmt.Sprintf(
+		"http://127.0.0.1:%d/oauth/modelserver/callback?state=state-x",
+		port))
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "回调缺少授权码") {
+		t.Errorf("body did not contain missing_code page: %s", body)
+	}
+	select {
+	case res, ok := <-ch:
+		if ok {
+			t.Errorf("unexpected result: %+v", res)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("channel did not close on timeout")
+	}
+}
+
+func TestStartListening_CtxCancel(t *testing.T) {
+	cfg := AuthCodeConfig{
+		CallbackPath: "/oauth/modelserver/callback",
+		Ports:        []int{freePort(t)},
+		LoginTimeout: 30 * time.Second, // long; we cancel manually
+	}
+	_, ln, err := ReservePort(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, shutdown := StartListening(ctx, ln, cfg, "state-x")
+
+	cancel()
+	// shutdown is idempotent — calling after cancel must not panic
+	shutdown()
+	shutdown()
+
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Error("channel should be closed, got value")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("channel did not close after ctx cancel")
+	}
+}
