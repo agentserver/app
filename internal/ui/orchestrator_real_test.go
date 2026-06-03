@@ -276,3 +276,101 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 		t.Errorf("step not marked completed")
 	}
 }
+
+// TestPollModelserverLogin_SurvivesLoginCtxCancel is a regression test for the
+// bug fixed in 7b5a7e7: StartListening was receiving the HTTP request context
+// (loginCtx) instead of context.Background(). As soon as the POST handler
+// returned and cancelled loginCtx, the listener's internal timeout (derived
+// from it) was also cancelled, closing the result channel. A subsequent
+// PollModelserverLogin would then receive a closed channel and return
+// "登录会话已结束".
+//
+// This test reproduces the scenario: LoginModelserver is called with a
+// cancellable context that is cancelled immediately (simulating the POST
+// handler returning), and the callback arrives only after the cancellation.
+// Poll must still succeed.
+func TestPollModelserverLogin_SurvivesLoginCtxCancel(t *testing.T) {
+	port := freeUIPort(t)
+
+	// Fake modelserver — same endpoints as TestPollModelserverLogin_FullPKCE.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.PostForm.Get("grant_type") != "authorization_code" ||
+			r.PostForm.Get("code") != "code-regression" ||
+			r.PostForm.Get("code_verifier") == "" {
+			t.Errorf("/oauth2/token bad form: %v", r.PostForm)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"fake-at","token_type":"Bearer","expires_in":3600}`))
+	})
+	mux.HandleFunc("/api/v1/projects", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(201)
+			w.Write([]byte(`{"data":{"id":"proj-reg","name":"default"}}`))
+			return
+		}
+		w.Write([]byte(`{"data":[]}`))
+	})
+	mux.HandleFunc("/api/v1/projects/proj-reg/keys", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(201)
+		w.Write([]byte(`{"data":{"id":"k2","key_suffix":"abcd"},"key":"ms-fakekey-xxx"}`))
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	cfg := oauth.AuthCodeConfig{
+		Endpoint:     fake.URL,
+		AuthPath:     "/oauth2/auth",
+		TokenPath:    "/oauth2/token",
+		ClientID:     "client-reg",
+		Scope:        "project:inference offline_access",
+		CallbackPath: "/oauth/modelserver/callback",
+		Ports:        []int{port},
+		LoginTimeout: 5 * time.Second,
+	}
+
+	dir := t.TempDir()
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+
+	r := &realOrchestrator{d: Deps{
+		State:       store,
+		Secrets:     sec,
+		MS:          modelserver.New(fake.URL),
+		MSOAuth:     cfg,
+		OpenBrowser: func(string) {}, // no-op
+	}}
+
+	// Use a cancellable context — this simulates the HTTP POST handler's ctx.
+	loginCtx, cancel := context.WithCancel(context.Background())
+
+	if err := r.LoginModelserver(loginCtx); err != nil {
+		t.Fatalf("LoginModelserver: %v", err)
+	}
+
+	// Cancel the login context immediately, simulating the POST handler
+	// returning. If StartListening used this ctx, the listener would die here.
+	cancel()
+
+	// Capture state before the goroutine reads it to avoid a data race.
+	state_ := r.msSession.State
+
+	// Simulate the browser hitting the callback *after* loginCtx is cancelled.
+	go func() {
+		// Small delay so PollModelserverLogin reaches its select first.
+		time.Sleep(50 * time.Millisecond)
+		callbackURL := fmt.Sprintf("http://127.0.0.1:%d/oauth/modelserver/callback?code=code-regression&state=%s",
+			port, state_)
+		_, _ = http.Get(callbackURL)
+	}()
+
+	// Poll must succeed — not return "登录会话已结束".
+	key, err := r.PollModelserverLogin(context.Background())
+	if err != nil {
+		t.Fatalf("PollModelserverLogin: %v (bug regression: listener must outlive login ctx)", err)
+	}
+	if key.Secret != "ms-fakekey-xxx" {
+		t.Errorf("key.Secret = %q, want %q", key.Secret, "ms-fakekey-xxx")
+	}
+}
