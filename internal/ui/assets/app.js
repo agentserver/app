@@ -52,7 +52,16 @@ async function runStep(s) {
     } else if (s.id === 'vscode_install') {
       const r = await fetchJSON('/api/step/vscode_install', { method: 'POST' });
       await streamProgress(r.stream_id);
-    } else if (s.id === 'modelserver_login' || s.id === 'agentserver_login') {
+    } else if (s.id === 'modelserver_login') {
+      await fetchJSON('/api/step/' + s.id, { method: 'POST' });
+      // PKCE: no user_code to show; browser opens silently. Poll until done.
+      while (true) {
+        const st = await fetchJSON('/api/step/' + s.id + '/status');
+        if (st.state === 'success') break;
+        if (st.error) { alert('登录失败: ' + st.error); return; }
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    } else if (s.id === 'agentserver_login') {
       const ch = await fetchJSON('/api/step/' + s.id, { method: 'POST' });
       alert('请在弹出的浏览器中完成登录。\n用户码: ' + ch.user_code);
       // Poll until success
