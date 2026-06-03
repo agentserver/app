@@ -1,0 +1,39 @@
+# Build artifacts
+/dist/
+/bin/
+/out/
+
+# Cache
+/.cache/
+/cache/
+
+# Test artifacts
+/coverage.out
+*.test
+*.prof
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Local state
+state.json
+*.bak.*
+
+# Secrets
+.env
+fixtures/account.env
+test/e2e/windows/fixtures/account.env
+
+# Packaging output
+/packaging/windows/Output/
+
+# Node
+node_modules/
+extensions/*/out/
+extensions/*/*.vsix
+
+# OS
+.DS_Store
+Thumbs.db

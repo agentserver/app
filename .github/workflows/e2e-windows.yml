@@ -1,0 +1,29 @@
+name: Windows E2E
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build Windows binaries
+        run: make cross-windows
+      - name: Run E2E
+        env:
+          E2E_SSH_HOST: 10.128.185.173
+          E2E_SSH_PORT: '2222'
+          E2E_SSH_USER: '61414'
+          E2E_SSH_PASSWORD: ${{ secrets.E2E_SSH_PASSWORD }}
+          TEST_MS_USER: ${{ secrets.TEST_MS_USER }}
+          TEST_MS_PASS: ${{ secrets.TEST_MS_PASS }}
+          TEST_AS_USER: ${{ secrets.TEST_AS_USER }}
+          TEST_AS_PASS: ${{ secrets.TEST_AS_PASS }}
+        run: go test -count=1 -timeout=30m -tags=e2e ./test/e2e/windows/...
