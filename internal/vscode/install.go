@@ -51,3 +51,38 @@ func planInstallFor(goos, goarch string) InstallPlan {
 func SilentInstall(ctx context.Context, downloadedPath string, plan InstallPlan) error {
 	return silentInstallPlatform(ctx, downloadedPath, plan)
 }
+
+// InstallAndDetect runs SilentInstall and then Detect. If SilentInstall returns
+// an error but Detect reports VS Code at the expected version, the install is
+// treated as successful.
+//
+// This works around a class of issues where Windows Inno Setup returns a
+// non-zero exit (e.g. STATUS_STACK_BUFFER_OVERRUN 0xc0000409) in
+// non-interactive desktop sessions even though the install completed.
+// Seen on Windows 11 build 26100 when invoked over SSH.
+//
+// installFn and detectFn are injected for testability; pass SilentInstall
+// and Detect respectively in production.
+func InstallAndDetect(
+	ctx context.Context,
+	downloadedPath string,
+	plan InstallPlan,
+	installFn func(context.Context, string, InstallPlan) error,
+	detectFn func() (Detected, error),
+) (Detected, error) {
+	installErr := installFn(ctx, downloadedPath, plan)
+	det, detErr := detectFn()
+	if installErr == nil {
+		// Happy path. Detect failure here is the real error.
+		if detErr != nil {
+			return Detected{}, fmt.Errorf("install ok but detect failed: %w", detErr)
+		}
+		return det, nil
+	}
+	// installer reported failure — last chance: did it actually install?
+	if detErr == nil && det.Installed && det.Version == LockedVersion {
+		return det, nil
+	}
+	return Detected{}, fmt.Errorf("install failed and post-install detect didn't find VS Code %s: install err=%w; detect err=%v",
+		LockedVersion, installErr, detErr)
+}

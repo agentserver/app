@@ -29,14 +29,25 @@ func runTestInstallVSCode() {
 	defer cancel()
 
 	det, _ := vscode.Detect()
-	if det.Installed {
-		fmt.Printf("VS Code already installed: %s (version %s)\n", det.Path, det.Version)
-		return
-	}
-
 	p, err := paths.Default()
 	if err != nil {
 		die(err)
+	}
+	if det.Installed {
+		fmt.Printf("VS Code already installed: %s (version %s)\n", det.Path, det.Version)
+		// Persist detected install into state so downstream test-configure
+		// doesn't fail with "VS Code path unknown".
+		store := state.NewStore(p.StateFile)
+		_ = store.Update(func(s *state.State) error {
+			s.VSCode.Path = det.Path
+			s.VSCode.Version = det.Version
+			s.VSCode.InstalledByUs = false
+			s.VSCode.UserDataDir = p.VSCodeUserDataDir
+			s.VSCode.ExtensionsDir = p.VSCodeExtDir
+			s.Onboarding.AddCompleted("vscode_installed")
+			return nil
+		})
+		return
 	}
 	plan := vscode.PlanInstall()
 	cache := filepath.Join(p.CacheDir, "vscode-"+vscode.LockedVersion+plan.FileExt)
@@ -63,12 +74,9 @@ func runTestInstallVSCode() {
 	close(progress)
 	<-done
 	fmt.Println("Download done, running installer...")
-	if err := vscode.SilentInstall(ctx, cache, plan); err != nil {
-		die(fmt.Errorf("install: %w", err))
-	}
-	det2, err := vscode.Detect()
+	det2, err := vscode.InstallAndDetect(ctx, cache, plan, vscode.SilentInstall, vscode.Detect)
 	if err != nil {
-		die(fmt.Errorf("post-install detect: %w", err))
+		die(fmt.Errorf("install: %w", err))
 	}
 	store := state.NewStore(p.StateFile)
 	_ = store.Update(func(s *state.State) error {

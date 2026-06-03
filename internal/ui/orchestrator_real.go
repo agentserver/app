@@ -185,12 +185,9 @@ func (r *realOrchestrator) EnsureVSCode(ctx context.Context, ch chan<- ProgressE
 		downloadAdapter(ch)); err != nil {
 		return fmt.Errorf("download VS Code: %w", err)
 	}
-	if err := vscode.SilentInstall(ctx, cache, plan); err != nil {
-		return fmt.Errorf("install VS Code: %w", err)
-	}
-	det2, err := vscode.Detect()
+	det2, err := vscode.InstallAndDetect(ctx, cache, plan, vscode.SilentInstall, vscode.Detect)
 	if err != nil {
-		return fmt.Errorf("post-install detect: %w", err)
+		return fmt.Errorf("install VS Code: %w", err)
 	}
 	return r.d.State.Update(func(s *state.State) error {
 		s.VSCode.Path = det2.Path
