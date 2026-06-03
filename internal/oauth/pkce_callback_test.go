@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -64,3 +65,15 @@ func freePort(t *testing.T) int {
 // Silence unused for now (used in later tasks).
 var _ = fmt.Sprintf
 var _ = freePort
+
+func TestCallbackPages_AllPresent(t *testing.T) {
+	for _, name := range []string{"success", "denied", "state_mismatch", "missing_code"} {
+		b := callbackPage(name)
+		if len(b) == 0 {
+			t.Errorf("page %s is empty", name)
+		}
+		if !strings.Contains(string(b), "<html") {
+			t.Errorf("page %s is not HTML", name)
+		}
+	}
+}

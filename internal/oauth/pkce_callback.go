@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"embed"
 	"errors"
 	"fmt"
 	"net"
@@ -19,4 +20,17 @@ func ReservePort(cfg AuthCodeConfig) (port int, ln net.Listener, err error) {
 		}
 	}
 	return 0, nil, ErrAllPortsBusy
+}
+
+//go:embed templates/success.html templates/denied.html templates/state_mismatch.html templates/missing_code.html
+var callbackTemplates embed.FS
+
+// callbackPage returns the embedded HTML for the named outcome.
+// Panics on unknown name (programmer error).
+func callbackPage(name string) []byte {
+	b, err := callbackTemplates.ReadFile("templates/" + name + ".html")
+	if err != nil {
+		panic("oauth: missing embedded template " + name + ": " + err.Error())
+	}
+	return b
 }
