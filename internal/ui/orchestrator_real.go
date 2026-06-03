@@ -91,6 +91,10 @@ func (r *realOrchestrator) State(ctx context.Context) (SanitizedState, error) {
 }
 
 func (r *realOrchestrator) LoginModelserver(ctx context.Context) error {
+	// If a previous login is still in-flight (e.g., user clicked retry),
+	// release its port + listener before starting a fresh one.
+	r.cleanupMS()
+
 	port, ln, err := oauth.ReservePort(r.d.MSOAuth)
 	if err != nil {
 		if errors.Is(err, oauth.ErrAllPortsBusy) {
@@ -380,4 +384,7 @@ func (r *realOrchestrator) Finalize(ctx context.Context) error {
 		return nil
 	})
 }
-func (r *realOrchestrator) Abort(ctx context.Context) error { return nil }
+func (r *realOrchestrator) Abort(ctx context.Context) error {
+	r.cleanupMS()
+	return nil
+}

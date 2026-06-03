@@ -374,3 +374,115 @@ func TestPollModelserverLogin_SurvivesLoginCtxCancel(t *testing.T) {
 		t.Errorf("key.Secret = %q, want %q", key.Secret, "ms-fakekey-xxx")
 	}
 }
+
+// TestLoginModelserver_RetryReleasesPreviousListener verifies that calling
+// LoginModelserver twice in a row on a single-port config does NOT exhaust
+// ports — the second call must release the first listener before binding.
+func TestLoginModelserver_RetryReleasesPreviousListener(t *testing.T) {
+	port := freeUIPort(t)
+
+	cfg := oauth.AuthCodeConfig{
+		Endpoint:     "https://hydra.example",
+		AuthPath:     "/oauth2/auth",
+		TokenPath:    "/oauth2/token",
+		ClientID:     "client-x",
+		Scope:        "project:inference offline_access",
+		CallbackPath: "/oauth/modelserver/callback",
+		Ports:        []int{port}, // single port — second login MUST reuse it
+		LoginTimeout: 30 * time.Second,
+	}
+
+	dir := t.TempDir()
+	r := &realOrchestrator{d: Deps{
+		State:       state.NewStore(filepath.Join(dir, "state.json")),
+		Secrets:     secrets.New(filepath.Join(dir, "secrets.json")),
+		MSOAuth:     cfg,
+		OpenBrowser: func(string) {},
+	}}
+
+	if err := r.LoginModelserver(context.Background()); err != nil {
+		t.Fatalf("first login: %v", err)
+	}
+	firstSession := r.msSession
+	if firstSession == nil {
+		t.Fatal("first login did not store session")
+	}
+
+	// Without the fix, this second call would fail with ErrAllPortsBusy
+	// because the first listener still holds the only port.
+	// Allow a brief moment for the OS to release the socket: shutdown() is
+	// synchronous, but a racing watcher goroutine may hold the FD a few ms.
+	var retryErr error
+	for i := 0; i < 10; i++ {
+		if retryErr = r.LoginModelserver(context.Background()); retryErr == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if retryErr != nil {
+		t.Fatalf("second login (retry): %v", retryErr)
+	}
+	if r.msSession == firstSession {
+		t.Error("second login did not start a new session — same pointer")
+	}
+	if r.msSession == nil {
+		t.Fatal("second login did not store session")
+	}
+
+	// Cleanup
+	r.cleanupMS()
+}
+
+// TestAbortReleasesListener verifies that Abort() releases the in-flight
+// PKCE listener (so the port becomes immediately available for a fresh login).
+func TestAbortReleasesListener(t *testing.T) {
+	port := freeUIPort(t)
+
+	cfg := oauth.AuthCodeConfig{
+		Endpoint:     "https://hydra.example",
+		AuthPath:     "/oauth2/auth",
+		TokenPath:    "/oauth2/token",
+		ClientID:     "client-x",
+		Scope:        "project:inference offline_access",
+		CallbackPath: "/oauth/modelserver/callback",
+		Ports:        []int{port},
+		LoginTimeout: 30 * time.Second,
+	}
+
+	dir := t.TempDir()
+	r := &realOrchestrator{d: Deps{
+		State:       state.NewStore(filepath.Join(dir, "state.json")),
+		Secrets:     secrets.New(filepath.Join(dir, "secrets.json")),
+		MSOAuth:     cfg,
+		OpenBrowser: func(string) {},
+	}}
+
+	if err := r.LoginModelserver(context.Background()); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if r.msSession == nil {
+		t.Fatal("login did not store session")
+	}
+
+	if err := r.Abort(context.Background()); err != nil {
+		t.Fatalf("abort: %v", err)
+	}
+	if r.msSession != nil || r.msShutdown != nil {
+		t.Errorf("Abort did not clean up: msSession=%v msShutdown=non-nil",
+			r.msSession)
+	}
+	// Port should be re-bindable now. Allow a brief moment for the OS to
+	// fully release the socket (http.Server.Shutdown is synchronous but a
+	// racing watcher goroutine may hold the FD a few ms longer).
+	var loginErr error
+	for i := 0; i < 10; i++ {
+		if loginErr = r.LoginModelserver(context.Background()); loginErr == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if loginErr != nil {
+		t.Errorf("login after Abort should reuse port: %v", loginErr)
+	}
+	r.cleanupMS()
+}
