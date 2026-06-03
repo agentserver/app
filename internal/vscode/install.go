@@ -22,10 +22,7 @@ const LockedVersion = "1.96.0"
 // Fetch with:
 //
 //	curl -s 'https://update.code.visualstudio.com/api/versions/1.96.0/win32-x64-user/stable' | jq -r .sha256hash
-//
-// Leave as REPLACE_ME until first build — DownloadResumable will fail
-// loudly so a developer notices.
-const lockedSHA256Win64User = "REPLACE_ME_run_curl_command_above_and_paste_hex"
+const lockedSHA256Win64User = "3b445b7031069b527c16202107baa56ad5f8b5e09e43d688dc71d099c8e1cad1"
 
 func PlanInstall() InstallPlan {
 	return planInstallFor(runtime.GOOS, runtime.GOARCH)
