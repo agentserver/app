@@ -1,8 +1,11 @@
 package oauth
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -77,5 +80,57 @@ func TestStartPKCE_AuthURL(t *testing.T) {
 	}
 	if !strings.Contains(q.Get("scope"), "project:inference") {
 		t.Errorf("scope = %q", q.Get("scope"))
+	}
+}
+
+func TestFinishPKCE_Success(t *testing.T) {
+	var gotBody url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth2/token" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+			t.Errorf("content-type = %q", r.Header.Get("Content-Type"))
+		}
+		if got := r.Header.Get("Accept"); got != "application/json" {
+			t.Errorf("Accept = %q", got)
+		}
+		_ = r.ParseForm()
+		gotBody = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"tok-xyz","token_type":"Bearer","refresh_token":"rtok","expires_in":3600}`))
+	}))
+	defer srv.Close()
+
+	cfg := AuthCodeConfig{
+		Endpoint:  srv.URL,
+		TokenPath: "/oauth2/token",
+		ClientID:  "client-x",
+	}
+	sess := &PKCESession{
+		Verifier:    "verifier-xyz",
+		RedirectURI: "http://127.0.0.1:53428/oauth/modelserver/callback",
+	}
+	tok, err := FinishPKCE(context.Background(), cfg, sess, "code-abc")
+	if err != nil {
+		t.Fatalf("FinishPKCE: %v", err)
+	}
+	if tok.AccessToken != "tok-xyz" || tok.RefreshToken != "rtok" || tok.TokenType != "Bearer" || tok.ExpiresIn != 3600 {
+		t.Errorf("token = %+v", tok)
+	}
+	if gotBody.Get("grant_type") != "authorization_code" {
+		t.Errorf("grant_type = %q", gotBody.Get("grant_type"))
+	}
+	if gotBody.Get("code") != "code-abc" {
+		t.Errorf("code = %q", gotBody.Get("code"))
+	}
+	if gotBody.Get("code_verifier") != "verifier-xyz" {
+		t.Errorf("code_verifier = %q", gotBody.Get("code_verifier"))
+	}
+	if gotBody.Get("client_id") != "client-x" {
+		t.Errorf("client_id = %q", gotBody.Get("client_id"))
+	}
+	if gotBody.Get("redirect_uri") != "http://127.0.0.1:53428/oauth/modelserver/callback" {
+		t.Errorf("redirect_uri = %q", gotBody.Get("redirect_uri"))
 	}
 }

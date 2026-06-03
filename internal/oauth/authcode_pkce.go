@@ -1,12 +1,16 @@
 package oauth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -84,4 +88,47 @@ func randomURLSafe(n int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// FinishPKCE exchanges the auth code for tokens using the PKCE verifier.
+// Public client: no client_secret, verifier proves the caller is the same
+// process that initiated the flow.
+//
+// The caller MUST validate that the state parameter returned in the OAuth
+// callback matches sess.State BEFORE calling FinishPKCE (per RFC 6749 §10.12).
+// State validation lives in the callback listener (StartListening), not here.
+func FinishPKCE(ctx context.Context, cfg AuthCodeConfig, sess *PKCESession, code string) (Token, error) {
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("code_verifier", sess.Verifier)
+	form.Set("client_id", cfg.ClientID)
+	form.Set("redirect_uri", sess.RedirectURI)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL(),
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return Token{}, fmt.Errorf("token exchange: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return Token{}, fmt.Errorf("token exchange: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var te tokenErr
+		if err := json.NewDecoder(resp.Body).Decode(&te); err == nil && te.Code != "" {
+			return Token{}, fmt.Errorf("token exchange: %s: %s", te.Code, te.Desc)
+		}
+		return Token{}, fmt.Errorf("token exchange: status %d", resp.StatusCode)
+	}
+	var tok Token
+	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+		return Token{}, fmt.Errorf("decode token: %w", err)
+	}
+	return tok, nil
 }
