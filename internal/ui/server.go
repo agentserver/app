@@ -62,15 +62,11 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleMSLogin(w http.ResponseWriter, r *http.Request) {
-	ch, err := s.o.LoginModelserver(r.Context())
-	if err != nil {
+	if err := s.o.LoginModelserver(r.Context()); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	if s.openBrowser != nil && ch.VerificationURIComplete != "" {
-		go s.openBrowser(ch.VerificationURIComplete)
-	}
-	writeJSON(w, 200, ch)
+	writeJSON(w, 200, map[string]string{"state": "started"})
 }
 
 func (s *server) handleMSStatus(w http.ResponseWriter, r *http.Request) {

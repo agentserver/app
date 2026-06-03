@@ -15,7 +15,7 @@ import (
 type Orchestrator interface {
 	State(ctx context.Context) (SanitizedState, error)
 
-	LoginModelserver(ctx context.Context) (oauth.DeviceCodeChallenge, error)
+	LoginModelserver(ctx context.Context) error
 	PollModelserverLogin(ctx context.Context) (modelserver.APIKey, error)
 
 	LoginAgentserver(ctx context.Context) (oauth.DeviceCodeChallenge, error)
@@ -59,9 +59,7 @@ func NewNoopOrchestrator() Orchestrator { return noopOrchestrator{} }
 func (noopOrchestrator) State(context.Context) (SanitizedState, error) {
 	return SanitizedState{}, nil
 }
-func (noopOrchestrator) LoginModelserver(context.Context) (oauth.DeviceCodeChallenge, error) {
-	return oauth.DeviceCodeChallenge{UserCode: "TEST"}, nil
-}
+func (noopOrchestrator) LoginModelserver(context.Context) error { return nil }
 func (noopOrchestrator) PollModelserverLogin(context.Context) (modelserver.APIKey, error) {
 	return modelserver.APIKey{}, nil
 }

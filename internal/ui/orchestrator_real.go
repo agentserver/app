@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,17 +36,19 @@ type Deps struct {
 	Secrets           secrets.Store
 	MS                *modelserver.Client
 	AS                *agentserver.Client
-	MSOAuth           oauth.Config
-	ASOAuth           oauth.Config
+	MSOAuth           oauth.AuthCodeConfig // PKCE (modelserver path)
+	ASOAuth           oauth.Config         // device code (agentserver path)
 	CodexConfigPath   string
 	VSCodeUserDataDir string
 	VSCodeExtDir      string
 	EmbeddedVSIXPath  string
 	CodexAbsPath      string
 	// CodexDownloadURL overrides the default GitHub Releases URL when set.
-	// Empty = use the pinned default (codexDownloadURL()). Tests inject a
-	// local httptest URL here to avoid a 246MB real download.
-	CodexDownloadURL  string
+	CodexDownloadURL string
+
+	// OpenBrowser is invoked by the orchestrator after starting the PKCE
+	// listener. Optional in tests.
+	OpenBrowser func(string)
 
 	// Used by Finalize (set by launcher; see P9.3)
 	LauncherExePath   string
@@ -55,8 +58,11 @@ type Deps struct {
 
 type realOrchestrator struct {
 	d Deps
-	// transient: in-flight device-code challenges per step
-	msChallenge oauth.DeviceCodeChallenge
+	// modelserver PKCE in-flight session:
+	msSession  *oauth.PKCESession
+	msCallback <-chan oauth.CallbackResult
+	msShutdown func()
+	// agentserver device-code in-flight challenge (unchanged):
 	asChallenge oauth.DeviceCodeChallenge
 	msToken     oauth.Token
 	asToken     oauth.Token
@@ -84,44 +90,96 @@ func (r *realOrchestrator) State(ctx context.Context) (SanitizedState, error) {
 	}, nil
 }
 
-func (r *realOrchestrator) LoginModelserver(ctx context.Context) (oauth.DeviceCodeChallenge, error) {
-	ch, err := oauth.RequestDeviceCode(ctx, r.d.MSOAuth)
+func (r *realOrchestrator) LoginModelserver(ctx context.Context) error {
+	port, ln, err := oauth.ReservePort(r.d.MSOAuth)
 	if err != nil {
-		return oauth.DeviceCodeChallenge{}, err
+		if errors.Is(err, oauth.ErrAllPortsBusy) {
+			return fmt.Errorf("OAuth 回调端口 %v 全部被占用, 请关闭其他 agentserver-vscode 进程后重试",
+				r.d.MSOAuth.Ports)
+		}
+		return err
 	}
-	r.msChallenge = ch
-	return ch, nil
+	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", port, r.d.MSOAuth.CallbackPath)
+	sess, err := oauth.StartPKCE(r.d.MSOAuth, redirectURI)
+	if err != nil {
+		_ = ln.Close()
+		return err
+	}
+	ch, shutdown := oauth.StartListening(ctx, ln, r.d.MSOAuth, sess.State)
+	r.msSession = sess
+	r.msCallback = ch
+	r.msShutdown = shutdown
+
+	if r.d.OpenBrowser != nil {
+		go r.d.OpenBrowser(sess.AuthURL)
+	}
+	return nil
 }
 
 func (r *realOrchestrator) PollModelserverLogin(ctx context.Context) (modelserver.APIKey, error) {
-	if r.msChallenge.DeviceCode == "" {
+	if r.msSession == nil {
 		return modelserver.APIKey{}, fmt.Errorf("no in-flight modelserver login")
 	}
-	tok, err := oauth.PollToken(ctx, r.d.MSOAuth, r.msChallenge)
-	if err != nil {
-		return modelserver.APIKey{}, err
+	select {
+	case res, ok := <-r.msCallback:
+		if !ok {
+			r.cleanupMS()
+			return modelserver.APIKey{}, fmt.Errorf("登录会话已结束, 请重试")
+		}
+		if res.Error != "" {
+			r.cleanupMS()
+			return modelserver.APIKey{}, fmt.Errorf("登录被拒绝: %s", res.Error)
+		}
+		if res.State != r.msSession.State {
+			r.cleanupMS()
+			return modelserver.APIKey{}, fmt.Errorf("会话状态不匹配, 请重试")
+		}
+		tok, err := oauth.FinishPKCE(ctx, r.d.MSOAuth, r.msSession, res.Code)
+		if err != nil {
+			r.cleanupMS()
+			return modelserver.APIKey{}, err
+		}
+		r.msToken = tok
+		proj, err := r.d.MS.PickOrCreateProject(ctx, tok.AccessToken, "default")
+		if err != nil {
+			r.cleanupMS()
+			return modelserver.APIKey{}, err
+		}
+		key, err := r.d.MS.CreateAPIKey(ctx, tok.AccessToken, proj.ID, "agentserver-vscode")
+		if err != nil {
+			r.cleanupMS()
+			return modelserver.APIKey{}, err
+		}
+		if err := r.d.Secrets.Set("modelserver_api_key", key.Secret); err != nil {
+			r.cleanupMS()
+			return modelserver.APIKey{}, err
+		}
+		if err := r.d.State.Update(func(s *state.State) error {
+			s.Modelserver.ProjectID = proj.ID
+			s.Modelserver.APIKeySuffix = key.KeySuffix
+			s.Onboarding.AddCompleted("modelserver_login")
+			return nil
+		}); err != nil {
+			r.cleanupMS()
+			return modelserver.APIKey{}, err
+		}
+		r.cleanupMS()
+		return key, nil
+	case <-ctx.Done():
+		// Do NOT cleanup: caller (server.handleMSStatus) wraps Poll in a 30s
+		// timeout and re-polls. Session stays armed until callback arrives or
+		// the PKCE listener's own 10-minute timeout fires.
+		return modelserver.APIKey{}, ctx.Err()
 	}
-	r.msToken = tok
-	proj, err := r.d.MS.PickOrCreateProject(ctx, tok.AccessToken, "default")
-	if err != nil {
-		return modelserver.APIKey{}, err
+}
+
+func (r *realOrchestrator) cleanupMS() {
+	if r.msShutdown != nil {
+		r.msShutdown()
 	}
-	key, err := r.d.MS.CreateAPIKey(ctx, tok.AccessToken, proj.ID, "agentserver-vscode")
-	if err != nil {
-		return modelserver.APIKey{}, err
-	}
-	if err := r.d.Secrets.Set("modelserver_api_key", key.Secret); err != nil {
-		return modelserver.APIKey{}, err
-	}
-	if err := r.d.State.Update(func(s *state.State) error {
-		s.Modelserver.ProjectID = proj.ID
-		s.Modelserver.APIKeySuffix = key.KeySuffix
-		s.Onboarding.AddCompleted("modelserver_login")
-		return nil
-	}); err != nil {
-		return modelserver.APIKey{}, err
-	}
-	return key, nil
+	r.msSession = nil
+	r.msCallback = nil
+	r.msShutdown = nil
 }
 
 func (r *realOrchestrator) LoginAgentserver(ctx context.Context) (oauth.DeviceCodeChallenge, error) {
