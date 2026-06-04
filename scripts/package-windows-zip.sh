@@ -52,11 +52,20 @@ echo "codex.exe: $codex_size bytes (cached)"
 for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          dist/windows/agentctl.exe dist/windows/open-folder.exe \
          extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \
+         internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
          packaging/windows/icon.ico \
          packaging/windows/LICENSE.zh.txt \
          "$CODEX_CACHE"; do
-  [[ -e "$f" ]] || { echo "missing: $f"; exit 1; }
+  if [[ ! -e "$f" ]]; then
+    echo "missing: $f"
+    case "$f" in
+      internal/ui/assets/dist/*) echo "  hint: run 'make ui-build'" ;;
+      dist/windows/*.exe)        echo "  hint: run 'make cross-windows'" ;;
+      */agentserver-vscode-*.vsix) echo "  hint: run 'make ext-build'" ;;
+    esac
+    exit 1
+  fi
 done
 
 rm -rf "$STAGE" "$ZIP"
