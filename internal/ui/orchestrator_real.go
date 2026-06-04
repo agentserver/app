@@ -269,6 +269,15 @@ func (r *realOrchestrator) PollAgentserverLogin(ctx context.Context) (agentserve
 func (r *realOrchestrator) EnsureVSCode(ctx context.Context, ch chan<- ProgressEvent) error {
 	det, _ := vscode.Detect()
 	if det.Installed {
+		// Emit a progress event so the front-end SSE stream has something
+		// to render even on the fast-path (skip download). Without this
+		// the user sees nothing happen and assumes the button is broken.
+		if ch != nil {
+			select {
+			case ch <- ProgressEvent{Stage: "detected", Msg: "已检测到 VS Code " + det.Version + ", 跳过下载"}:
+			default:
+			}
+		}
 		if err := r.d.State.Update(func(s *state.State) error {
 			s.VSCode.Path = det.Path
 			s.VSCode.Version = det.Version
