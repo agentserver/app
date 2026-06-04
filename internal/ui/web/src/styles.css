@@ -1,0 +1,16 @@
+body {
+  font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  margin: 0;
+  color: #1f2329;
+  background: #f7f8fa;
+}
+.container {
+  max-width: 720px;
+  margin: 40px auto;
+  padding: 0 24px;
+}
+h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 24px;
+}
