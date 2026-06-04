@@ -91,7 +91,12 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	deps := ui.Deps{
 		State:             store,
 		Secrets:           sec,
-		MS:                modelserver.New("https://code.cs.ac.cn"),
+		// codeapi.cs.ac.cn is the admin API host (returns JSON). code.cs.ac.cn
+		// is the dashboard SPA — any path there returns the SPA index HTML,
+		// which causes the modelserver client's JSON decoder to fail with
+		// "invalid character '<' looking for beginning of value". This is the
+		// SAME host PKCE uses (msOAuth.Endpoint above).
+		MS:                modelserver.New("https://codeapi.cs.ac.cn"),
 		AS:                agentserver.New("https://agent.cs.ac.cn"),
 		MSOAuth:           msOAuth,
 		ASOAuth:           asOAuth,
