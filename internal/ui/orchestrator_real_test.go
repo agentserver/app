@@ -259,18 +259,21 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PollModelserverLogin: %v", err)
 	}
-	if key.Secret != "ms-fakekey-xxx" {
-		t.Errorf("key.Secret = %q", key.Secret)
+	// New behavior: skip PickOrCreateProject + CreateAPIKey because PKCE
+	// access_token can't reach the admin /api/v1/* path (JWT-only). The
+	// access_token itself is what gets stored as OPENAI_API_KEY.
+	if key.Secret != "fake-at" {
+		t.Errorf("key.Secret = %q, want access_token", key.Secret)
 	}
-	if got, _ := sec.Get("modelserver_api_key"); got != "ms-fakekey-xxx" {
+	if got, _ := sec.Get("modelserver_api_key"); got != "fake-at" {
 		t.Errorf("secret not stored: %q", got)
 	}
 	s, _ := store.Load()
-	if s.Modelserver.ProjectID != "proj-1" {
-		t.Errorf("project id = %q", s.Modelserver.ProjectID)
+	if s.Modelserver.ProjectID != "" {
+		t.Errorf("project id = %q, want empty (PKCE has no project)", s.Modelserver.ProjectID)
 	}
-	if s.Modelserver.APIKeySuffix != "wxyz" {
-		t.Errorf("key suffix = %q", s.Modelserver.APIKeySuffix)
+	if s.Modelserver.APIKeySuffix != "e-at" {
+		t.Errorf("key suffix = %q, want last 4 of 'fake-at'", s.Modelserver.APIKeySuffix)
 	}
 	if !s.Onboarding.HasCompleted("modelserver_login") {
 		t.Errorf("step not marked completed")
@@ -370,8 +373,9 @@ func TestPollModelserverLogin_SurvivesLoginCtxCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PollModelserverLogin: %v (bug regression: listener must outlive login ctx)", err)
 	}
-	if key.Secret != "ms-fakekey-xxx" {
-		t.Errorf("key.Secret = %q, want %q", key.Secret, "ms-fakekey-xxx")
+	// New behavior: PKCE access_token is the secret directly.
+	if key.Secret != "fake-at" {
+		t.Errorf("key.Secret = %q, want access_token", key.Secret)
 	}
 }
 
