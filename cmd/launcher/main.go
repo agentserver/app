@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/browser"
@@ -111,16 +112,34 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		IconPath:          joinExe(installDir, "icon.ico"),
 	}
 
-	orch := ui.NewRealOrchestrator(deps)
-	handler := ui.NewServer(orch)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
 	}
+	srv := &http.Server{}
+
+	// Inject the shutdown callback into Deps so LaunchAndShutdown can
+	// trigger graceful server close after VS Code is spawned. Delayed
+	// 500ms so the in-flight POST /api/launch-vscode response can flush.
+	deps.Shutdown = func() {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			_ = srv.Shutdown(context.Background())
+		}()
+	}
+
+	orch := ui.NewRealOrchestrator(deps)
+	srv.Handler = ui.NewServer(orch)
+
 	url := fmt.Sprintf("http://%s/", ln.Addr())
 	fmt.Println("onboarding URL:", url)
 	go func() { _ = browser.Open(url) }()
-	return http.Serve(ln, handler)
+
+	err = srv.Serve(ln)
+	if err == http.ErrServerClosed {
+		return nil // clean shutdown via LaunchAndShutdown
+	}
+	return err
 }
 
 func execVSCode(codeExe string, p paths.Paths, folder string) error {
@@ -153,6 +172,3 @@ func joinExe(dir, name string) string {
 	}
 	return dir + string(os.PathSeparator) + name
 }
-
-// keep context import live for future use
-var _ = context.Background
