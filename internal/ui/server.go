@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-//go:embed assets/*
+//go:embed all:assets/dist
 var assetsFS embed.FS
 
 // NewServer constructs the onboarding HTTP handler. Browser-opening for
@@ -21,7 +21,7 @@ func NewServer(o Orchestrator) http.Handler {
 	s := &server{o: o, sse: newSSEHub()}
 	mux := http.NewServeMux()
 	// Static
-	staticFS, _ := fs.Sub(assetsFS, "assets")
+	staticFS, _ := fs.Sub(assetsFS, "assets/dist")
 	mux.Handle("/", http.FileServer(http.FS(staticFS)))
 
 	// JSON
