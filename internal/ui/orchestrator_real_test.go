@@ -159,7 +159,7 @@ func TestLoginModelserver_StartsListenerOpensBrowser(t *testing.T) {
 		OpenBrowser: openBrowser,
 	}}
 
-	if err := r.LoginModelserver(context.Background()); err != nil {
+	if _, err := r.LoginModelserver(context.Background()); err != nil {
 		t.Fatalf("LoginModelserver: %v", err)
 	}
 	defer r.cleanupMS()
@@ -241,7 +241,7 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 		OpenBrowser: openBrowser,
 	}}
 
-	if err := r.LoginModelserver(context.Background()); err != nil {
+	if _, err := r.LoginModelserver(context.Background()); err != nil {
 		t.Fatalf("LoginModelserver: %v", err)
 	}
 
@@ -348,7 +348,7 @@ func TestPollModelserverLogin_SurvivesLoginCtxCancel(t *testing.T) {
 	// Use a cancellable context — this simulates the HTTP POST handler's ctx.
 	loginCtx, cancel := context.WithCancel(context.Background())
 
-	if err := r.LoginModelserver(loginCtx); err != nil {
+	if _, err := r.LoginModelserver(loginCtx); err != nil {
 		t.Fatalf("LoginModelserver: %v", err)
 	}
 
@@ -404,7 +404,7 @@ func TestLoginModelserver_RetryReleasesPreviousListener(t *testing.T) {
 		OpenBrowser: func(string) {},
 	}}
 
-	if err := r.LoginModelserver(context.Background()); err != nil {
+	if _, err := r.LoginModelserver(context.Background()); err != nil {
 		t.Fatalf("first login: %v", err)
 	}
 	firstSession := r.msSession
@@ -418,7 +418,7 @@ func TestLoginModelserver_RetryReleasesPreviousListener(t *testing.T) {
 	// synchronous, but a racing watcher goroutine may hold the FD a few ms.
 	var retryErr error
 	for i := 0; i < 10; i++ {
-		if retryErr = r.LoginModelserver(context.Background()); retryErr == nil {
+		if _, retryErr = r.LoginModelserver(context.Background()); retryErr == nil {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -461,7 +461,7 @@ func TestAbortReleasesListener(t *testing.T) {
 		OpenBrowser: func(string) {},
 	}}
 
-	if err := r.LoginModelserver(context.Background()); err != nil {
+	if _, err := r.LoginModelserver(context.Background()); err != nil {
 		t.Fatalf("login: %v", err)
 	}
 	if r.msSession == nil {
@@ -480,7 +480,7 @@ func TestAbortReleasesListener(t *testing.T) {
 	// racing watcher goroutine may hold the FD a few ms longer).
 	var loginErr error
 	for i := 0; i < 10; i++ {
-		if loginErr = r.LoginModelserver(context.Background()); loginErr == nil {
+		if _, loginErr = r.LoginModelserver(context.Background()); loginErr == nil {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -489,4 +489,60 @@ func TestAbortReleasesListener(t *testing.T) {
 		t.Errorf("login after Abort should reuse port: %v", loginErr)
 	}
 	r.cleanupMS()
+}
+
+// TestLoginAgentserver_ReturnsURL verifies the new oauth_url contract:
+// LoginAgentserver returns the verification_uri_complete from the
+// device-auth response so the front-end can render a fallback link.
+func TestLoginAgentserver_ReturnsURL(t *testing.T) {
+	// Fake agentserver: respond to /api/oauth2/device/auth with a known URL.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/oauth2/device/auth", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"device_code": "dev-xyz",
+			"user_code": "ABCDEFGH",
+			"verification_uri": "https://agent.example/oauth2/device/verify",
+			"verification_uri_complete": "https://agent.example/oauth2/device/verify?user_code=ABCDEFGH",
+			"expires_in": 600,
+			"interval": 5
+		}`))
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	browserCh := make(chan string, 1)
+	openBrowser := func(u string) { browserCh <- u }
+
+	dir := t.TempDir()
+	r := &realOrchestrator{d: Deps{
+		State:   state.NewStore(filepath.Join(dir, "state.json")),
+		Secrets: secrets.New(filepath.Join(dir, "secrets.json")),
+		ASOAuth: oauth.Config{
+			Endpoint:  fake.URL,
+			AuthPath:  "/api/oauth2/device/auth",
+			TokenPath: "/api/oauth2/token",
+			ClientID:  "test-client",
+			Scope:     "openid",
+		},
+		OpenBrowser: openBrowser,
+	}}
+
+	url, err := r.LoginAgentserver(context.Background())
+	if err != nil {
+		t.Fatalf("LoginAgentserver: %v", err)
+	}
+	want := "https://agent.example/oauth2/device/verify?user_code=ABCDEFGH"
+	if url != want {
+		t.Errorf("returned url = %q, want %q", url, want)
+	}
+	// Browser-open is async; wait for the goroutine to deliver the URL.
+	select {
+	case openedURL := <-browserCh:
+		if openedURL != want {
+			t.Errorf("OpenBrowser called with %q, want %q", openedURL, want)
+		}
+	case <-time.After(time.Second):
+		t.Error("OpenBrowser was not called within 1s")
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
@@ -50,6 +51,11 @@ type Deps struct {
 	// listener. Optional in tests.
 	OpenBrowser func(string)
 
+	// Shutdown is invoked by LaunchAndShutdown after VS Code is spawned.
+	// The launcher uses this to gracefully close its HTTP server so the
+	// process can exit cleanly. Optional in tests.
+	Shutdown func()
+
 	// Used by Finalize (set by launcher; see P9.3)
 	LauncherExePath   string
 	OpenFolderExePath string
@@ -90,7 +96,7 @@ func (r *realOrchestrator) State(ctx context.Context) (SanitizedState, error) {
 	}, nil
 }
 
-func (r *realOrchestrator) LoginModelserver(ctx context.Context) error {
+func (r *realOrchestrator) LoginModelserver(ctx context.Context) (string, error) {
 	// If a previous login is still in-flight (e.g., user clicked retry),
 	// release its port + listener before starting a fresh one.
 	r.cleanupMS()
@@ -98,16 +104,16 @@ func (r *realOrchestrator) LoginModelserver(ctx context.Context) error {
 	port, ln, err := oauth.ReservePort(r.d.MSOAuth)
 	if err != nil {
 		if errors.Is(err, oauth.ErrAllPortsBusy) {
-			return fmt.Errorf("OAuth 回调端口 %v 全部被占用, 请关闭其他 agentserver-vscode 进程后重试",
+			return "", fmt.Errorf("OAuth 回调端口 %v 全部被占用, 请关闭其他 agentserver-vscode 进程后重试",
 				r.d.MSOAuth.Ports)
 		}
-		return err
+		return "", err
 	}
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d%s", port, r.d.MSOAuth.CallbackPath)
 	sess, err := oauth.StartPKCE(r.d.MSOAuth, redirectURI)
 	if err != nil {
 		_ = ln.Close()
-		return err
+		return "", err
 	}
 	// Use context.Background() so the PKCE listener outlives the POST
 	// request that started the login. The listener shuts itself down via
@@ -120,7 +126,7 @@ func (r *realOrchestrator) LoginModelserver(ctx context.Context) error {
 	if r.d.OpenBrowser != nil {
 		go r.d.OpenBrowser(sess.AuthURL)
 	}
-	return nil
+	return sess.AuthURL, nil
 }
 
 func (r *realOrchestrator) PollModelserverLogin(ctx context.Context) (modelserver.APIKey, error) {
@@ -204,13 +210,20 @@ func (r *realOrchestrator) cleanupMS() {
 	r.msShutdown = nil
 }
 
-func (r *realOrchestrator) LoginAgentserver(ctx context.Context) (oauth.DeviceCodeChallenge, error) {
+func (r *realOrchestrator) LoginAgentserver(ctx context.Context) (string, error) {
 	ch, err := oauth.RequestDeviceCode(ctx, r.d.ASOAuth)
 	if err != nil {
-		return oauth.DeviceCodeChallenge{}, err
+		return "", err
 	}
 	r.asChallenge = ch
-	return ch, nil
+	url := ch.VerificationURIComplete
+	if url == "" {
+		url = ch.VerificationURI
+	}
+	if url != "" && r.d.OpenBrowser != nil {
+		go r.d.OpenBrowser(url)
+	}
+	return url, nil
 }
 
 func (r *realOrchestrator) PollAgentserverLogin(ctx context.Context) (agentserver.WorkspaceAPIKey, error) {
@@ -408,6 +421,34 @@ func (r *realOrchestrator) Finalize(ctx context.Context) error {
 		return nil
 	})
 }
+func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
+	s, err := r.d.State.Load()
+	if err != nil {
+		return err
+	}
+	if s.VSCode.Path == "" {
+		return fmt.Errorf("VS Code path unknown; was vscode_install completed?")
+	}
+	cmd := exec.Command(s.VSCode.Path,
+		"--user-data-dir", r.d.VSCodeUserDataDir,
+		"--extensions-dir", r.d.VSCodeExtDir,
+	)
+	// Don't inherit our stdio — we're about to shut down.
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("launch VS Code: %w", err)
+	}
+	// VS Code is now running independently. Trigger launcher shutdown
+	// (async — see launcher main.go: 500ms delay so the HTTP response
+	// to /api/launch-vscode can flush before srv.Shutdown closes things).
+	if r.d.Shutdown != nil {
+		r.d.Shutdown()
+	}
+	return nil
+}
+
 func (r *realOrchestrator) Abort(ctx context.Context) error {
 	r.cleanupMS()
 	return nil

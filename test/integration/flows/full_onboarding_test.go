@@ -56,7 +56,7 @@ func TestFullOnboarding_MS_AS(t *testing.T) {
 	}
 	orch := ui.NewRealOrchestrator(deps)
 
-	srv := httptest.NewServer(ui.NewServer(orch, nil))
+	srv := httptest.NewServer(ui.NewServer(orch))
 	defer srv.Close()
 
 	// STEP 1 MS login

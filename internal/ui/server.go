@@ -13,8 +13,12 @@ import (
 //go:embed assets/*
 var assetsFS embed.FS
 
-func NewServer(o Orchestrator, openBrowser func(url string)) http.Handler {
-	s := &server{o: o, openBrowser: openBrowser, sse: newSSEHub()}
+// NewServer constructs the onboarding HTTP handler. Browser-opening for
+// OAuth flows is done by the orchestrator (see LoginModelserver /
+// LoginAgentserver in orchestrator_real.go), not the server, so there's
+// no openBrowser parameter here.
+func NewServer(o Orchestrator) http.Handler {
+	s := &server{o: o, sse: newSSEHub()}
 	mux := http.NewServeMux()
 	// Static
 	staticFS, _ := fs.Sub(assetsFS, "assets")
@@ -30,6 +34,7 @@ func NewServer(o Orchestrator, openBrowser func(url string)) http.Handler {
 	mux.HandleFunc("/api/step/vscode_configure", s.handleVSCodeConfigure)
 	mux.HandleFunc("/api/finalize", s.handleFinalize)
 	mux.HandleFunc("/api/abort", s.handleAbort)
+	mux.HandleFunc("/api/launch-vscode", s.handleLaunchVSCode)
 
 	// SSE
 	mux.HandleFunc("/api/events", s.sse.handle)
@@ -37,9 +42,8 @@ func NewServer(o Orchestrator, openBrowser func(url string)) http.Handler {
 }
 
 type server struct {
-	o           Orchestrator
-	openBrowser func(string)
-	sse         *sseHub
+	o   Orchestrator
+	sse *sseHub
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -62,11 +66,12 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleMSLogin(w http.ResponseWriter, r *http.Request) {
-	if err := s.o.LoginModelserver(r.Context()); err != nil {
+	oauthURL, err := s.o.LoginModelserver(r.Context())
+	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, map[string]string{"state": "started"})
+	writeJSON(w, 200, map[string]string{"state": "started", "oauth_url": oauthURL})
 }
 
 func (s *server) handleMSStatus(w http.ResponseWriter, r *http.Request) {
@@ -81,15 +86,15 @@ func (s *server) handleMSStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleASLogin(w http.ResponseWriter, r *http.Request) {
-	ch, err := s.o.LoginAgentserver(r.Context())
+	oauthURL, err := s.o.LoginAgentserver(r.Context())
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	if s.openBrowser != nil && ch.VerificationURIComplete != "" {
-		go s.openBrowser(ch.VerificationURIComplete)
-	}
-	writeJSON(w, 200, ch)
+	// Note: browser opening is now the orchestrator's responsibility
+	// (LoginAgentserver does `go r.d.OpenBrowser(url)`). The server no
+	// longer opens it here. This unifies behavior with handleMSLogin.
+	writeJSON(w, 200, map[string]string{"state": "started", "oauth_url": oauthURL})
 }
 
 func (s *server) handleASStatus(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +137,14 @@ func (s *server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	_ = s.o.Abort(r.Context())
 	writeJSON(w, 200, map[string]string{"state": "aborted"})
+}
+
+func (s *server) handleLaunchVSCode(w http.ResponseWriter, r *http.Request) {
+	if err := s.o.LaunchAndShutdown(r.Context()); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"state": "launching"})
 }
 
 // ----------- SSE hub -----------

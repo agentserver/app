@@ -50,7 +50,7 @@ func TestIdempotentWorkspace(t *testing.T) {
 			ClientID: "test"},
 		OpenBrowser: func(url string) { _, _ = http.Get(url) },
 	}
-	srv := httptest.NewServer(ui.NewServer(ui.NewRealOrchestrator(deps), nil))
+	srv := httptest.NewServer(ui.NewServer(ui.NewRealOrchestrator(deps)))
 	defer srv.Close()
 
 	// Run AS login twice

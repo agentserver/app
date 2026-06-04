@@ -51,7 +51,7 @@ func TestResumeAfterRestart(t *testing.T) {
 				ClientID: "test"},
 			OpenBrowser: func(url string) { _, _ = http.Get(url) },
 		}
-		return httptest.NewServer(ui.NewServer(ui.NewRealOrchestrator(deps), nil))
+		return httptest.NewServer(ui.NewServer(ui.NewRealOrchestrator(deps)))
 	}
 
 	srv := mkServer()

@@ -7,7 +7,6 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
-	"github.com/agentserver/agentserver-pkg/internal/oauth"
 )
 
 // Orchestrator is the side-effecting backend driven by the SPA.
@@ -15,10 +14,16 @@ import (
 type Orchestrator interface {
 	State(ctx context.Context) (SanitizedState, error)
 
-	LoginModelserver(ctx context.Context) error
+	// LoginModelserver kicks off PKCE: reserves a callback port, opens browser
+	// to the OAuth URL, starts the listener. Returns the URL so the front-end
+	// can also render a "browser didn't open?" fallback link.
+	LoginModelserver(ctx context.Context) (oauthURL string, err error)
 	PollModelserverLogin(ctx context.Context) (modelserver.APIKey, error)
 
-	LoginAgentserver(ctx context.Context) (oauth.DeviceCodeChallenge, error)
+	// LoginAgentserver kicks off device flow: requests a device_code, opens
+	// browser to the verification URL, stores the in-flight challenge.
+	// Returns the verification_uri_complete URL (already contains user_code).
+	LoginAgentserver(ctx context.Context) (oauthURL string, err error)
 	PollAgentserverLogin(ctx context.Context) (agentserver.WorkspaceAPIKey, error)
 
 	EnsureVSCode(ctx context.Context, progress chan<- ProgressEvent) error
@@ -26,6 +31,16 @@ type Orchestrator interface {
 
 	Finalize(ctx context.Context) error
 	Abort(ctx context.Context) error
+
+	// LaunchAndShutdown spawns VS Code (via the configured Code executable)
+	// and asks the launcher to gracefully shut down its onboarding HTTP
+	// server. The shutdown is async (after a short delay so the HTTP
+	// response can flush). Returns once VS Code is spawned, not when it
+	// exits. If no shutdown hook is registered with the implementation,
+	// this is just a VS Code launch. The ctx is reserved for interface
+	// uniformity; the current implementation does not observe cancellation
+	// because cmd.Start returns essentially instantly.
+	LaunchAndShutdown(ctx context.Context) error
 }
 
 // SanitizedState is the read view sent to the browser — never contains secrets.
@@ -59,12 +74,14 @@ func NewNoopOrchestrator() Orchestrator { return noopOrchestrator{} }
 func (noopOrchestrator) State(context.Context) (SanitizedState, error) {
 	return SanitizedState{}, nil
 }
-func (noopOrchestrator) LoginModelserver(context.Context) error { return nil }
+func (noopOrchestrator) LoginModelserver(context.Context) (string, error) {
+	return "https://example.invalid/oauth/test", nil
+}
 func (noopOrchestrator) PollModelserverLogin(context.Context) (modelserver.APIKey, error) {
 	return modelserver.APIKey{}, nil
 }
-func (noopOrchestrator) LoginAgentserver(context.Context) (oauth.DeviceCodeChallenge, error) {
-	return oauth.DeviceCodeChallenge{UserCode: "TEST"}, nil
+func (noopOrchestrator) LoginAgentserver(context.Context) (string, error) {
+	return "https://example.invalid/oauth/test?user_code=TEST", nil
 }
 func (noopOrchestrator) PollAgentserverLogin(context.Context) (agentserver.WorkspaceAPIKey, error) {
 	return agentserver.WorkspaceAPIKey{}, nil
@@ -73,3 +90,4 @@ func (noopOrchestrator) EnsureVSCode(context.Context, chan<- ProgressEvent) erro
 func (noopOrchestrator) ConfigureVSCode(context.Context) error                    { return nil }
 func (noopOrchestrator) Finalize(context.Context) error                           { return nil }
 func (noopOrchestrator) Abort(context.Context) error                              { return nil }
+func (noopOrchestrator) LaunchAndShutdown(context.Context) error                  { return nil }

@@ -111,9 +111,8 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		IconPath:          joinExe(installDir, "icon.ico"),
 	}
 
-	openBrowser := func(url string) { _ = browser.Open(url) }
 	orch := ui.NewRealOrchestrator(deps)
-	handler := ui.NewServer(orch, openBrowser)
+	handler := ui.NewServer(orch)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err

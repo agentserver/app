@@ -15,7 +15,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:0", "bind address; 0 = random port")
 	flag.Parse()
 
-	handler := ui.NewServer(ui.NewNoopOrchestrator(), nil)
+	handler := ui.NewServer(ui.NewNoopOrchestrator())
 	ln, err := newListener(*addr)
 	if err != nil {
 		log.Fatalf("listen %s: %v", *addr, err)
