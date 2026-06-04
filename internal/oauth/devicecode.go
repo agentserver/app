@@ -78,6 +78,16 @@ func PollToken(ctx context.Context, cfg Config, ch DeviceCodeChallenge) (Token, 
 			return Token{}, errors.New("user denied authorization")
 		case "expired_token":
 			return Token{}, errors.New("device code expired")
+		case "invalid_grant":
+			// agentserver's device-flow wrapper has a 3-step UX: (1) user
+			// verifies user_code in the standard Hydra confirm page, (2) user
+			// selects a workspace to join (extension on top of RFC 8628), only
+			// then is the device_code marked approved. Between steps 1 and 2,
+			// the token endpoint returns invalid_grant instead of the spec-
+			// mandated authorization_pending. Treat as pending so we keep
+			// polling until either the workspace is chosen (token succeeds)
+			// or the device_code expires (real error surfaces as expired_token
+			// or the deadline check above triggers).
 		default:
 			return Token{}, fmt.Errorf("oauth token error: %s", errCode)
 		}
