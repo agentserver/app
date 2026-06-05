@@ -47,10 +47,16 @@ func WriteSettings(path string, in SettingsInput) error {
 		"update.showReleaseNotes":            false,
 		"extensions.ignoreRecommendations":   true,
 
-		"agentserverVscode.panel.allowed":             []string{"terminal", "output"},
 		"agentserverVscode.startup.openFolderIfEmpty": true,
 		"agentserverVscode.terminal.respawnOnClose":   true,
 		"agentserverVscode.terminal.profileName":      "codex",
+		"agentserverVscode.panel.hideViews": []string{
+			"workbench.panel.repl",
+			"workbench.debug.console",
+			"workbench.panel.comments",
+			"ports",
+			"workbench.panel.testResults",
+		},
 
 		"terminal.integrated.defaultProfile.windows": "codex",
 		"terminal.integrated.profiles.windows": map[string]any{

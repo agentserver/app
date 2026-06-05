@@ -60,7 +60,7 @@ suite('package manifest', () => {
     const explorerMenu = menus && menus['explorer/context'] ? menus['explorer/context'] : [];
     const entry = explorerMenu.find(m => m.command === 'agentserverVscode.openWithSystem');
     assert.ok(entry, 'missing explorer/context menu entry for open-with-system');
-    assert.strictEqual(entry.when, 'resourceScheme == file');
+    assert.strictEqual(entry.when, 'resourceScheme == file && !explorerResourceIsFolder');
   });
 
   test('contributes hidden advanced interface command', () => {

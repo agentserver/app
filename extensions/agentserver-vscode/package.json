@@ -89,7 +89,7 @@
       "explorer/context": [
         {
           "command": "agentserverVscode.openWithSystem",
-          "when": "resourceScheme == file",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
           "group": "navigation@90"
         }
       ]

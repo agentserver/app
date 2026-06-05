@@ -101,6 +101,29 @@ func TestWriteSettings_MinimalModeDefaults(t *testing.T) {
 			t.Errorf("%s=%v, want %v", key, got, expected)
 		}
 	}
+
+	hideViews, ok := m["agentserverVscode.panel.hideViews"].([]any)
+	if !ok {
+		t.Fatalf("agentserverVscode.panel.hideViews=%T, want array", m["agentserverVscode.panel.hideViews"])
+	}
+	wantHideViews := []string{
+		"workbench.panel.repl",
+		"workbench.debug.console",
+		"workbench.panel.comments",
+		"ports",
+		"workbench.panel.testResults",
+	}
+	if len(hideViews) != len(wantHideViews) {
+		t.Fatalf("agentserverVscode.panel.hideViews len=%d, want %d", len(hideViews), len(wantHideViews))
+	}
+	for i, expected := range wantHideViews {
+		if hideViews[i] != expected {
+			t.Errorf("agentserverVscode.panel.hideViews[%d]=%v, want %v", i, hideViews[i], expected)
+		}
+	}
+	if _, ok := m["agentserverVscode.panel.allowed"]; ok {
+		t.Errorf("agentserverVscode.panel.allowed should not be written")
+	}
 }
 
 func TestWriteSettings_OverwritesManagedMinimalModeKeys(t *testing.T) {
