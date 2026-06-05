@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { readConfig } from './config';
 import { maybePromptOpenFolder } from './folderPicker';
-import { attachTerminalRespawn, hasTerminalNamed, openCodexTerminal } from './terminal';
+import { attachTerminalRespawn, openCodexTerminal, revealTerminalNamed, startupTerminalOptions } from './terminal';
 import { lockPanelToTerminal } from './panel';
 import { registerOpenWithSystem } from './systemOpen';
 import { registerAdvancedInterface } from './advanced';
@@ -23,8 +23,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerOpenWithSystem(ctx);
 
   // 4. Ensure a codex terminal exists
-  if (!hasTerminalNamed(vscode.window.terminals, cfg.terminalProfileName)) {
-    await openCodexTerminal(cfg.terminalProfileName, { reveal: false });
+  if (!revealTerminalNamed(vscode.window.terminals, cfg.terminalProfileName, startupTerminalOptions)) {
+    await openCodexTerminal(cfg.terminalProfileName, startupTerminalOptions);
   }
   await hideMinimalChrome();
 

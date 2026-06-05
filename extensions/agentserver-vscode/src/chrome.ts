@@ -3,7 +3,6 @@ import * as vscode from 'vscode';
 export type CommandExecutor = (command: string, ...args: unknown[]) => Thenable<unknown> | unknown;
 
 export const minimalChromeCommands: string[] = [
-  'workbench.action.closePanel',
   'workbench.action.closeAuxiliaryBar',
 ];
 

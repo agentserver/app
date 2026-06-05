@@ -8,7 +8,13 @@ export interface OpenTerminalOptions {
   preserveFocus?: boolean;
 }
 
+export const startupTerminalOptions: OpenTerminalOptions = {
+  reveal: true,
+  preserveFocus: true,
+};
+
 interface TerminalLike {
+  name?: string;
   show(preserveFocus?: boolean): void;
 }
 
@@ -18,6 +24,19 @@ interface TerminalWindowLike {
 
 export function hasTerminalNamed(terminals: readonly Pick<vscode.Terminal, 'name'>[], name: string): boolean {
   return terminals.some(t => t.name === name);
+}
+
+export function revealTerminalNamed(
+  terminals: readonly TerminalLike[],
+  name: string,
+  options: OpenTerminalOptions = {},
+): boolean {
+  const term = terminals.find(t => t.name === name);
+  if (!term) return false;
+  if (options.reveal) {
+    term.show(options.preserveFocus ?? false);
+  }
+  return true;
 }
 
 export async function openCodexTerminalWithWindow(

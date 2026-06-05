@@ -59,6 +59,8 @@ func WriteSettings(path string, in SettingsInput) error {
 		"agentserverVscode.terminal.respawnOnClose":   true,
 		"agentserverVscode.terminal.profileName":      "codex",
 		"agentserverVscode.panel.hideViews": []string{
+			"workbench.panel.markers",
+			"workbench.panel.output",
 			"workbench.panel.repl",
 			"workbench.debug.console",
 			"workbench.panel.comments",

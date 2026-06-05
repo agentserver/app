@@ -51,6 +51,8 @@
         "agentserverVscode.panel.hideViews": {
           "type": "array",
           "default": [
+            "workbench.panel.markers",
+            "workbench.panel.output",
             "workbench.panel.repl",
             "workbench.debug.console",
             "workbench.panel.comments",

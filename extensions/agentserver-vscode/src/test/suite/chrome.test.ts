@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { hideMinimalChrome, minimalChromeCommands, minimalViewContextIds } from '../../chrome';
 
 suite('minimal chrome helpers', () => {
-  test('closes noisy panel surfaces on startup', async () => {
+  test('does not close the bottom panel on startup', async () => {
     const calls: Array<{ command: string; args: unknown[] }> = [];
 
     await hideMinimalChrome(async (command: string, ...args: unknown[]) => {
@@ -10,8 +10,8 @@ suite('minimal chrome helpers', () => {
     });
 
     assert.ok(
-      calls.some(c => c.command === 'workbench.action.closePanel'),
-      'expected startup cleanup to close the bottom panel',
+      !calls.some(c => c.command === 'workbench.action.closePanel'),
+      'startup cleanup should keep the terminal panel visible',
     );
     assert.ok(
       calls.some(c => c.command === 'workbench.action.closeAuxiliaryBar'),
@@ -37,7 +37,6 @@ suite('minimal chrome helpers', () => {
 
   test('documents startup cleanup command order', () => {
     assert.deepStrictEqual(minimalChromeCommands, [
-      'workbench.action.closePanel',
       'workbench.action.closeAuxiliaryBar',
     ]);
   });
