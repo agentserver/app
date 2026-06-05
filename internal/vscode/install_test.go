@@ -176,6 +176,22 @@ func TestWindowsInstallScriptAvoidsUnsupportedLiteralPathNewItem(t *testing.T) {
 	}
 }
 
+func TestWindowsInstallScriptRefreshesExplorerIconCache(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"Refresh-ShellIconCache",
+		"SHChangeNotify",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install.ps1 should refresh Explorer icon cache; missing %q", want)
+		}
+	}
+}
+
 func TestWindowsIconIncludesExpectedSizes(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/icon.ico")
 	if err != nil {

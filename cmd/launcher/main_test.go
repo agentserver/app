@@ -37,3 +37,18 @@ func TestExecVSCodeEnsuresCodexConfigBeforeLaunch(t *testing.T) {
 		}
 	}
 }
+
+func TestPreferredIconPathUsesCacheBustingIconWhenPresent(t *testing.T) {
+	dir := t.TempDir()
+	versioned := filepath.Join(dir, "icon-abc123.ico")
+	if err := os.WriteFile(filepath.Join(dir, "icon.ico"), []byte("base"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(versioned, []byte("versioned"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := preferredIconPath(dir); got != versioned {
+		t.Fatalf("preferredIconPath() = %q, want %q", got, versioned)
+	}
+}

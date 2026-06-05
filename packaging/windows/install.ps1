@@ -46,6 +46,31 @@ function Write-Step($msg) {
     Write-Host "==> $msg" -ForegroundColor Cyan
 }
 
+function Refresh-ShellIconCache {
+    try {
+        $signature = @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class ShellIconCacheNotify {
+    [DllImport("shell32.dll")]
+    public static extern void SHChangeNotify(int wEventId, uint uFlags, IntPtr dwItem1, IntPtr dwItem2);
+}
+'@
+        if (-not ("ShellIconCacheNotify" -as [type])) {
+            Add-Type -TypeDefinition $signature
+        }
+        # SHCNE_ASSOCCHANGED tells Explorer to drop stale icon associations.
+        [ShellIconCacheNotify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
+        $ie4uinit = Join-Path $env:WINDIR 'System32\ie4uinit.exe'
+        if (Test-Path $ie4uinit) {
+            & $ie4uinit -show 2>$null
+        }
+    } catch {
+        # Best-effort only; the shortcut still points at a cache-busted icon path.
+    }
+}
+
 function Set-RegistryStringValue([string]$SubKey, [string]$Name, [string]$Value) {
     $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($SubKey)
     if (-not $key) {
@@ -147,6 +172,20 @@ foreach ($f in $required) {
 }
 Write-Step "Copied $($required.Count) files."
 
+$IconPath = Join-Path $InstallDir 'icon.ico'
+$ShellIconPath = $IconPath
+try {
+    $iconHash = (Get-FileHash -Algorithm SHA256 $IconPath).Hash.Substring(0, 12).ToLowerInvariant()
+    $ShellIconPath = Join-Path $InstallDir "icon-$iconHash.ico"
+    Copy-Item $IconPath $ShellIconPath -Force
+    Get-ChildItem -Path $InstallDir -Filter 'icon-*.ico' -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -ne $ShellIconPath } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+} catch {
+    Write-Host "Note: failed to create cache-busting icon path; using icon.ico."
+    $ShellIconPath = $IconPath
+}
+
 # Bundled codex.exe — copy into the expected per-user bin dir so
 # ConfigureVSCode finds it and skips the 246MB GitHub download.
 $codexSrc = Join-Path $srcDir 'codex.exe'
@@ -174,7 +213,7 @@ Write-Step "Creating desktop shortcut..."
 $wsh = New-Object -ComObject WScript.Shell
 $shortcut = $wsh.CreateShortcut($DesktopLnk)
 $shortcut.TargetPath       = Join-Path $InstallDir 'launcher.exe'
-$shortcut.IconLocation     = (Join-Path $InstallDir 'icon.ico') + ',0'
+$shortcut.IconLocation     = $ShellIconPath + ',0'
 $shortcut.WorkingDirectory = $env:USERPROFILE
 $shortcut.Description      = '星池指挥官 (VS Code + codex 一键启动)'
 $shortcut.Save()
@@ -189,7 +228,7 @@ foreach ($entry in @(
     @{ Key = $RegSubKeyBg;   Arg = '%V' }
 )) {
     Set-RegistryStringValue $entry.Key '' '用 星池指挥官 打开'
-    Set-RegistryStringValue $entry.Key 'Icon' (Join-Path $InstallDir 'icon.ico')
+    Set-RegistryStringValue $entry.Key 'Icon' $ShellIconPath
     $cmdKey = "$($entry.Key)\command"
     Set-RegistryStringValue $cmdKey '' "`"$handlerExe`" `"$($entry.Arg)`""
 }
@@ -203,12 +242,13 @@ Set-ItemProperty -Path $UninstallKey -Name 'DisplayVersion'  -Value $Version
 Set-ItemProperty -Path $UninstallKey -Name 'Publisher'       -Value 'agentserver'
 Set-ItemProperty -Path $UninstallKey -Name 'InstallLocation' -Value $InstallDir
 Set-ItemProperty -Path $UninstallKey -Name 'UninstallString' -Value $uninstallCmd
-Set-ItemProperty -Path $UninstallKey -Name 'DisplayIcon'     -Value (Join-Path $InstallDir 'icon.ico')
+Set-ItemProperty -Path $UninstallKey -Name 'DisplayIcon'     -Value $ShellIconPath
 Set-ItemProperty -Path $UninstallKey -Name 'NoModify'        -Value 1 -Type DWord
 Set-ItemProperty -Path $UninstallKey -Name 'NoRepair'        -Value 1 -Type DWord
 
 # Copy ourselves into install dir so uninstall works
 Copy-Item $MyInvocation.MyCommand.Path (Join-Path $InstallDir 'install.ps1') -Force
+Refresh-ShellIconCache
 
 Write-Host ""
 Write-Host "Install complete." -ForegroundColor Green

@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
@@ -106,7 +108,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		LauncherExePath:       joinExe(installDir, "launcher.exe"),
 		OpenFolderExePath:     joinExe(installDir, "open-folder.exe"),
 		TokenRefresherExePath: joinExe(installDir, "token-refresher.exe"),
-		IconPath:              joinExe(installDir, "icon.ico"),
+		IconPath:              preferredIconPath(installDir),
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -173,4 +175,13 @@ func joinExe(dir, name string) string {
 		return name
 	}
 	return dir + string(os.PathSeparator) + name
+}
+
+func preferredIconPath(installDir string) string {
+	matches, err := filepath.Glob(filepath.Join(installDir, "icon-*.ico"))
+	if err == nil && len(matches) > 0 {
+		sort.Strings(matches)
+		return matches[len(matches)-1]
+	}
+	return joinExe(installDir, "icon.ico")
 }
