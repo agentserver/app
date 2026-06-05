@@ -1,7 +1,7 @@
 {
   "name": "agentserver-vscode",
   "displayName": "星池指挥官",
-  "description": "星池指挥官 integration: codex terminal + folder picker + panel pruning",
+  "description": "让 VS Code 作为星池指挥官的简洁文件夹和会话界面",
   "publisher": "agentserver",
   "version": "0.1.0",
   "engines": {
@@ -36,40 +36,66 @@
         "agentserverVscode.startup.openFolderIfEmpty": {
           "type": "boolean",
           "default": true,
-          "description": "If true, prompt to pick a folder when starting without a workspace."
+          "description": "启动时如果还没有打开文件夹，就提示用户选择一个文件夹。"
         },
         "agentserverVscode.terminal.respawnOnClose": {
           "type": "boolean",
           "default": true,
-          "description": "If true, reopen the codex terminal when closed."
+          "description": "关闭会话后自动创建新的会话。"
         },
         "agentserverVscode.terminal.profileName": {
           "type": "string",
           "default": "codex",
-          "description": "Name of the terminal profile to use."
+          "description": "用于后台会话的内部配置名称。"
         },
         "agentserverVscode.panel.hideViews": {
           "type": "array",
           "default": [
-            "workbench.panel.repl",
-            "workbench.debug.console",
+            "workbench.panel.markers.view",
+            "workbench.panel.output",
+            "workbench.panel.repl.view",
             "workbench.panel.comments",
-            "ports",
-            "workbench.panel.testResults"
+            "~remote.forwardedPorts",
+            "workbench.panel.testResults",
+            "outline",
+            "timeline"
           ],
-          "description": "Panel view IDs to keep focus away from."
+          "description": "高级设置：需要隐藏的 VS Code 内部视图。"
         }
       }
     },
     "commands": [
       {
         "command": "agentserverVscode.doctor",
-        "title": "星池指挥官: 诊断"
+        "title": "星池指挥官: 诊断工具"
       },
       {
         "command": "agentserverVscode.reopenCodexTerminal",
-        "title": "星池指挥官: 重开 codex 终端"
+        "title": "星池指挥官: 创建新的会话"
+      },
+      {
+        "command": "agentserverVscode.openWithSystem",
+        "title": "用系统应用打开"
+      },
+      {
+        "command": "agentserverVscode.showAdvancedInterface",
+        "title": "星池指挥官: 显示高级界面"
       }
-    ]
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "agentserverVscode.showAdvancedInterface",
+          "when": "false"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "agentserverVscode.openWithSystem",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "navigation@90"
+        }
+      ]
+    }
   }
 }

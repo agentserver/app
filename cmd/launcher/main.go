@@ -20,6 +20,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/browser"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/launchprep"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
@@ -53,8 +54,9 @@ func run() error {
 	if s.Onboarding.Status == state.StatusComplete && s.VSCode.Path != "" {
 		// Just exec VS Code with our user-data-dir (empty workspace).
 		exe, _ := os.Executable()
-		return execVSCode(s.VSCode.Path, p, "", secrets.New(p.SecretsFile),
-			joinExe(osDir(exe), "token-refresher.exe"))
+		installDir := osDir(exe)
+		return launchCompletedInstall(context.Background(), s.VSCode.Path, p, secrets.New(p.SecretsFile),
+			joinExe(installDir, "token-refresher.exe"), joinExe(installDir, "agentserver-vscode.vsix"))
 	}
 
 	// Otherwise: serve onboarding UI.
@@ -105,6 +107,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		VSCodeExtDir:          p.VSCodeExtDir,
 		EmbeddedVSIXPath:      joinExe(installDir, "agentserver-vscode.vsix"),
 		CodexAbsPath:          p.CodexExePath,
+		BundledCodexPath:      joinExe(installDir, "codex.exe"),
 		LauncherExePath:       joinExe(installDir, "launcher.exe"),
 		OpenFolderExePath:     joinExe(installDir, "open-folder.exe"),
 		TokenRefresherExePath: joinExe(installDir, "token-refresher.exe"),
@@ -139,6 +142,17 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		return nil // clean shutdown via LaunchAndShutdown
 	}
 	return err
+}
+
+func launchCompletedInstall(ctx context.Context, codeExe string, p paths.Paths, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string) error {
+	if err := launchprep.PrepareVSCode(ctx, launchprep.Input{
+		CodeExe:          codeExe,
+		Paths:            p,
+		EmbeddedVSIXPath: embeddedVSIXPath,
+	}); err != nil {
+		return err
+	}
+	return execVSCode(codeExe, p, "", sec, tokenRefresherExe)
 }
 
 func execVSCode(codeExe string, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string) error {

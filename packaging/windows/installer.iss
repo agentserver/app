@@ -31,7 +31,7 @@ ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
 
 [Languages]
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -44,6 +44,11 @@ Source: "..\..\dist\windows\agentctl.exe";          DestDir: "{app}"; Flags: ign
 Source: "..\..\dist\windows\open-folder.exe";       DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\uninstall.exe";         DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\token-refresher.exe";   DestDir: "{app}"; Flags: ignoreversion
+; Bundled offline payloads
+Source: "..\..\dist\cache\rust-v0.136.0\codex-x86_64-pc-windows-msvc.exe"; \
+    DestDir: "{app}"; DestName: "codex.exe"; Flags: ignoreversion
+Source: "..\..\dist\cache\vscode\1.96.0\VSCodeUserSetup-x64-1.96.0.exe"; \
+    DestDir: "{app}"; DestName: "vscode-installer.exe"; Flags: ignoreversion
 ; Bundled VS Code extension
 Source: "..\..\extensions\agentserver-vscode\agentserver-vscode-0.1.0.vsix"; \
     DestDir: "{app}"; DestName: "agentserver-vscode.vsix"; Flags: ignoreversion
@@ -57,7 +62,7 @@ Source: "ensure-vscode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vscode-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{commondesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; \
+Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; \
       IconFilename: "{app}\icon.ico"; Tasks: desktopicon
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; \
       IconFilename: "{app}\icon.ico"

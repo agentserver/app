@@ -9,6 +9,9 @@ func LaunchArgs(userDataDir, extensionsDir string, folders ...string) []string {
 		"--locale", Locale,
 		"--user-data-dir", userDataDir,
 		"--extensions-dir", extensionsDir,
+		"--disable-updates",
+		"--disable-extension", "GitHub.copilot",
+		"--disable-extension", "GitHub.copilot-chat",
 	}
 	for _, folder := range folders {
 		if folder != "" {

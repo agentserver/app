@@ -3,13 +3,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 
-	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/launchprep"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -32,24 +33,40 @@ func main() {
 		log.Fatal(err)
 	}
 	if s.VSCode.Path == "" {
-		log.Fatalf("VS Code path unknown — has onboarding run?")
+		log.Fatalf("VS Code path unknown - has onboarding run?")
 	}
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
-		log.Fatal(err)
-	}
+	tokenRefresherExe := ""
+	embeddedVSIXPath := ""
 	if exe, err := os.Executable(); err == nil {
-		_ = tokenrefresh.StartDaemon(filepath.Join(filepath.Dir(exe), "token-refresher.exe"))
+		installDir := filepath.Dir(exe)
+		tokenRefresherExe = filepath.Join(installDir, "token-refresher.exe")
+		embeddedVSIXPath = filepath.Join(installDir, "agentserver-vscode.vsix")
 	}
-
-	cmd := exec.Command(s.VSCode.Path, vscode.LaunchArgs(p.VSCodeUserDataDir, p.VSCodeExtDir, folder)...)
-	sec := secrets.New(p.SecretsFile)
-	if apiKey, err := sec.Get("modelserver_api_key"); err == nil {
-		cmd.Env = vscode.UpsertEnv(os.Environ(), "OPENAI_API_KEY", apiKey)
-	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
+	if err := openFolder(context.Background(), s.VSCode.Path, p, folder, secrets.New(p.SecretsFile), tokenRefresherExe, embeddedVSIXPath); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("opened %s\n", folder)
+}
+
+func openFolder(ctx context.Context, codeExe string, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string) error {
+	if err := launchprep.PrepareVSCode(ctx, launchprep.Input{
+		CodeExe:          codeExe,
+		Paths:            p,
+		EmbeddedVSIXPath: embeddedVSIXPath,
+	}); err != nil {
+		return err
+	}
+	if tokenRefresherExe != "" {
+		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
+	}
+
+	cmd := exec.Command(codeExe, vscode.LaunchArgs(p.VSCodeUserDataDir, p.VSCodeExtDir, folder)...)
+	if sec != nil {
+		if apiKey, err := sec.Get("modelserver_api_key"); err == nil {
+			cmd.Env = vscode.UpsertEnv(os.Environ(), "OPENAI_API_KEY", apiKey)
+		}
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Start()
 }

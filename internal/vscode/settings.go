@@ -11,6 +11,10 @@ type SettingsInput struct {
 	CodexAbsPath string // absolute path to codex.exe
 }
 
+var retiredManagedKeys = []string{
+	"agentserverVscode.panel.allowed",
+}
+
 // WriteSettings merges agentserver-vscode defaults into path. Existing
 // user keys not managed by us are preserved.
 func WriteSettings(path string, in SettingsInput) error {
@@ -27,19 +31,62 @@ func WriteSettings(path string, in SettingsInput) error {
 		}
 	}
 	overrides := map[string]any{
-		"locale":                             "zh-cn",
-		"telemetry.telemetryLevel":           "off",
-		"workbench.editor.languageDetection": false,
-		"workbench.startupEditor":            "none",
-		"workbench.activityBar.location":     "hidden",
-		"workbench.statusBar.visible":        true,
-		"workbench.panel.defaultLocation":    "bottom",
-		"workbench.panel.opensMaximized":     "always",
+		"locale":                                   "zh-cn",
+		"telemetry.telemetryLevel":                 "off",
+		"workbench.editor.languageDetection":       false,
+		"workbench.startupEditor":                  "none",
+		"workbench.activityBar.location":           "hidden",
+		"workbench.statusBar.visible":              false,
+		"workbench.panel.defaultLocation":          "bottom",
+		"workbench.panel.opensMaximized":           "never",
+		"workbench.panel.showLabels":               false,
+		"workbench.view.alwaysShowHeaderActions":   false,
+		"window.menuBarVisibility":                 "hidden",
+		"window.commandCenter":                     false,
+		"workbench.layoutControl.enabled":          false,
+		"breadcrumbs.enabled":                      false,
+		"editor.minimap.enabled":                   false,
+		"editor.stickyScroll.enabled":              false,
+		"workbench.editor.showTabs":                "single",
+		"workbench.editor.empty.hint":              "hidden",
+		"workbench.tips.enabled":                   false,
+		"update.mode":                              "none",
+		"update.enableWindowsBackgroundUpdates":    false,
+		"update.showReleaseNotes":                  false,
+		"update.showPostInstallInfo":               false,
+		"extensions.autoCheckUpdates":              false,
+		"extensions.autoUpdate":                    false,
+		"extensions.ignoreRecommendations":         true,
+		"explorer.openEditors.visible":             0,
+		"workbench.localHistory.enabled":           false,
+		"chat.disableAIFeatures":                   true,
+		"chat.agent.enabled":                       false,
+		"chat.agentHost.enabled":                   false,
+		"chat.agentsControl.enabled":               false,
+		"chat.agentSessionProjection.enabled":      false,
+		"chat.titleBar.openInAgentsWindow.enabled": false,
+		"chat.agentsHandoff.openInAgentsWindow":    false,
+		"github.copilot.enable": map[string]any{
+			"*": false,
+		},
+		"github.copilot.nextEditSuggestions.enabled":  false,
+		"github.copilot.chat.reviewSelection.enabled": false,
+		"github.copilot.chat.reviewAgent.enabled":     false,
+		"github.copilot.chat.claudeAgent.enabled":     false,
 
-		"agentserverVscode.panel.allowed":             []string{"terminal", "output"},
 		"agentserverVscode.startup.openFolderIfEmpty": true,
 		"agentserverVscode.terminal.respawnOnClose":   true,
 		"agentserverVscode.terminal.profileName":      "codex",
+		"agentserverVscode.panel.hideViews": []string{
+			"workbench.panel.markers.view",
+			"workbench.panel.output",
+			"workbench.panel.repl.view",
+			"workbench.panel.comments",
+			"~remote.forwardedPorts",
+			"workbench.panel.testResults",
+			"outline",
+			"timeline",
+		},
 
 		"terminal.integrated.defaultProfile.windows": "codex",
 		"terminal.integrated.profiles.windows": map[string]any{
@@ -51,6 +98,9 @@ func WriteSettings(path string, in SettingsInput) error {
 	}
 	for k, v := range overrides {
 		m[k] = v
+	}
+	for _, k := range retiredManagedKeys {
+		delete(m, k)
 	}
 	out, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

@@ -49,25 +49,15 @@ func TestWindowsE2E(t *testing.T) {
 		t.Fatalf("install: code=%d err=%v out=%s", code, err, out)
 	}
 
-	// 5. Assert: desktop .lnk exists, registry has shell hook.
-	out, _, _ = c.Pwsh(`Test-Path "$env:USERPROFILE\Desktop\agentserver-vscode.lnk"`)
-	if strings.TrimSpace(out) != "True" {
-		t.Errorf("desktop shortcut missing: %s", out)
-	}
-	out, _, _ = c.Pwsh(`Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\AgentserverVscode'`)
-	if strings.TrimSpace(out) != "True" {
-		t.Errorf("registry key missing: %s", out)
-	}
-
-	// 6. Launch launcher (in background — it serves onboarding-server).
+	// 5. Launch launcher (in background — it serves onboarding-server).
 	c.Pwsh(`Start-Process -FilePath "$env:LOCALAPPDATA\Programs\agentserver-vscode\launcher.exe"`)
 
-	// 7. Discover onboarding port from launcher's stdout? In v1 we hardcode
+	// 6. Discover onboarding port from launcher's stdout? In v1 we hardcode
 	//    a fixed port via env var. For now, look at netstat.
 	port := waitForOnboardingPort(t, c)
 	t.Logf("onboarding port: %s", port)
 
-	// 8. Open chromedriver session, complete MS+AS OAuth (test accounts).
+	// 7. Open chromedriver session, complete MS+AS OAuth (test accounts).
 	//    Assumes chromedriver.exe is on PATH on the Windows host.
 	wd, err := harness.NewWebDriver("http://127.0.0.1:9515")
 	if err != nil {
@@ -93,7 +83,7 @@ func TestWindowsE2E(t *testing.T) {
 	t.Fatal("onboarding did not complete within 5 minutes")
 
 verify:
-	// 9. Assertions
+	// 8. Assertions
 	out, _, _ = c.Pwsh(`Get-Content "$env:USERPROFILE\.codex\config.toml"`)
 	if !strings.Contains(out, `model_provider = "modelserver"`) {
 		t.Errorf("codex config wrong: %s", out)
@@ -102,13 +92,25 @@ verify:
 	if !strings.HasPrefix(strings.TrimSpace(out), "1.") {
 		t.Errorf("vs code missing: %s", out)
 	}
+	out, _, _ = c.Pwsh(`Test-Path "$env:USERPROFILE\Desktop\星池指挥官.lnk"`)
+	if strings.TrimSpace(out) != "True" {
+		t.Errorf("desktop shortcut missing: %s", out)
+	}
+	out, _, _ = c.Pwsh(`Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\AgentserverVscode'`)
+	if strings.TrimSpace(out) != "True" {
+		t.Errorf("registry key missing: %s", out)
+	}
+	out, _, _ = c.Pwsh(`(Get-Item 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\AgentserverVscode').GetValue('')`)
+	if strings.TrimSpace(out) != "用星池指挥官打开" {
+		t.Errorf("context menu label wrong: %s", out)
+	}
 
-	// 10. Right-click open simulation
+	// 9. Right-click open simulation
 	c.Pwsh(`New-Item -ItemType Directory -Force "C:\tmp\e2e-test"`)
 	c.Pwsh(`& "$env:LOCALAPPDATA\Programs\agentserver-vscode\open-folder.exe" "C:\tmp\e2e-test"`)
 	time.Sleep(3 * time.Second)
 
-	// 11. Cleanup
+	// 10. Cleanup
 	c.Pwsh(`& "$env:LOCALAPPDATA\Programs\agentserver-vscode\agentctl.exe" uninstall --silent`)
 	c.Pwsh(`Remove-Item -Recurse -Force "C:\tmp\e2e-test"`)
 }
