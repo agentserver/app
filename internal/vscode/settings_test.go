@@ -82,19 +82,23 @@ func TestWriteSettings_MinimalModeDefaults(t *testing.T) {
 	}
 	m := readSettingsMap(t, path)
 	want := map[string]any{
-		"workbench.statusBar.visible":      false,
-		"workbench.panel.opensMaximized":   "never",
-		"window.menuBarVisibility":         "hidden",
-		"window.commandCenter":             false,
-		"workbench.layoutControl.enabled":  false,
-		"breadcrumbs.enabled":              false,
-		"editor.minimap.enabled":           false,
-		"editor.stickyScroll.enabled":      false,
-		"workbench.editor.showTabs":        "single",
-		"workbench.editor.empty.hint":      "hidden",
-		"workbench.tips.enabled":           false,
-		"update.showReleaseNotes":          false,
-		"extensions.ignoreRecommendations": true,
+		"workbench.statusBar.visible":            false,
+		"workbench.panel.opensMaximized":         "never",
+		"workbench.panel.showLabels":             false,
+		"window.menuBarVisibility":               "hidden",
+		"window.commandCenter":                   false,
+		"workbench.layoutControl.enabled":        false,
+		"workbench.view.alwaysShowHeaderActions": false,
+		"breadcrumbs.enabled":                    false,
+		"editor.minimap.enabled":                 false,
+		"editor.stickyScroll.enabled":            false,
+		"workbench.editor.showTabs":              "single",
+		"workbench.editor.empty.hint":            "hidden",
+		"workbench.tips.enabled":                 false,
+		"update.showReleaseNotes":                false,
+		"extensions.ignoreRecommendations":       true,
+		"explorer.openEditors.visible":           float64(0),
+		"workbench.localHistory.enabled":         false,
 	}
 	for key, expected := range want {
 		if got := m[key]; got != expected {
@@ -112,6 +116,8 @@ func TestWriteSettings_MinimalModeDefaults(t *testing.T) {
 		"workbench.panel.comments",
 		"ports",
 		"workbench.panel.testResults",
+		"outline",
+		"timeline",
 	}
 	if len(hideViews) != len(wantHideViews) {
 		t.Fatalf("agentserverVscode.panel.hideViews len=%d, want %d", len(hideViews), len(wantHideViews))

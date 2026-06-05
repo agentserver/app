@@ -1,4 +1,63 @@
+import { execFile } from 'child_process';
 import * as vscode from 'vscode';
+
+export interface SystemOpenCommandSpec {
+  command: string;
+  args: string[];
+  options: { windowsHide?: boolean };
+}
+
+export type SystemOpenExecFile = (
+  command: string,
+  args: string[],
+  options: { windowsHide?: boolean },
+  callback: (error: Error | null) => void,
+) => unknown;
+
+const defaultExecFile: SystemOpenExecFile = (command, args, options, callback) => {
+  execFile(command, args, options, error => callback(error));
+};
+
+export function buildSystemOpenCommand(
+  fsPath: string,
+  platform: NodeJS.Platform | string = process.platform,
+): SystemOpenCommandSpec {
+  if (platform === 'win32') {
+    return {
+      command: 'powershell.exe',
+      args: [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        'Start-Process -LiteralPath $args[0]',
+        fsPath,
+      ],
+      options: { windowsHide: true },
+    };
+  }
+  if (platform === 'darwin') {
+    return { command: 'open', args: [fsPath], options: {} };
+  }
+  return { command: 'xdg-open', args: [fsPath], options: {} };
+}
+
+export function openPathWithSystemApplication(
+  fsPath: string,
+  platform: NodeJS.Platform | string = process.platform,
+  execFileFn: SystemOpenExecFile = defaultExecFile,
+): Promise<void> {
+  const spec = buildSystemOpenCommand(fsPath, platform);
+  return new Promise((resolve, reject) => {
+    execFileFn(spec.command, spec.args, spec.options, error => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
 
 export function registerOpenWithSystem(ctx: vscode.ExtensionContext): void {
   ctx.subscriptions.push(
@@ -9,13 +68,10 @@ export function registerOpenWithSystem(ctx: vscode.ExtensionContext): void {
         return;
       }
       try {
-        const ok = await vscode.env.openExternal(target);
-        if (!ok) {
-          await vscode.window.showErrorMessage(`无法用系统应用打开：${target.fsPath}`);
-        }
+        await openPathWithSystemApplication(target.fsPath);
       } catch (e) {
         const detail = e instanceof Error ? e.message : String(e);
-        await vscode.window.showErrorMessage(`无法用系统应用打开：${target.fsPath}。${detail}`);
+        await vscode.window.showErrorMessage(`打开外部程序时出错：${target.fsPath}。${detail}`);
       }
     }),
   );

@@ -5,6 +5,7 @@ import { attachTerminalRespawn, hasTerminalNamed, openCodexTerminal } from './te
 import { lockPanelToTerminal } from './panel';
 import { registerOpenWithSystem } from './systemOpen';
 import { registerAdvancedInterface } from './advanced';
+import { hideMinimalChrome } from './chrome';
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const cfg = readConfig();
@@ -23,8 +24,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
   // 4. Ensure a codex terminal exists
   if (!hasTerminalNamed(vscode.window.terminals, cfg.terminalProfileName)) {
-    await openCodexTerminal(cfg.terminalProfileName, true);
+    await openCodexTerminal(cfg.terminalProfileName, { reveal: false });
   }
+  await hideMinimalChrome();
 
   // 5. Respawn on close
   attachTerminalRespawn(ctx, cfg.terminalProfileName,
@@ -34,7 +36,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerAdvancedInterface(ctx);
   ctx.subscriptions.push(
     vscode.commands.registerCommand('agentserverVscode.reopenCodexTerminal',
-      () => openCodexTerminal(readConfig().terminalProfileName, false)),
+      () => openCodexTerminal(readConfig().terminalProfileName, { reveal: true, preserveFocus: false })),
     vscode.commands.registerCommand('agentserverVscode.doctor', async () => {
       const info = {
         terminals: vscode.window.terminals.map(t => t.name),

@@ -55,7 +55,9 @@
             "workbench.debug.console",
             "workbench.panel.comments",
             "ports",
-            "workbench.panel.testResults"
+            "workbench.panel.testResults",
+            "outline",
+            "timeline"
           ],
           "description": "高级设置：需要隐藏的 VS Code 内部视图。"
         }
