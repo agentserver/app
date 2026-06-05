@@ -8,6 +8,9 @@ func TestLaunchArgsIncludeLocaleAndDirs(t *testing.T) {
 		"--locale", "zh-cn",
 		"--user-data-dir", `C:\data`,
 		"--extensions-dir", `C:\ext`,
+		"--disable-updates",
+		"--disable-extension", "GitHub.copilot",
+		"--disable-extension", "GitHub.copilot-chat",
 		`C:\work`,
 	}
 	if len(args) != len(want) {

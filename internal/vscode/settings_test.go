@@ -82,23 +82,39 @@ func TestWriteSettings_MinimalModeDefaults(t *testing.T) {
 	}
 	m := readSettingsMap(t, path)
 	want := map[string]any{
-		"workbench.statusBar.visible":            false,
-		"workbench.panel.opensMaximized":         "never",
-		"workbench.panel.showLabels":             false,
-		"window.menuBarVisibility":               "hidden",
-		"window.commandCenter":                   false,
-		"workbench.layoutControl.enabled":        false,
-		"workbench.view.alwaysShowHeaderActions": false,
-		"breadcrumbs.enabled":                    false,
-		"editor.minimap.enabled":                 false,
-		"editor.stickyScroll.enabled":            false,
-		"workbench.editor.showTabs":              "single",
-		"workbench.editor.empty.hint":            "hidden",
-		"workbench.tips.enabled":                 false,
-		"update.showReleaseNotes":                false,
-		"extensions.ignoreRecommendations":       true,
-		"explorer.openEditors.visible":           float64(0),
-		"workbench.localHistory.enabled":         false,
+		"workbench.statusBar.visible":                 false,
+		"workbench.panel.opensMaximized":              "never",
+		"workbench.panel.showLabels":                  false,
+		"window.menuBarVisibility":                    "hidden",
+		"window.commandCenter":                        false,
+		"workbench.layoutControl.enabled":             false,
+		"workbench.view.alwaysShowHeaderActions":      false,
+		"breadcrumbs.enabled":                         false,
+		"editor.minimap.enabled":                      false,
+		"editor.stickyScroll.enabled":                 false,
+		"workbench.editor.showTabs":                   "single",
+		"workbench.editor.empty.hint":                 "hidden",
+		"workbench.tips.enabled":                      false,
+		"update.mode":                                 "none",
+		"update.enableWindowsBackgroundUpdates":       false,
+		"update.showReleaseNotes":                     false,
+		"update.showPostInstallInfo":                  false,
+		"extensions.autoCheckUpdates":                 false,
+		"extensions.autoUpdate":                       false,
+		"extensions.ignoreRecommendations":            true,
+		"explorer.openEditors.visible":                float64(0),
+		"workbench.localHistory.enabled":              false,
+		"chat.disableAIFeatures":                      true,
+		"chat.agent.enabled":                          false,
+		"chat.agentHost.enabled":                      false,
+		"chat.agentsControl.enabled":                  false,
+		"chat.agentSessionProjection.enabled":         false,
+		"chat.titleBar.openInAgentsWindow.enabled":    false,
+		"chat.agentsHandoff.openInAgentsWindow":       false,
+		"github.copilot.nextEditSuggestions.enabled":  false,
+		"github.copilot.chat.reviewSelection.enabled": false,
+		"github.copilot.chat.reviewAgent.enabled":     false,
+		"github.copilot.chat.claudeAgent.enabled":     false,
 	}
 	for key, expected := range want {
 		if got := m[key]; got != expected {
@@ -130,6 +146,14 @@ func TestWriteSettings_MinimalModeDefaults(t *testing.T) {
 	}
 	if _, ok := m["agentserverVscode.panel.allowed"]; ok {
 		t.Errorf("agentserverVscode.panel.allowed should not be written")
+	}
+
+	copilotEnable, ok := m["github.copilot.enable"].(map[string]any)
+	if !ok {
+		t.Fatalf("github.copilot.enable=%T, want object", m["github.copilot.enable"])
+	}
+	if got := copilotEnable["*"]; got != false {
+		t.Fatalf("github.copilot.enable[*]=%v, want false", got)
 	}
 }
 

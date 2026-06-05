@@ -2,7 +2,11 @@ import * as vscode from 'vscode';
 import { readConfig } from './config';
 import { maybePromptOpenFolder } from './folderPicker';
 import { attachTerminalRespawn, openCodexTerminal, revealTerminalNamed, startupTerminalOptions } from './terminal';
-import { hidePanelViews, registerPanelCommands } from './panel';
+import {
+  hidePanelViews,
+  registerPanelCommands,
+  schedulePanelViewHiding,
+} from './panel';
 import { registerOpenWithSystem } from './systemOpen';
 import { registerAdvancedInterface } from './advanced';
 import { hideMinimalChrome } from './chrome';
@@ -27,6 +31,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     await openCodexTerminal(cfg.terminalProfileName, startupTerminalOptions);
   }
   await hidePanelViews(cfg.panelHideViews);
+  schedulePanelViewHiding(ctx, cfg.panelHideViews);
   await hideMinimalChrome();
 
   // 5. Respawn on close

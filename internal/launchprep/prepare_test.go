@@ -2,6 +2,7 @@ package launchprep
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
+	_ "modernc.org/sqlite"
 )
 
 func TestPrepareVSCodeMigratesSettingsAndRefreshesVSIX(t *testing.T) {
@@ -86,5 +88,29 @@ func TestPrepareVSCodeMigratesSettingsAndRefreshesVSIX(t *testing.T) {
 	}
 	if len(gotInstaller.Extensions) != 1 || gotInstaller.Extensions[0] != vsixPath {
 		t.Fatalf("Extensions=%v, want [%s]", gotInstaller.Extensions, vsixPath)
+	}
+
+	db, err := sql.Open("sqlite", filepath.Join(p.VSCodeUserDataDir, "User", "globalStorage", "state.vscdb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var rawPinnedPanels string
+	if err := db.QueryRow(`SELECT value FROM ItemTable WHERE key = 'workbench.panel.pinnedPanels'`).Scan(&rawPinnedPanels); err != nil {
+		t.Fatalf("expected seeded pinned panel state: %v", err)
+	}
+	var pinnedPanels []map[string]any
+	if err := json.Unmarshal([]byte(rawPinnedPanels), &pinnedPanels); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range pinnedPanels {
+		id, _ := entry["id"].(string)
+		pinned, _ := entry["pinned"].(bool)
+		if id == "terminal" && !pinned {
+			t.Fatalf("terminal should stay pinned: %#v", entry)
+		}
+		if id != "terminal" && pinned {
+			t.Fatalf("%s should be unpinned: %#v", id, entry)
+		}
 	}
 }

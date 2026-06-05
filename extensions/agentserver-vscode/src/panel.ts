@@ -4,6 +4,9 @@ const TERMINAL_FOCUS_CMD = 'workbench.action.terminal.focus';
 let panelCommandsRegistered = false;
 
 export type CommandExecutor = (command: string, ...args: unknown[]) => Thenable<unknown> | unknown;
+export type PanelHideScheduler = (run: () => Promise<void>, delayMs: number) => vscode.Disposable;
+
+export const panelHideRetryDelaysMs = [250, 1000, 2500];
 
 const hiddenViewIdAliases = new Map<string, string>([
   ['workbench.panel.markers', 'workbench.panel.markers.view'],
@@ -20,12 +23,19 @@ export function hiddenViewCommandIds(viewIds: string[]): string[] {
   const seen = new Set<string>();
   const commands: string[] = [];
   for (const id of viewIds.map(normalizeHiddenViewId)) {
+    if (panelContainerIdForHiddenView(id)) continue;
     const command = `${id}.removeView`;
     if (seen.has(command)) continue;
     seen.add(command);
     commands.push(command);
   }
   return commands;
+}
+
+function panelContainerIdForHiddenView(viewId: string): string | undefined {
+  if (viewId === '~remote.forwardedPorts') return '~remote.forwardedPortsContainer';
+  if (!viewId.startsWith('workbench.panel.')) return undefined;
+  return viewId.endsWith('.view') ? viewId.slice(0, -'.view'.length) : viewId;
 }
 
 async function runBestEffort(execute: CommandExecutor, command: string, ...args: unknown[]): Promise<void> {
@@ -35,6 +45,13 @@ async function runBestEffort(execute: CommandExecutor, command: string, ...args:
     // View ids and internal workbench commands vary across VS Code versions.
     // Missing cleanup commands should not block startup.
   }
+}
+
+function scheduleTimeout(run: () => Promise<void>, delayMs: number): vscode.Disposable {
+  const timer = setTimeout(() => {
+    void run();
+  }, delayMs);
+  return new vscode.Disposable(() => clearTimeout(timer));
 }
 
 export async function hidePanelViews(
@@ -51,6 +68,20 @@ export async function hidePanelViews(
   }
   for (const command of hiddenViewCommandIds(hideViewIds)) {
     await runBestEffort(execute, command);
+  }
+}
+
+export function schedulePanelViewHiding(
+  ctx: Pick<vscode.ExtensionContext, 'subscriptions'>,
+  hideViewIds: string[],
+  execute: CommandExecutor = vscode.commands.executeCommand.bind(vscode.commands),
+  scheduler: PanelHideScheduler = scheduleTimeout,
+  delaysMs = panelHideRetryDelaysMs,
+): void {
+  if (hideViewIds.length === 0) return;
+
+  for (const delayMs of delaysMs) {
+    ctx.subscriptions.push(scheduler(() => hidePanelViews(hideViewIds, execute), delayMs));
   }
 }
 

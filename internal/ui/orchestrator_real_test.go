@@ -78,6 +78,67 @@ func TestConfigureVSCodeWritesSettings(t *testing.T) {
 	}
 }
 
+func TestConfigureVSCodeCopiesBundledCodexBeforeDownloading(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses bash stub")
+	}
+	dir := t.TempDir()
+	codeExe := filepath.Join(dir, "code")
+	os.WriteFile(codeExe, []byte("#!/bin/bash\nexit 0\n"), 0o755)
+
+	codexSrvHits := 0
+	codexSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		codexSrvHits++
+		http.Error(w, "should not download when bundled codex exists", http.StatusInternalServerError)
+	}))
+	defer codexSrv.Close()
+
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	store.Update(func(s *state.State) error {
+		s.VSCode.Path = codeExe
+		return nil
+	})
+
+	vsix := filepath.Join(dir, "stub.vsix")
+	os.WriteFile(vsix, []byte("PK\x03\x04stub"), 0o644)
+	bundledCodex := filepath.Join(dir, "install", "codex")
+	os.MkdirAll(filepath.Dir(bundledCodex), 0o755)
+	os.WriteFile(bundledCodex, []byte("bundled-codex"), 0o644)
+	codexPath := filepath.Join(dir, "bin", "codex")
+	os.MkdirAll(filepath.Dir(codexPath), 0o755)
+	os.WriteFile(codexPath+".part", []byte("partial-download"), 0o644)
+	os.WriteFile(codexPath+".meta", []byte("{}"), 0o644)
+
+	r := &realOrchestrator{d: Deps{
+		State:             store,
+		CodexAbsPath:      codexPath,
+		BundledCodexPath:  bundledCodex,
+		CodexDownloadURL:  codexSrv.URL + "/codex",
+		VSCodeUserDataDir: filepath.Join(dir, "data"),
+		VSCodeExtDir:      filepath.Join(dir, "ext"),
+		EmbeddedVSIXPath:  vsix,
+		CodexConfigPath:   filepath.Join(dir, "codex-config.toml"),
+	}}
+
+	if err := r.ConfigureVSCode(context.Background()); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if got, err := os.ReadFile(codexPath); err != nil {
+		t.Errorf("codex not copied: %v", err)
+	} else if string(got) != "bundled-codex" {
+		t.Errorf("codex content=%q, want bundled-codex", got)
+	}
+	if _, err := os.Stat(codexPath + ".part"); !os.IsNotExist(err) {
+		t.Errorf("stale partial download should be removed, err=%v", err)
+	}
+	if _, err := os.Stat(codexPath + ".meta"); !os.IsNotExist(err) {
+		t.Errorf("stale download metadata should be removed, err=%v", err)
+	}
+	if codexSrvHits != 0 {
+		t.Fatalf("download server was hit %d times; bundled codex should avoid network", codexSrvHits)
+	}
+}
+
 func TestConfigureVSCodeSetsCurrentProcessOpenAIAPIKey(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("uses bash stub")

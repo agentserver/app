@@ -133,10 +133,34 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			want: []string{
 				"uninstall.exe",
 				"token-refresher.exe",
+				"codex-x86_64-pc-windows-msvc.exe",
+				"DestName: \"codex.exe\"",
+				"VSCodeUserSetup-x64-1.96.0.exe",
+				"DestName: \"vscode-installer.exe\"",
+				"MessagesFile: \"ChineseSimplified.isl\"",
 				"ensure-vscode.ps1",
 				"vscode-manifest.json",
 				"powershell",
 				"ensure-vscode.ps1",
+			},
+		},
+		{
+			name: "package-windows.sh",
+			path: "../../scripts/package-windows.sh",
+			want: []string{
+				"CODEX_CACHE",
+				"VSCODE_CACHE",
+				"codex-x86_64-pc-windows-msvc.exe",
+				"VSCodeUserSetup-x64-$VSCODE_VERSION.exe",
+				"packaging/windows/vscode-manifest.json",
+				"packaging/windows/ChineseSimplified.isl",
+				"dist/windows/uninstall.exe",
+				"dist/windows/token-refresher.exe",
+				"ISCC=()",
+				"ISCC=(\"wine\" \"$HOME/.wine/drive_c/Program Files (x86)/Inno Setup 6/ISCC.exe\")",
+				"\"${ISCC[@]}\" installer.iss",
+				"\"$VSCODE_CACHE\"",
+				"\"$CODEX_CACHE\"",
 			},
 		},
 	} {
@@ -151,6 +175,36 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWindowsInnoChineseLanguageFileIsBundled(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ChineseSimplified.isl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"LanguageName=简体中文",
+		"LanguageID=$0804",
+		"LanguageCodePage=936",
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("ChineseSimplified.isl does not contain %q", want)
+		}
+	}
+}
+
+func TestWindowsInnoInstallerUsesPerUserDesktopShortcut(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if strings.Contains(text, "{commondesktop}") {
+		t.Fatal("installer.iss must not use {commondesktop}; low-privilege installs cannot write Public Desktop")
+	}
+	if !strings.Contains(text, "{userdesktop}") {
+		t.Fatal("installer.iss should create optional desktop shortcuts under {userdesktop}")
 	}
 }
 

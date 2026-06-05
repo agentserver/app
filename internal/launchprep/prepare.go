@@ -25,6 +25,9 @@ func PrepareVSCode(ctx context.Context, in Input) error {
 	}); err != nil {
 		return err
 	}
+	if err := vscode.EnsureTerminalOnlyPanelState(in.Paths.VSCodeUserDataDir); err != nil {
+		return fmt.Errorf("prepare VS Code panel state: %w", err)
+	}
 	if err := codex.UpdateConfig(in.Paths.CodexConfigFile, codex.ModelserverSettings()); err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +48,7 @@ type Deps struct {
 	VSCodeExtDir      string
 	EmbeddedVSIXPath  string
 	CodexAbsPath      string
+	BundledCodexPath  string
 	// CodexDownloadURL overrides the default GitHub Releases URL when set.
 	CodexDownloadURL string
 
@@ -352,12 +354,23 @@ func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
 		s.VSCode.Path = det.Path
 		s.VSCode.Version = det.Version
 	}
-	// Download codex.exe to r.d.CodexAbsPath if missing.
+	// Copy or download codex.exe to r.d.CodexAbsPath if missing.
 	if r.d.CodexAbsPath != "" {
 		if _, statErr := os.Stat(r.d.CodexAbsPath); os.IsNotExist(statErr) {
 			if err := os.MkdirAll(filepath.Dir(r.d.CodexAbsPath), 0o755); err != nil {
 				return fmt.Errorf("mkdir codex bin dir: %w", err)
 			}
+			if r.d.BundledCodexPath != "" {
+				if _, err := os.Stat(r.d.BundledCodexPath); err == nil {
+					if err := copyFile(r.d.BundledCodexPath, r.d.CodexAbsPath); err != nil {
+						return fmt.Errorf("copy bundled codex: %w", err)
+					}
+					_ = os.Remove(r.d.CodexAbsPath + ".part")
+					_ = os.Remove(r.d.CodexAbsPath + ".meta")
+				}
+			}
+		}
+		if _, statErr := os.Stat(r.d.CodexAbsPath); os.IsNotExist(statErr) {
 			url := r.d.CodexDownloadURL
 			if url == "" {
 				url = codexDownloadURL()
@@ -410,6 +423,27 @@ func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
 		s.Onboarding.AddCompleted("vscode_configured")
 		return nil
 	})
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
 }
 func (r *realOrchestrator) Finalize(ctx context.Context) error {
 	if r.d.LauncherExePath != "" {

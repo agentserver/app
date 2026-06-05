@@ -105,6 +105,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		VSCodeExtDir:          p.VSCodeExtDir,
 		EmbeddedVSIXPath:      joinExe(installDir, "agentserver-vscode.vsix"),
 		CodexAbsPath:          p.CodexExePath,
+		BundledCodexPath:      joinExe(installDir, "codex.exe"),
 		LauncherExePath:       joinExe(installDir, "launcher.exe"),
 		OpenFolderExePath:     joinExe(installDir, "open-folder.exe"),
 		TokenRefresherExePath: joinExe(installDir, "token-refresher.exe"),
