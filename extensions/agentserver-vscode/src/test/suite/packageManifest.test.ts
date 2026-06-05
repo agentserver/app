@@ -64,5 +64,11 @@ suite('package manifest', () => {
       byCommand.get('agentserverVscode.showAdvancedInterface'),
       '星池指挥官: 显示高级界面',
     );
+
+    const menuEntries = Object.values(manifest.contributes.menus ?? {}).flat();
+    assert.ok(
+      !menuEntries.some(m => m.command === 'agentserverVscode.showAdvancedInterface'),
+      'advanced interface command should stay hidden from menus',
+    );
   });
 });
