@@ -71,10 +71,18 @@ suite('package manifest', () => {
       '星池指挥官: 显示高级界面',
     );
 
-    const menuEntries = Object.values(manifest.contributes.menus ?? {}).flat();
+    const menus = manifest.contributes.menus ?? {};
+    const commandPaletteEntry = (menus.commandPalette ?? [])
+      .find(m => m.command === 'agentserverVscode.showAdvancedInterface');
+    assert.ok(commandPaletteEntry, 'advanced interface command should be hidden from command palette');
+    assert.strictEqual(commandPaletteEntry.when, 'false');
+
+    const menuEntries = Object.entries(menus)
+      .filter(([menu]) => menu !== 'commandPalette')
+      .flatMap(([, entries]) => entries);
     assert.ok(
       !menuEntries.some(m => m.command === 'agentserverVscode.showAdvancedInterface'),
-      'advanced interface command should stay hidden from menus',
+      'advanced interface command should stay hidden from visible menus',
     );
   });
 

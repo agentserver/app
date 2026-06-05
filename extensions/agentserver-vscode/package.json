@@ -80,6 +80,12 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "agentserverVscode.showAdvancedInterface",
+          "when": "false"
+        }
+      ],
       "explorer/context": [
         {
           "command": "agentserverVscode.openWithSystem",
