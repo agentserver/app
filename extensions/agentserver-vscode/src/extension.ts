@@ -3,6 +3,7 @@ import { readConfig } from './config';
 import { maybePromptOpenFolder } from './folderPicker';
 import { attachTerminalRespawn, openCodexTerminal } from './terminal';
 import { lockPanelToTerminal } from './panel';
+import { registerOpenWithSystem } from './systemOpen';
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const cfg = readConfig();
@@ -16,16 +17,19 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // 2. Panel lockdown
   lockPanelToTerminal(ctx, cfg.panelHideViews);
 
-  // 3. Ensure a codex terminal exists
+  // 3. File context commands
+  registerOpenWithSystem(ctx);
+
+  // 4. Ensure a codex terminal exists
   if (vscode.window.terminals.length === 0) {
     await openCodexTerminal(cfg.terminalProfileName);
   }
 
-  // 4. Respawn on close
+  // 5. Respawn on close
   attachTerminalRespawn(ctx, cfg.terminalProfileName,
     () => readConfig().terminalRespawnOnClose);
 
-  // 5. Commands
+  // 6. Commands
   ctx.subscriptions.push(
     vscode.commands.registerCommand('agentserverVscode.reopenCodexTerminal',
       () => openCodexTerminal(readConfig().terminalProfileName)),

@@ -69,7 +69,20 @@
       {
         "command": "agentserverVscode.reopenCodexTerminal",
         "title": "星池指挥官: 创建新的会话"
+      },
+      {
+        "command": "agentserverVscode.openWithSystem",
+        "title": "用系统应用打开"
       }
-    ]
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "agentserverVscode.openWithSystem",
+          "when": "resourceScheme == file",
+          "group": "navigation@90"
+        }
+      ]
+    }
   }
 }

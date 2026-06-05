@@ -42,4 +42,18 @@ suite('package manifest', () => {
       assert.ok(!title.toLowerCase().includes('terminal'), `command title should not mention terminal: ${title}`);
     }
   });
+
+  test('contributes open-with-system file context command', () => {
+    const manifest = readManifest();
+    const byCommand = new Map(manifest.contributes.commands.map(c => [c.command, c.title]));
+    assert.strictEqual(
+      byCommand.get('agentserverVscode.openWithSystem'),
+      '用系统应用打开',
+    );
+    const menus = manifest.contributes.menus;
+    const explorerMenu = menus && menus['explorer/context'] ? menus['explorer/context'] : [];
+    const entry = explorerMenu.find(m => m.command === 'agentserverVscode.openWithSystem');
+    assert.ok(entry, 'missing explorer/context menu entry for open-with-system');
+    assert.strictEqual(entry.when, 'resourceScheme == file');
+  });
 });
