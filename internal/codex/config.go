@@ -13,12 +13,35 @@ import (
 )
 
 type Settings struct {
-	Provider string // e.g. "modelserver"
-	Model    string // e.g. "gpt-5.5"
-	BaseURL  string // e.g. "https://code.ai.cs.ac.cn/v1"
-	EnvKey   string // e.g. "OPENAI_API_KEY"
-	WireAPI  string // e.g. "responses"
+	Provider              string // e.g. "modelserver"
+	Model                 string // e.g. "gpt-5.5"
+	ModelReasoningEffort  string // e.g. "xhigh"
+	ApprovalsReviewer     string // e.g. "guardian_subagent"
+	SandboxMode           string // e.g. "danger-full-access"
+	WindowsSandbox        string // e.g. "unelevated"
+	DeveloperInstructions string
+	BaseURL               string // e.g. "https://code.ai.cs.ac.cn/v1"
+	EnvKey                string // e.g. "OPENAI_API_KEY"
+	WireAPI               string // e.g. "responses"
 }
+
+func ModelserverSettings() Settings {
+	return Settings{
+		Provider: "modelserver",
+		Model:    "gpt-5.5",
+		BaseURL:  "https://code.ai.cs.ac.cn/v1",
+		EnvKey:   "OPENAI_API_KEY",
+		WireAPI:  "responses",
+	}
+}
+
+const (
+	defaultModelReasoningEffort  = "xhigh"
+	defaultApprovalsReviewer     = "guardian_subagent"
+	defaultSandboxMode           = "danger-full-access"
+	defaultWindowsSandbox        = "unelevated"
+	defaultDeveloperInstructions = "请始终使用简体中文与用户交流；除非用户明确要求其他语言。"
+)
 
 // UpdateConfig merges Settings into the config.toml at `path`, preserving
 // any unrelated top-level keys and any [model_providers.X] tables other
@@ -47,6 +70,16 @@ func UpdateConfig(path string, s Settings) error {
 	if s.Model != "" {
 		root["model"] = s.Model
 	}
+	root["model_reasoning_effort"] = defaultString(s.ModelReasoningEffort, defaultModelReasoningEffort)
+	root["approvals_reviewer"] = defaultString(s.ApprovalsReviewer, defaultApprovalsReviewer)
+	root["sandbox_mode"] = defaultString(s.SandboxMode, defaultSandboxMode)
+	root["developer_instructions"] = defaultString(s.DeveloperInstructions, defaultDeveloperInstructions)
+	windows, _ := root["windows"].(map[string]any)
+	if windows == nil {
+		windows = map[string]any{}
+	}
+	windows["sandbox"] = defaultString(s.WindowsSandbox, defaultWindowsSandbox)
+	root["windows"] = windows
 	providers, _ := root["model_providers"].(map[string]any)
 	if providers == nil {
 		providers = map[string]any{}
@@ -64,4 +97,11 @@ func UpdateConfig(path string, s Settings) error {
 		return fmt.Errorf("marshal config.toml: %w", err)
 	}
 	return os.WriteFile(path, buf.Bytes(), 0o644)
+}
+
+func defaultString(v, fallback string) string {
+	if v != "" {
+		return v
+	}
+	return fallback
 }

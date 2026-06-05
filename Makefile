@@ -6,7 +6,7 @@ LDFLAGS   ?= -s -w
 GOOS_WIN  := windows
 GOARCH    := amd64
 
-CMDS      := launcher onboarding-server agentctl open-folder
+CMDS      := launcher onboarding-server agentctl open-folder uninstall token-refresher
 DIST      := dist
 
 all: build

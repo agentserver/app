@@ -23,6 +23,19 @@ func persistUserEnv(key, value string) error {
 	return broadcastSettingChange("Environment")
 }
 
+func deleteUserEnv(key string) error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, `Environment`,
+		registry.SET_VALUE|registry.QUERY_VALUE)
+	if err != nil {
+		return fmt.Errorf("open HKCU\\Environment: %w", err)
+	}
+	defer k.Close()
+	if err := k.DeleteValue(key); err != nil && err != registry.ErrNotExist {
+		return fmt.Errorf("delete %s: %w", key, err)
+	}
+	return broadcastSettingChange("Environment")
+}
+
 const (
 	HWND_BROADCAST   = uintptr(0xFFFF)
 	WM_SETTINGCHANGE = 0x001A

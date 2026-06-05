@@ -1,4 +1,4 @@
-# agentserver-vscode v1 — portable installer (PowerShell alternative to Inno Setup)
+﻿# 星池指挥官 v1 — portable installer (PowerShell alternative to Inno Setup)
 #
 # Usage:
 #   1. Unzip agentserver-vscode-<ver>-portable.zip somewhere
@@ -6,7 +6,8 @@
 #      (or: powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1)
 #
 # Installs to %LOCALAPPDATA%\Programs\agentserver-vscode, creates desktop
-# shortcut + folder context menu, then exits. Launch the shortcut to onboard.
+# shortcut + folder context menu, ensures VS Code is installed, then exits.
+# Launch the shortcut to onboard.
 
 param(
     [switch]$Silent,
@@ -15,22 +16,76 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Set-ScriptOutputEncoding {
+    try {
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        [Console]::OutputEncoding = $utf8
+        $script:OutputEncoding = $utf8
+        & chcp.com 65001 > $null 2>$null
+    } catch {
+        # Best-effort only; installation must still work if the host forbids it.
+    }
+}
+
+Set-ScriptOutputEncoding
+
 $AppName    = 'agentserver-vscode'
+$AppDisplayName = '星池指挥官'
 $Version    = '0.1.0'
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
+$RegSubKeyFile = "Software\Classes\*\shell\AgentserverVscode"
+$RegSubKeyDir  = "Software\Classes\Directory\shell\AgentserverVscode"
+$RegSubKeyBg   = "Software\Classes\Directory\Background\shell\AgentserverVscode"
 $RegKey     = "HKCU:\Software\Classes\Directory\shell\AgentserverVscode"
 $RegKeyBg   = "HKCU:\Software\Classes\Directory\Background\shell\AgentserverVscode"
-$DesktopLnk = Join-Path $env:USERPROFILE "Desktop\$AppName.lnk"
+$DesktopLnk = Join-Path $env:USERPROFILE "Desktop\$AppDisplayName.lnk"
+$LegacyDesktopLnk = Join-Path $env:USERPROFILE "Desktop\$AppName.lnk"
 $UninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
 
 function Write-Step($msg) {
     Write-Host "==> $msg" -ForegroundColor Cyan
 }
 
-function Do-Uninstall {
-    Write-Step "Uninstalling $AppName..."
+function Set-RegistryStringValue([string]$SubKey, [string]$Name, [string]$Value) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($SubKey)
+    if (-not $key) {
+        throw "Failed to create HKCU:\$SubKey"
+    }
+    try {
+        if ($Name -eq '') {
+            $key.SetValue($null, $Value, [Microsoft.Win32.RegistryValueKind]::String)
+        } else {
+            $key.SetValue($Name, $Value, [Microsoft.Win32.RegistryValueKind]::String)
+        }
+    } finally {
+        $key.Close()
+    }
+}
 
-    # Best-effort: run our own agentctl uninstall (state + secrets + registry).
+function Remove-RegistrySubKeyTree([string]$SubKey) {
+    try {
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($SubKey, $false)
+    } catch {
+        # Missing keys are fine during upgrade/uninstall.
+    }
+}
+
+function Do-Uninstall {
+    Write-Step "Uninstalling $AppDisplayName..."
+
+    # Prefer the dedicated uninstaller; it also schedules removal of this
+    # installation directory after the process exits.
+    $uninstaller = Join-Path $InstallDir 'uninstall.exe'
+    if (Test-Path $uninstaller) {
+        & $uninstaller --silent
+        if ($LASTEXITCODE -ne 0) {
+            throw "uninstall.exe failed with exit code $LASTEXITCODE"
+        }
+        Write-Host "Uninstall complete." -ForegroundColor Green
+        return
+    }
+
+    # Fallback for older installs: run agentctl uninstall (state + secrets + registry).
     $agentctl = Join-Path $InstallDir 'agentctl.exe'
     if (Test-Path $agentctl) {
         & $agentctl uninstall --silent 2>$null
@@ -38,8 +93,9 @@ function Do-Uninstall {
 
     # Remove shortcut + context menu (covered by agentctl too, but be defensive)
     if (Test-Path $DesktopLnk) { Remove-Item $DesktopLnk -Force -ErrorAction SilentlyContinue }
-    foreach ($k in @($RegKey, $RegKeyBg)) {
-        if (Test-Path $k) { Remove-Item $k -Recurse -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $LegacyDesktopLnk) { Remove-Item $LegacyDesktopLnk -Force -ErrorAction SilentlyContinue }
+    foreach ($k in @($RegSubKeyFile, $RegSubKeyDir, $RegSubKeyBg)) {
+        Remove-RegistrySubKeyTree $k
     }
 
     # Remove install dir
@@ -60,7 +116,7 @@ if ($Uninstall) {
 
 # --- Install -----------------------------------------------------------------
 
-Write-Step "Installing $AppName $Version to $InstallDir"
+Write-Step "Installing $AppDisplayName $Version to $InstallDir"
 
 # Source files sit next to this script.
 $srcDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -69,7 +125,11 @@ $required = @(
     'onboarding-server.exe',
     'agentctl.exe',
     'open-folder.exe',
+    'uninstall.exe',
+    'token-refresher.exe',
     'agentserver-vscode.vsix',
+    'ensure-vscode.ps1',
+    'vscode-manifest.json',
     'icon.ico'
 )
 foreach ($f in $required) {
@@ -104,6 +164,11 @@ if (Test-Path $codexSrc) {
     Write-Host "Note: codex.exe NOT bundled in this zip; first launch will fetch from GitHub."
 }
 
+# VS Code is installed by the installer so onboarding can simply detect it
+# and continue. The Go onboarding path still keeps a fallback installer.
+Write-Step "Ensuring VS Code is installed..."
+& (Join-Path $srcDir 'ensure-vscode.ps1') -ManifestPath (Join-Path $srcDir 'vscode-manifest.json')
+
 # Desktop shortcut
 Write-Step "Creating desktop shortcut..."
 $wsh = New-Object -ComObject WScript.Shell
@@ -111,26 +176,29 @@ $shortcut = $wsh.CreateShortcut($DesktopLnk)
 $shortcut.TargetPath       = Join-Path $InstallDir 'launcher.exe'
 $shortcut.IconLocation     = (Join-Path $InstallDir 'icon.ico') + ',0'
 $shortcut.WorkingDirectory = $env:USERPROFILE
-$shortcut.Description      = 'agentserver-vscode (VS Code + codex 一键启动)'
+$shortcut.Description      = '星池指挥官 (VS Code + codex 一键启动)'
 $shortcut.Save()
+if (Test-Path $LegacyDesktopLnk) { Remove-Item $LegacyDesktopLnk -Force -ErrorAction SilentlyContinue }
 
-# Folder context menu (right-click on a folder)
-Write-Step "Registering folder context menu..."
+# File/folder context menu (right-click on a file, folder, or folder background)
+Write-Step "Registering file and folder context menus..."
 $handlerExe = Join-Path $InstallDir 'open-folder.exe'
-foreach ($base in @($RegKey, $RegKeyBg)) {
-    New-Item -Path $base -Force | Out-Null
-    Set-ItemProperty -Path $base -Name '(default)' -Value '用 agentserver-vscode 打开'
-    Set-ItemProperty -Path $base -Name 'Icon'      -Value (Join-Path $InstallDir 'icon.ico')
-    $cmdKey = "$base\command"
-    New-Item -Path $cmdKey -Force | Out-Null
-    Set-ItemProperty -Path $cmdKey -Name '(default)' -Value "`"$handlerExe`" `"%V`""
+foreach ($entry in @(
+    @{ Key = $RegSubKeyFile; Arg = '%1' },
+    @{ Key = $RegSubKeyDir;  Arg = '%V' },
+    @{ Key = $RegSubKeyBg;   Arg = '%V' }
+)) {
+    Set-RegistryStringValue $entry.Key '' '用 星池指挥官 打开'
+    Set-RegistryStringValue $entry.Key 'Icon' (Join-Path $InstallDir 'icon.ico')
+    $cmdKey = "$($entry.Key)\command"
+    Set-RegistryStringValue $cmdKey '' "`"$handlerExe`" `"$($entry.Arg)`""
 }
 
 # Uninstall registry entry (so it shows up in Apps & Features)
 Write-Step "Registering uninstaller..."
-$uninstallCmd = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $InstallDir 'install.ps1')`" -Uninstall -Silent"
+$uninstallCmd = "`"$(Join-Path $InstallDir 'uninstall.exe')`" --silent"
 New-Item -Path $UninstallKey -Force | Out-Null
-Set-ItemProperty -Path $UninstallKey -Name 'DisplayName'     -Value $AppName
+Set-ItemProperty -Path $UninstallKey -Name 'DisplayName'     -Value $AppDisplayName
 Set-ItemProperty -Path $UninstallKey -Name 'DisplayVersion'  -Value $Version
 Set-ItemProperty -Path $UninstallKey -Name 'Publisher'       -Value 'agentserver'
 Set-ItemProperty -Path $UninstallKey -Name 'InstallLocation' -Value $InstallDir
@@ -146,9 +214,9 @@ Write-Host ""
 Write-Host "Install complete." -ForegroundColor Green
 Write-Host "  Install dir: $InstallDir"
 Write-Host "  Desktop shortcut: $DesktopLnk"
-Write-Host "  Context menu: $RegKey"
+Write-Host "  Context menus: files, folders, folder background"
 Write-Host ""
-Write-Host "Double-click the '$AppName' desktop shortcut to start onboarding."
+Write-Host "Double-click the '$AppDisplayName' desktop shortcut to start onboarding."
 
 if (-not $Silent) {
     Write-Host ""

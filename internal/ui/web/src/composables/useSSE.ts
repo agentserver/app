@@ -1,4 +1,4 @@
-import { ref, type Ref, onUnmounted } from 'vue';
+import { ref, type Ref, onUnmounted, getCurrentInstance } from 'vue';
 
 export interface ProgressEvent {
   stage?: string;
@@ -52,7 +52,9 @@ export function useSSE(streamId: string): SSEHandle {
     done.value = true;
   }
 
-  onUnmounted(close);
+  if (getCurrentInstance()) {
+    onUnmounted(close);
+  }
 
   return { events, latest, done, error, close };
 }

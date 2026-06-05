@@ -132,3 +132,39 @@ func FinishPKCE(ctx context.Context, cfg AuthCodeConfig, sess *PKCESession, code
 	}
 	return tok, nil
 }
+
+// RefreshToken exchanges a modelserver OAuth refresh_token for a fresh
+// access_token. Public client: no client_secret.
+func RefreshToken(ctx context.Context, cfg AuthCodeConfig, refreshToken string) (Token, error) {
+	form := url.Values{}
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
+	form.Set("client_id", cfg.ClientID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.TokenURL(),
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return Token{}, fmt.Errorf("token refresh: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return Token{}, fmt.Errorf("token refresh: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var te tokenErr
+		if err := json.NewDecoder(resp.Body).Decode(&te); err == nil && te.Code != "" {
+			return Token{}, fmt.Errorf("token refresh: %s: %s", te.Code, te.Desc)
+		}
+		return Token{}, fmt.Errorf("token refresh: status %d", resp.StatusCode)
+	}
+	var tok Token
+	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+		return Token{}, fmt.Errorf("decode refresh token: %w", err)
+	}
+	return tok, nil
+}

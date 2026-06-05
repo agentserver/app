@@ -1,10 +1,10 @@
-# factory-reset.ps1 — full wipe of agentserver-vscode + VS Code + all our state.
+﻿# factory-reset.ps1 — full wipe of 星池指挥官 + VS Code + all our state.
 #
 # Use BEFORE a clean re-install test to make sure no leftover state biases
 # the result.
 #
 # Removes:
-#   - agentserver-vscode install dir + .lnk + registry + Apps&features entry
+#   - 星池指挥官 install dir + .lnk + registry + Apps&features entry
 #   - codex.exe + bin dir
 #   - %USERPROFILE%\.agentserver-vscode\ (state, vscode-data, vscode-extensions, cache)
 #   - %USERPROFILE%\.codex\config.toml + .bak files
@@ -19,11 +19,32 @@ param([switch]$KeepVSCode, [switch]$Silent)
 
 $ErrorActionPreference = 'SilentlyContinue'
 
+function Set-ScriptOutputEncoding {
+    try {
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        [Console]::OutputEncoding = $utf8
+        $script:OutputEncoding = $utf8
+        & chcp.com 65001 > $null 2>$null
+    } catch {
+        # Best-effort only; reset must still work if the host forbids it.
+    }
+}
+
+Set-ScriptOutputEncoding
+
 function Write-Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
+
+function Remove-RegistrySubKeyTree([string]$SubKey) {
+    try {
+        [Microsoft.Win32.Registry]::CurrentUser.DeleteSubKeyTree($SubKey, $false)
+    } catch {
+        # Missing keys are fine during reset.
+    }
+}
 
 if (-not $Silent) {
     Write-Host ""
-    Write-Host "This will permanently remove agentserver-vscode, all its state," -ForegroundColor Yellow
+    Write-Host "This will permanently remove 星池指挥官, all its state," -ForegroundColor Yellow
     if (-not $KeepVSCode) {
         Write-Host "AND uninstall VS Code itself." -ForegroundColor Yellow
     } else {
@@ -39,10 +60,10 @@ Get-Process Code,launcher,agentctl,onboarding-server,'open-folder' -ErrorAction 
     Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
 
-# --- 2. Run agentserver-vscode's own uninstaller if present ---
+# --- 2. Run 星池指挥官's own uninstaller if present ---
 $ourUninstall = "$env:LOCALAPPDATA\Programs\agentserver-vscode\install.ps1"
 if (Test-Path $ourUninstall) {
-    Write-Step "Running agentserver-vscode uninstaller..."
+    Write-Step "Running 星池指挥官 uninstaller..."
     & powershell -NoProfile -ExecutionPolicy Bypass -File $ourUninstall -Uninstall -Silent
 }
 
@@ -52,6 +73,7 @@ $paths = @(
     "$env:LOCALAPPDATA\Programs\agentserver-vscode",       # install dir
     "$env:LOCALAPPDATA\agentserver-vscode",                 # codex bin + state cache
     "$env:USERPROFILE\.agentserver-vscode",                 # state / vscode-data / extensions
+    "$env:USERPROFILE\Desktop\星池指挥官.lnk",               # desktop shortcut
     "$env:USERPROFILE\Desktop\agentserver-vscode.lnk"       # desktop shortcut
 )
 foreach ($p in $paths) {
@@ -71,15 +93,18 @@ if (Test-Path $codexConfig) {
 
 # Registry
 $regs = @(
-    "HKCU:\Software\Classes\Directory\shell\AgentserverVscode",
-    "HKCU:\Software\Classes\Directory\Background\shell\AgentserverVscode",
-    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\agentserver-vscode"
+    "Software\Classes\*\shell\AgentserverVscode",
+    "Software\Classes\Directory\shell\AgentserverVscode",
+    "Software\Classes\Directory\Background\shell\AgentserverVscode"
 )
 foreach ($r in $regs) {
-    if (Test-Path $r) {
-        Remove-Item -Recurse -Force $r -ErrorAction SilentlyContinue
-        Write-Host "  removed $r"
-    }
+    Remove-RegistrySubKeyTree $r
+    Write-Host "  removed HKCU:\$r"
+}
+$uninstallReg = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\agentserver-vscode"
+if (Test-Path $uninstallReg) {
+    Remove-Item -Recurse -Force $uninstallReg -ErrorAction SilentlyContinue
+    Write-Host "  removed $uninstallReg"
 }
 
 # Env var
@@ -122,17 +147,19 @@ if (-not $KeepVSCode) {
 # --- 5. Report ---
 Write-Step "Verification:"
 $checks = @(
-    @{name="agentserver-vscode install"; path="$env:LOCALAPPDATA\Programs\agentserver-vscode"},
+    @{name="星池指挥官 install"; path="$env:LOCALAPPDATA\Programs\agentserver-vscode"},
     @{name="codex bin dir"; path="$env:LOCALAPPDATA\agentserver-vscode"},
     @{name="state dir"; path="$env:USERPROFILE\.agentserver-vscode"},
-    @{name="desktop .lnk"; path="$env:USERPROFILE\Desktop\agentserver-vscode.lnk"},
+    @{name="desktop .lnk"; path="$env:USERPROFILE\Desktop\星池指挥官.lnk"},
+    @{name="legacy desktop .lnk"; path="$env:USERPROFILE\Desktop\agentserver-vscode.lnk"},
+    @{name="reg file shell"; path="Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\AgentserverVscode"},
     @{name="reg shell"; path="HKCU:\Software\Classes\Directory\shell\AgentserverVscode"},
     @{name="reg apps&features"; path="HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\agentserver-vscode"},
     @{name="VS Code (user)"; path="$env:LOCALAPPDATA\Programs\Microsoft VS Code"},
     @{name="VS Code (sys)"; path="${env:ProgramFiles}\Microsoft VS Code"}
 )
 foreach ($c in $checks) {
-    $present = Test-Path $c.path
+    $present = Test-Path -LiteralPath $c.path
     $mark = if ($present) { "STILL HERE" } else { "gone" }
     $clr  = if ($present) { 'Yellow' } else { 'Green' }
     Write-Host ("  {0,-30}  {1}" -f $c.name, $mark) -ForegroundColor $clr

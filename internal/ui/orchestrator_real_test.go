@@ -78,6 +78,158 @@ func TestConfigureVSCodeWritesSettings(t *testing.T) {
 	}
 }
 
+func TestConfigureVSCodeSetsCurrentProcessOpenAIAPIKey(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses bash stub")
+	}
+	dir := t.TempDir()
+	codeExe := filepath.Join(dir, "code")
+	os.WriteFile(codeExe, []byte("#!/bin/bash\nexit 0\n"), 0o755)
+	vsix := filepath.Join(dir, "stub.vsix")
+	os.WriteFile(vsix, []byte("PK\x03\x04stub"), 0o644)
+	codexPath := filepath.Join(dir, "bin", "codex")
+	os.MkdirAll(filepath.Dir(codexPath), 0o755)
+	os.WriteFile(codexPath, []byte("codex"), 0o755)
+	t.Setenv("OPENAI_API_KEY", "")
+
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	if err := sec.Set("modelserver_api_key", "fake-token-for-current-process"); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	store.Update(func(s *state.State) error {
+		s.VSCode.Path = codeExe
+		return nil
+	})
+	r := &realOrchestrator{d: Deps{
+		State:             store,
+		Secrets:           sec,
+		CodexAbsPath:      codexPath,
+		VSCodeUserDataDir: filepath.Join(dir, "data"),
+		VSCodeExtDir:      filepath.Join(dir, "ext"),
+		EmbeddedVSIXPath:  vsix,
+		CodexConfigPath:   filepath.Join(dir, "codex-config.toml"),
+	}}
+
+	if err := r.ConfigureVSCode(context.Background()); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "fake-token-for-current-process" {
+		t.Fatalf("OPENAI_API_KEY=%q, want current process token", got)
+	}
+}
+
+func TestConfigureVSCodeDetectsVSCodeWhenStatePathMissing(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses PATH code stub")
+	}
+	dir := t.TempDir()
+	codeExe := filepath.Join(dir, "code")
+	os.WriteFile(codeExe, []byte("#!/bin/bash\necho 1.96.0\n"), 0o755)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	vsix := filepath.Join(dir, "stub.vsix")
+	os.WriteFile(vsix, []byte("PK\x03\x04stub"), 0o644)
+	codexPath := filepath.Join(dir, "bin", "codex")
+	os.MkdirAll(filepath.Dir(codexPath), 0o755)
+	os.WriteFile(codexPath, []byte("codex"), 0o755)
+
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	r := &realOrchestrator{d: Deps{
+		State:             store,
+		CodexAbsPath:      codexPath,
+		VSCodeUserDataDir: filepath.Join(dir, "data"),
+		VSCodeExtDir:      filepath.Join(dir, "ext"),
+		EmbeddedVSIXPath:  vsix,
+		CodexConfigPath:   filepath.Join(dir, "codex-config.toml"),
+	}}
+
+	if err := r.ConfigureVSCode(context.Background()); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	s, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.VSCode.Path != codeExe {
+		t.Fatalf("VSCode.Path=%q, want detected %q", s.VSCode.Path, codeExe)
+	}
+	if s.VSCode.Version != "1.96.0" {
+		t.Fatalf("VSCode.Version=%q, want 1.96.0", s.VSCode.Version)
+	}
+	if !s.Onboarding.HasCompleted("vscode_installed") {
+		t.Fatalf("vscode_installed not marked complete")
+	}
+	if !s.Onboarding.HasCompleted("vscode_configured") {
+		t.Fatalf("vscode_configured not marked complete")
+	}
+}
+
+func TestLaunchAndShutdownInjectsOpenAIAPIKeyAndLocale(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses bash stub")
+	}
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	envFile := filepath.Join(dir, "env.txt")
+	codeExe := filepath.Join(dir, "code")
+	os.WriteFile(codeExe, []byte(fmt.Sprintf(`#!/bin/bash
+printf '%%s\n' "$@" > %q
+printf '%%s\n' "$OPENAI_API_KEY" > %q
+exit 0
+`, argsFile, envFile)), 0o755)
+
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	if err := sec.Set("modelserver_api_key", "launch-token"); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	store.Update(func(s *state.State) error {
+		s.VSCode.Path = codeExe
+		return nil
+	})
+	r := &realOrchestrator{d: Deps{
+		State:             store,
+		Secrets:           sec,
+		VSCodeUserDataDir: filepath.Join(dir, "data"),
+		VSCodeExtDir:      filepath.Join(dir, "ext"),
+	}}
+
+	if err := r.LaunchAndShutdown(context.Background()); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(envFile); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	envBody, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(envBody)) != "launch-token" {
+		t.Fatalf("OPENAI_API_KEY child env = %q", envBody)
+	}
+	argsBody, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(argsBody)), "\n")
+	if !containsSequence(args, "--locale", "zh-cn") {
+		t.Fatalf("launch args missing --locale zh-cn: %v", args)
+	}
+}
+
+func containsSequence(items []string, first, second string) bool {
+	for i := 0; i+1 < len(items); i++ {
+		if items[i] == first && items[i+1] == second {
+			return true
+		}
+	}
+	return false
+}
+
 // EnsureVSCode unit test is light because the real path needs Windows;
 // here we just exercise the early-return when VS Code is already installed.
 func TestEnsureVSCode_AlreadyInstalled(t *testing.T) {
@@ -199,7 +351,7 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 			t.Errorf("/oauth2/token bad form: %v", r.PostForm)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"access_token":"fake-at","token_type":"Bearer","expires_in":3600}`))
+		w.Write([]byte(`{"access_token":"fake-at","token_type":"Bearer","refresh_token":"fake-rt","expires_in":3600}`))
 	})
 	mux.HandleFunc("/api/v1/projects", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -267,6 +419,12 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 	}
 	if got, _ := sec.Get("modelserver_api_key"); got != "fake-at" {
 		t.Errorf("secret not stored: %q", got)
+	}
+	if got, _ := sec.Get("modelserver_refresh_token"); got != "fake-rt" {
+		t.Errorf("refresh token not stored: %q", got)
+	}
+	if got, _ := sec.Get("modelserver_access_token_expires_at"); got == "" {
+		t.Errorf("access token expiry not stored")
 	}
 	s, _ := store.Load()
 	if s.Modelserver.ProjectID != "" {

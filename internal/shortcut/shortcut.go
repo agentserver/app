@@ -13,7 +13,7 @@ type DesktopInput struct {
 }
 
 type ContextMenuInput struct {
-	MenuLabel         string // localized label, e.g. "用 agentserver-vscode 打开"
+	MenuLabel         string // localized label, e.g. "用 星池指挥官 打开"
 	HandlerExe        string // absolute path to open-folder.exe
 	IconPath          string // absolute path to .ico
 	RegistryKeySuffix string // e.g. "AgentserverVscode"

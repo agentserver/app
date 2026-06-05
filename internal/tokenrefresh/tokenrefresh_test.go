@@ -1,0 +1,148 @@
+package tokenrefresh
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/agentserver/agentserver-pkg/internal/oauth"
+	"github.com/agentserver/agentserver-pkg/internal/secrets"
+)
+
+type memSecrets struct {
+	values map[string]string
+}
+
+func newMemSecrets() *memSecrets {
+	return &memSecrets{values: map[string]string{}}
+}
+
+func (m *memSecrets) Get(key string) (string, error) {
+	v, ok := m.values[key]
+	if !ok {
+		return "", secrets.ErrNotFound
+	}
+	return v, nil
+}
+
+func (m *memSecrets) Set(key, value string) error {
+	m.values[key] = value
+	return nil
+}
+
+func (m *memSecrets) Delete(key string) error {
+	delete(m.values, key)
+	return nil
+}
+
+func TestNextDelayRefreshesThirtyMinutesBeforeExpiry(t *testing.T) {
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(time.Hour)
+
+	got := NextDelay(now, expiresAt, 30*time.Minute, 5*time.Minute, nil)
+	if got != 30*time.Minute {
+		t.Fatalf("NextDelay = %s, want 30m", got)
+	}
+}
+
+func TestNextDelayRefreshesImmediatelyInsideThirtyMinuteWindow(t *testing.T) {
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(29 * time.Minute)
+
+	got := NextDelay(now, expiresAt, 30*time.Minute, 5*time.Minute, nil)
+	if got != 0 {
+		t.Fatalf("NextDelay = %s, want immediate refresh", got)
+	}
+}
+
+func TestNextDelayRetriesFiveMinutesAfterRefreshFailure(t *testing.T) {
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(time.Hour)
+
+	got := NextDelay(now, expiresAt, 30*time.Minute, 5*time.Minute, errors.New("refresh failed"))
+	if got != 5*time.Minute {
+		t.Fatalf("NextDelay after failure = %s, want 5m", got)
+	}
+}
+
+func TestRefreshOnceStoresAccessRefreshExpiryAndPersistsEnv(t *testing.T) {
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	sec := newMemSecrets()
+	if err := sec.Set(RefreshTokenKey, "rtok-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotRefresh string
+	var persistedKey, persistedValue string
+	var processKey, processValue string
+	expiresAt, err := RefreshOnce(context.Background(), Options{
+		Secrets: sec,
+		OAuth:   oauth.AuthCodeConfig{ClientID: "client-x"},
+		Now:     func() time.Time { return now },
+		Refresh: func(ctx context.Context, cfg oauth.AuthCodeConfig, refreshToken string) (oauth.Token, error) {
+			gotRefresh = refreshToken
+			return oauth.Token{
+				AccessToken:  "at-2",
+				RefreshToken: "rtok-2",
+				ExpiresIn:    3600,
+			}, nil
+		},
+		PersistEnv: func(key, value string) error {
+			persistedKey, persistedValue = key, value
+			return nil
+		},
+		SetProcessEnv: func(key, value string) error {
+			processKey, processValue = key, value
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("RefreshOnce: %v", err)
+	}
+	if gotRefresh != "rtok-1" {
+		t.Fatalf("refresh token passed = %q, want rtok-1", gotRefresh)
+	}
+	if expiresAt != now.Add(time.Hour) {
+		t.Fatalf("expiresAt = %s, want %s", expiresAt, now.Add(time.Hour))
+	}
+	if got, _ := sec.Get(AccessTokenKey); got != "at-2" {
+		t.Fatalf("access token secret = %q, want at-2", got)
+	}
+	if got, _ := sec.Get(RefreshTokenKey); got != "rtok-2" {
+		t.Fatalf("refresh token secret = %q, want rtok-2", got)
+	}
+	if got, _ := sec.Get(AccessTokenExpiresAtKey); got != now.Add(time.Hour).Format(time.RFC3339) {
+		t.Fatalf("expires_at secret = %q", got)
+	}
+	if persistedKey != "OPENAI_API_KEY" || persistedValue != "at-2" {
+		t.Fatalf("persisted env = %q/%q, want OPENAI_API_KEY/at-2", persistedKey, persistedValue)
+	}
+	if processKey != "OPENAI_API_KEY" || processValue != "at-2" {
+		t.Fatalf("process env = %q/%q, want OPENAI_API_KEY/at-2", processKey, processValue)
+	}
+}
+
+func TestRefreshOncePreservesRefreshTokenWhenServerOmitsReplacement(t *testing.T) {
+	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
+	sec := newMemSecrets()
+	if err := sec.Set(RefreshTokenKey, "rtok-original"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := RefreshOnce(context.Background(), Options{
+		Secrets: sec,
+		Now:     func() time.Time { return now },
+		Refresh: func(ctx context.Context, cfg oauth.AuthCodeConfig, refreshToken string) (oauth.Token, error) {
+			return oauth.Token{AccessToken: "at-2", ExpiresIn: 3600}, nil
+		},
+		PersistEnv:    func(string, string) error { return nil },
+		SetProcessEnv: func(string, string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("RefreshOnce: %v", err)
+	}
+	if got, _ := sec.Get(RefreshTokenKey); got != "rtok-original" {
+		t.Fatalf("refresh token secret = %q, want preserved rtok-original", got)
+	}
+}

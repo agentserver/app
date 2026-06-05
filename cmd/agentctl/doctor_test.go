@@ -18,12 +18,13 @@ func TestRenderDoctor(t *testing.T) {
 		},
 		Modelserver: state.ModelserverState{ProjectID: "p1", APIKeySuffix: "wxyz"},
 		Agentserver: state.AgentserverState{WorkspaceID: "ws-1"},
-		VSCode: state.VSCodeState{Path: `C:\Code.exe`, Version: "1.96.0"},
+		VSCode:      state.VSCodeState{Path: `C:\Code.exe`, Version: "1.96.0"},
 	}
 	var buf bytes.Buffer
 	renderDoctor(&buf, s)
 	out := buf.String()
 	for _, want := range []string{
+		"星池指挥官 doctor",
 		"onboarding: complete",
 		"modelserver: project=p1",
 		"vscode: 1.96.0",

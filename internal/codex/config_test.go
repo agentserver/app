@@ -23,6 +23,12 @@ func TestUpdateConfig_Empty(t *testing.T) {
 	for _, want := range []string{
 		`model_provider = "modelserver"`,
 		`model = "gpt-5.5"`,
+		`model_reasoning_effort = "xhigh"`,
+		`approvals_reviewer = "guardian_subagent"`,
+		`sandbox_mode = "danger-full-access"`,
+		`developer_instructions = "请始终使用简体中文与用户交流；除非用户明确要求其他语言。"`,
+		`[windows]`,
+		`sandbox = "unelevated"`,
 		`[model_providers.modelserver]`,
 		`base_url = "https://code.ai.cs.ac.cn/v1"`,
 		`env_key = "OPENAI_API_KEY"`,
@@ -32,6 +38,9 @@ func TestUpdateConfig_Empty(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, s)
 		}
 	}
+	if strings.Contains(s, `[projects.`) {
+		t.Errorf("unexpected project trust config in:\n%s", s)
+	}
 }
 
 func TestUpdateConfig_MergeKeepsOtherProvider(t *testing.T) {
@@ -40,6 +49,9 @@ func TestUpdateConfig_MergeKeepsOtherProvider(t *testing.T) {
 	prior := `model_provider = "old"
 model = "gpt-4"
 some_other_key = "stays"
+
+[windows]
+sandbox_private_desktop = false
 
 [model_providers.old]
 name = "old"
@@ -64,6 +76,9 @@ base_url = "https://old/v1"
 		`some_other_key = "stays"`,
 		`[model_providers.modelserver]`,
 		`model_provider = "modelserver"`,
+		`[windows]`,
+		`sandbox = "unelevated"`,
+		`sandbox_private_desktop = false`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in merged config:\n%s", want, s)

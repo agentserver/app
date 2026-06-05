@@ -11,16 +11,17 @@ import (
 )
 
 var (
-	modadvapi32           = syscall.NewLazyDLL("advapi32.dll")
-	procCredReadW         = modadvapi32.NewProc("CredReadW")
-	procCredWriteW        = modadvapi32.NewProc("CredWriteW")
-	procCredDeleteW       = modadvapi32.NewProc("CredDeleteW")
-	procCredFree          = modadvapi32.NewProc("CredFree")
+	modadvapi32     = syscall.NewLazyDLL("advapi32.dll")
+	procCredReadW   = modadvapi32.NewProc("CredReadW")
+	procCredWriteW  = modadvapi32.NewProc("CredWriteW")
+	procCredDeleteW = modadvapi32.NewProc("CredDeleteW")
+	procCredFree    = modadvapi32.NewProc("CredFree")
 )
 
 const (
-	credTypeGeneric       = 1
+	credTypeGeneric         = 1
 	credPersistLocalMachine = 2
+	errNoSuchLogonSession   = syscall.Errno(1312)
 )
 
 // CREDENTIAL mirrors the Windows CREDENTIALW structure (subset).
@@ -62,7 +63,7 @@ func (k *keyringStore) Get(key string) (string, error) {
 		uintptr(unsafe.Pointer(&pcred)),
 	)
 	if r == 0 {
-		if err.(syscall.Errno) == syscall.ERROR_NOT_FOUND {
+		if isCredentialMissing(err) {
 			return "", ErrNotFound
 		}
 		return "", fmt.Errorf("CredReadW: %w", err)
@@ -109,10 +110,18 @@ func (k *keyringStore) Delete(key string) error {
 		0,
 	)
 	if r == 0 {
-		if err.(syscall.Errno) == syscall.ERROR_NOT_FOUND {
+		if isCredentialMissing(err) {
 			return nil
 		}
 		return fmt.Errorf("CredDeleteW: %w", err)
 	}
 	return nil
+}
+
+func isCredentialMissing(err error) bool {
+	errno, ok := err.(syscall.Errno)
+	if !ok {
+		return false
+	}
+	return errno == syscall.ERROR_NOT_FOUND || errno == errNoSuchLogonSession
 }

@@ -1,0 +1,15 @@
+{
+  "version": "1.96.0",
+  "sha256": "3b445b7031069b527c16202107baa56ad5f8b5e09e43d688dc71d099c8e1cad1",
+  "expected_size": 104934400,
+  "urls": [
+    "https://vscode.download.prss.microsoft.com/dbazure/download/stable/138f619c86f1199955d53b4166bef66ef252935c/VSCodeUserSetup-x64-1.96.0.exe",
+    "https://update.code.visualstudio.com/1.96.0/win32-x64-user/stable"
+  ],
+  "silent_args": [
+    "/VERYSILENT",
+    "/MERGETASKS=!runcode,addtopath",
+    "/SUPPRESSMSGBOXES",
+    "/NORESTART"
+  ]
+}

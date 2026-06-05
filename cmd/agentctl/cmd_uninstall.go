@@ -3,11 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
 
+	"github.com/agentserver/agentserver-pkg/internal/branding"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
-	"github.com/agentserver/agentserver-pkg/internal/shortcut"
+	"github.com/agentserver/agentserver-pkg/internal/uninstall"
 )
 
 func runUninstall(args []string) {
@@ -18,7 +18,7 @@ func runUninstall(args []string) {
 
 	p, _ := paths.Default()
 	if !*silent {
-		fmt.Println("This will remove agentserver-vscode shortcuts, context menu, state, and secrets.")
+		fmt.Printf("This will remove %s shortcuts, context menu, state, and secrets.\n", branding.DisplayName)
 		fmt.Print("Proceed? [y/N] ")
 		var ans string
 		fmt.Scanln(&ans)
@@ -28,13 +28,13 @@ func runUninstall(args []string) {
 		}
 	}
 
-	_ = shortcut.UninstallAll(shortcut.ContextMenuInput{RegistryKeySuffix: "AgentserverVscode"},
-		"agentserver-vscode")
 	sec := secrets.New(p.SecretsFile)
-	_ = sec.Delete("modelserver_api_key")
-	_ = sec.Delete("agentserver_ws_api_key")
-	_ = os.RemoveAll(p.InstallRoot)
-	_ = os.RemoveAll(p.LocalAppDataRoot)
+	if err := uninstall.Run(uninstall.Options{
+		Paths:   p,
+		Secrets: sec,
+	}); err != nil {
+		fmt.Println("warning:", err)
+	}
 
 	if *removeVSCode {
 		fmt.Println("--vscode removal not implemented in v1; please remove manually via Apps & Features.")

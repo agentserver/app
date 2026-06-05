@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/agentserver/agentserver-pkg/internal/branding"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
@@ -24,7 +25,7 @@ func runDoctor() {
 }
 
 func renderDoctor(w io.Writer, s *state.State) {
-	fmt.Fprintf(w, "agentserver-vscode doctor\n")
+	fmt.Fprintf(w, "%s doctor\n", branding.DisplayName)
 	fmt.Fprintf(w, "  schema_version: %d\n", s.SchemaVersion)
 	fmt.Fprintf(w, "  install_id: %s\n", s.InstallID)
 	fmt.Fprintf(w, "  onboarding: %s\n", s.Onboarding.Status)

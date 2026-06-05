@@ -156,11 +156,7 @@ func runTestConfigure() {
 	}
 	fmt.Printf("wrote settings.json: %s\n", settingsPath)
 
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.Settings{
-		Provider: "modelserver", Model: "gpt-5.5",
-		BaseURL: "https://code.ai.cs.ac.cn/v1",
-		EnvKey:  "OPENAI_API_KEY", WireAPI: "responses",
-	}); err != nil {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
 		die(err)
 	}
 	fmt.Printf("wrote codex config: %s\n", p.CodexConfigFile)

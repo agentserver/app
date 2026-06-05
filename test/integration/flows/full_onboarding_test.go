@@ -84,6 +84,12 @@ func TestFullOnboarding_MS_AS(t *testing.T) {
 	if v, err := sec.Get("modelserver_api_key"); err != nil || v == "" {
 		t.Errorf("ms key not stored: %v", err)
 	}
+	if v, err := sec.Get("modelserver_refresh_token"); err != nil || v == "" {
+		t.Errorf("ms refresh token not stored: %v", err)
+	}
+	if v, err := sec.Get("modelserver_access_token_expires_at"); err != nil || v == "" {
+		t.Errorf("ms token expiry not stored: %v", err)
+	}
 	if v, err := sec.Get("agentserver_ws_api_key"); err != nil || v == "" {
 		t.Errorf("ws key not stored: %v", err)
 	}

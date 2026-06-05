@@ -54,13 +54,17 @@ func createShellLink(linkPath, target, args, icon, workdir string) error {
 }
 
 func installContextMenuPlatform(in ContextMenuInput) error {
-	for _, base := range []string{
-		`Software\Classes\Directory\shell\` + in.RegistryKeySuffix,
-		`Software\Classes\Directory\Background\shell\` + in.RegistryKeySuffix,
+	for _, entry := range []struct {
+		base     string
+		argToken string
+	}{
+		{`Software\Classes\*\shell\` + in.RegistryKeySuffix, `%1`},
+		{`Software\Classes\Directory\shell\` + in.RegistryKeySuffix, `%V`},
+		{`Software\Classes\Directory\Background\shell\` + in.RegistryKeySuffix, `%V`},
 	} {
-		k, _, err := registry.CreateKey(registry.CURRENT_USER, base, registry.ALL_ACCESS)
+		k, _, err := registry.CreateKey(registry.CURRENT_USER, entry.base, registry.ALL_ACCESS)
 		if err != nil {
-			return fmt.Errorf("create %s: %w", base, err)
+			return fmt.Errorf("create %s: %w", entry.base, err)
 		}
 		if err := k.SetStringValue("", in.MenuLabel); err != nil {
 			k.Close()
@@ -71,13 +75,12 @@ func installContextMenuPlatform(in ContextMenuInput) error {
 		}
 		k.Close()
 
-		cmdKey := base + `\command`
+		cmdKey := entry.base + `\command`
 		k2, _, err := registry.CreateKey(registry.CURRENT_USER, cmdKey, registry.ALL_ACCESS)
 		if err != nil {
 			return fmt.Errorf("create %s: %w", cmdKey, err)
 		}
-		// Quote handler exe + pass %V as the right-clicked folder path
-		cmd := fmt.Sprintf(`"%s" "%%V"`, in.HandlerExe)
+		cmd := fmt.Sprintf(`"%s" "%s"`, in.HandlerExe, entry.argToken)
 		if err := k2.SetStringValue("", cmd); err != nil {
 			k2.Close()
 			return err
@@ -89,6 +92,8 @@ func installContextMenuPlatform(in ContextMenuInput) error {
 
 func uninstallAllPlatform(in ContextMenuInput, desktopName string) error {
 	for _, base := range []string{
+		`Software\Classes\*\shell\` + in.RegistryKeySuffix + `\command`,
+		`Software\Classes\*\shell\` + in.RegistryKeySuffix,
 		`Software\Classes\Directory\shell\` + in.RegistryKeySuffix + `\command`,
 		`Software\Classes\Directory\shell\` + in.RegistryKeySuffix,
 		`Software\Classes\Directory\Background\shell\` + in.RegistryKeySuffix + `\command`,

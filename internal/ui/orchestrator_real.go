@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
+	"github.com/agentserver/agentserver-pkg/internal/branding"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/download"
 	"github.com/agentserver/agentserver-pkg/internal/env"
@@ -17,6 +19,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/shortcut"
 	"github.com/agentserver/agentserver-pkg/internal/state"
+	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
 
@@ -57,9 +60,10 @@ type Deps struct {
 	Shutdown func()
 
 	// Used by Finalize (set by launcher; see P9.3)
-	LauncherExePath   string
-	OpenFolderExePath string
-	IconPath          string
+	LauncherExePath       string
+	OpenFolderExePath     string
+	TokenRefresherExePath string
+	IconPath              string
 }
 
 type realOrchestrator struct {
@@ -104,8 +108,8 @@ func (r *realOrchestrator) LoginModelserver(ctx context.Context) (string, error)
 	port, ln, err := oauth.ReservePort(r.d.MSOAuth)
 	if err != nil {
 		if errors.Is(err, oauth.ErrAllPortsBusy) {
-			return "", fmt.Errorf("OAuth 回调端口 %v 全部被占用, 请关闭其他 agentserver-vscode 进程后重试",
-				r.d.MSOAuth.Ports)
+			return "", fmt.Errorf("OAuth 回调端口 %v 全部被占用, 请关闭其他 %s 进程后重试",
+				r.d.MSOAuth.Ports, branding.DisplayName)
 		}
 		return "", err
 	}
@@ -160,18 +164,16 @@ func (r *realOrchestrator) PollModelserverLogin(ctx context.Context) (modelserve
 		// "ms-" API-key prefix. The admin path /api/v1/* requires modelserver's
 		// own JWT, which PKCE doesn't produce — so we skip PickOrCreateProject
 		// and CreateAPIKey entirely.
-		//
-		// Tradeoff: access_token expires in tok.ExpiresIn seconds (typ. 3600).
-		// codex won't refresh on its own. When it expires the user will see
-		// a 401 from /v1/* and need to re-launch the installer to re-login.
-		// Adding a refresh-token heartbeat is tracked separately.
 		key := modelserver.APIKey{
 			Secret:    tok.AccessToken,
 			KeySuffix: lastN(tok.AccessToken, 4),
 		}
-		if err := r.d.Secrets.Set("modelserver_api_key", key.Secret); err != nil {
+		if _, err := tokenrefresh.StoreToken(r.d.Secrets, tok, time.Now().UTC(), ""); err != nil {
 			r.cleanupMS()
 			return modelserver.APIKey{}, err
+		}
+		if r.d.TokenRefresherExePath != "" {
+			_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 		}
 		if err := r.d.State.Update(func(s *state.State) error {
 			// ProjectID intentionally left empty: PKCE flow doesn't have one.
@@ -331,7 +333,24 @@ func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
 		return err
 	}
 	if s.VSCode.Path == "" {
-		return fmt.Errorf("ConfigureVSCode: vscode.Path unknown — run EnsureVSCode first")
+		det, detErr := vscode.Detect()
+		if detErr != nil || !det.Installed || det.Path == "" {
+			if detErr != nil {
+				return fmt.Errorf("ConfigureVSCode: vscode.Path unknown — run EnsureVSCode first: %w", detErr)
+			}
+			return fmt.Errorf("ConfigureVSCode: vscode.Path unknown — run EnsureVSCode first")
+		}
+		if err := r.d.State.Update(func(s *state.State) error {
+			s.VSCode.Path = det.Path
+			s.VSCode.Version = det.Version
+			s.VSCode.InstalledByUs = false
+			s.Onboarding.AddCompleted("vscode_installed")
+			return nil
+		}); err != nil {
+			return err
+		}
+		s.VSCode.Path = det.Path
+		s.VSCode.Version = det.Version
 	}
 	// Download codex.exe to r.d.CodexAbsPath if missing.
 	if r.d.CodexAbsPath != "" {
@@ -361,11 +380,7 @@ func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
 		return err
 	}
 	// Write/merge ~/.codex/config.toml
-	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.Settings{
-		Provider: "modelserver", Model: "gpt-5.5",
-		BaseURL: "https://code.ai.cs.ac.cn/v1",
-		EnvKey:  "OPENAI_API_KEY", WireAPI: "responses",
-	}); err != nil {
+	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.ModelserverSettings()); err != nil {
 		return err
 	}
 	// Setx OPENAI_API_KEY (no-op on non-Windows)
@@ -373,7 +388,11 @@ func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
 		apiKey, err := r.d.Secrets.Get("modelserver_api_key")
 		if err == nil {
 			_ = env.PersistUserEnv("OPENAI_API_KEY", apiKey)
+			_ = os.Setenv("OPENAI_API_KEY", apiKey)
 		}
+	}
+	if r.d.TokenRefresherExePath != "" {
+		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 	}
 	// Install zh-hans language pack + our embedded .vsix
 	if err := vscode.InstallExtensions(ctx, vscode.Installer{
@@ -395,7 +414,7 @@ func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
 func (r *realOrchestrator) Finalize(ctx context.Context) error {
 	if r.d.LauncherExePath != "" {
 		if err := shortcut.EnsureDesktopShortcut(shortcut.DesktopInput{
-			Name:      "agentserver-vscode",
+			Name:      branding.DisplayName,
 			TargetExe: r.d.LauncherExePath,
 			IconPath:  r.d.IconPath,
 		}); err != nil {
@@ -410,7 +429,7 @@ func (r *realOrchestrator) Finalize(ctx context.Context) error {
 	}
 	if r.d.OpenFolderExePath != "" {
 		if err := shortcut.InstallContextMenu(shortcut.ContextMenuInput{
-			MenuLabel:         "用 agentserver-vscode 打开",
+			MenuLabel:         branding.ContextMenuLabel,
 			HandlerExe:        r.d.OpenFolderExePath,
 			IconPath:          r.d.IconPath,
 			RegistryKeySuffix: "AgentserverVscode",
@@ -438,10 +457,15 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 	if s.VSCode.Path == "" {
 		return fmt.Errorf("VS Code path unknown; was vscode_install completed?")
 	}
-	cmd := exec.Command(s.VSCode.Path,
-		"--user-data-dir", r.d.VSCodeUserDataDir,
-		"--extensions-dir", r.d.VSCodeExtDir,
-	)
+	cmd := exec.Command(s.VSCode.Path, vscode.LaunchArgs(r.d.VSCodeUserDataDir, r.d.VSCodeExtDir)...)
+	if r.d.Secrets != nil {
+		if apiKey, err := r.d.Secrets.Get("modelserver_api_key"); err == nil {
+			cmd.Env = vscode.UpsertEnv(os.Environ(), "OPENAI_API_KEY", apiKey)
+		}
+	}
+	if r.d.TokenRefresherExePath != "" {
+		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
+	}
 	// Don't inherit our stdio — we're about to shut down.
 	cmd.Stdin = nil
 	cmd.Stdout = nil

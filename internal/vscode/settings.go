@@ -27,13 +27,14 @@ func WriteSettings(path string, in SettingsInput) error {
 		}
 	}
 	overrides := map[string]any{
-		"locale":                          "zh-cn",
-		"telemetry.telemetryLevel":        "off",
-		"workbench.startupEditor":         "none",
-		"workbench.activityBar.location":  "hidden",
-		"workbench.statusBar.visible":     true,
-		"workbench.panel.defaultLocation": "bottom",
-		"workbench.panel.opensMaximized":  "always",
+		"locale":                             "zh-cn",
+		"telemetry.telemetryLevel":           "off",
+		"workbench.editor.languageDetection": false,
+		"workbench.startupEditor":            "none",
+		"workbench.activityBar.location":     "hidden",
+		"workbench.statusBar.visible":        true,
+		"workbench.panel.defaultLocation":    "bottom",
+		"workbench.panel.opensMaximized":     "always",
 
 		"agentserverVscode.panel.allowed":             []string{"terminal", "output"},
 		"agentserverVscode.startup.openFolderIfEmpty": true,

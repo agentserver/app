@@ -154,3 +154,66 @@ func TestFinishPKCE_InvalidGrant(t *testing.T) {
 		t.Errorf("error = %q, want to contain 'invalid_grant'", err.Error())
 	}
 }
+
+func TestRefreshToken_Success(t *testing.T) {
+	var gotBody url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth2/token" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
+			t.Errorf("content-type = %q", r.Header.Get("Content-Type"))
+		}
+		if got := r.Header.Get("Accept"); got != "application/json" {
+			t.Errorf("Accept = %q", got)
+		}
+		_ = r.ParseForm()
+		gotBody = r.PostForm
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"tok-refreshed","token_type":"Bearer","refresh_token":"rtok-2","expires_in":7200}`))
+	}))
+	defer srv.Close()
+
+	cfg := AuthCodeConfig{
+		Endpoint:  srv.URL,
+		TokenPath: "/oauth2/token",
+		ClientID:  "client-refresh",
+	}
+	tok, err := RefreshToken(context.Background(), cfg, "rtok-1")
+	if err != nil {
+		t.Fatalf("RefreshToken: %v", err)
+	}
+	if tok.AccessToken != "tok-refreshed" || tok.RefreshToken != "rtok-2" || tok.ExpiresIn != 7200 {
+		t.Errorf("token = %+v", tok)
+	}
+	if gotBody.Get("grant_type") != "refresh_token" {
+		t.Errorf("grant_type = %q", gotBody.Get("grant_type"))
+	}
+	if gotBody.Get("refresh_token") != "rtok-1" {
+		t.Errorf("refresh_token = %q", gotBody.Get("refresh_token"))
+	}
+	if gotBody.Get("client_id") != "client-refresh" {
+		t.Errorf("client_id = %q", gotBody.Get("client_id"))
+	}
+	if gotBody.Get("redirect_uri") != "" || gotBody.Get("code_verifier") != "" {
+		t.Errorf("refresh request should not include auth-code fields: %v", gotBody)
+	}
+}
+
+func TestRefreshToken_InvalidGrant(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"invalid_grant","error_description":"refresh token expired"}`))
+	}))
+	defer srv.Close()
+
+	cfg := AuthCodeConfig{Endpoint: srv.URL, TokenPath: "/oauth2/token", ClientID: "x"}
+	_, err := RefreshToken(context.Background(), cfg, "expired-refresh-token")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid_grant") {
+		t.Errorf("error = %q, want to contain 'invalid_grant'", err.Error())
+	}
+}

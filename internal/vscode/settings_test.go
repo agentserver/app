@@ -22,6 +22,9 @@ func TestWriteSettings_Empty(t *testing.T) {
 	if m["locale"] != "zh-cn" {
 		t.Errorf("locale: %v", m["locale"])
 	}
+	if m["workbench.editor.languageDetection"] != false {
+		t.Errorf("languageDetection: %v", m["workbench.editor.languageDetection"])
+	}
 	if m["agentserverVscode.terminal.profileName"] != "codex" {
 		t.Errorf("profile: %v", m["agentserverVscode.terminal.profileName"])
 	}

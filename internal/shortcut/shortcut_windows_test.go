@@ -44,6 +44,10 @@ func TestInstallContextMenu_Windows(t *testing.T) {
 	defer func() {
 		// Cleanup
 		registry.DeleteKey(registry.CURRENT_USER,
+			`Software\Classes\*\shell\AgentserverVscodeTest\command`)
+		registry.DeleteKey(registry.CURRENT_USER,
+			`Software\Classes\*\shell\AgentserverVscodeTest`)
+		registry.DeleteKey(registry.CURRENT_USER,
 			`Software\Classes\Directory\shell\AgentserverVscodeTest\command`)
 		registry.DeleteKey(registry.CURRENT_USER,
 			`Software\Classes\Directory\shell\AgentserverVscodeTest`)
@@ -61,5 +65,16 @@ func TestInstallContextMenu_Windows(t *testing.T) {
 	label, _, _ := k.GetStringValue("")
 	if label != "Test menu label" {
 		t.Errorf("label %q", label)
+	}
+
+	fileCmd, err := registry.OpenKey(registry.CURRENT_USER,
+		`Software\Classes\*\shell\AgentserverVscodeTest\command`, registry.QUERY_VALUE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fileCmd.Close()
+	cmd, _, _ := fileCmd.GetStringValue("")
+	if cmd != `"C:\Windows\System32\notepad.exe" "%1"` {
+		t.Errorf("file command %q", cmd)
 	}
 }

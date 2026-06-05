@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue';
+import { ref, shallowRef, onMounted, watch } from 'vue';
 import type { StepInstance, OnboardingHandle } from '../composables/useOnboarding';
 import * as api from '../api';
 import { useSSE, type SSEHandle, type ProgressEvent } from '../composables/useSSE';
@@ -10,18 +10,25 @@ const props = defineProps<{
   onboarding: OnboardingHandle;
 }>();
 
-const sse = ref<SSEHandle | null>(null);
+const sse = shallowRef<SSEHandle | null>(null);
+const streamError = ref<string | undefined>();
 
 async function start() {
   props.onboarding.markStepInProgress(props.step.id, '准备中…');
+  streamError.value = undefined;
   try {
     const handle = await api.startVSCodeInstall();
     sse.value = useSSE(handle.stream_id);
     // Watch incoming events; on stream end, refresh state to learn outcome
-    watch(() => sse.value?.latest, (ev: ProgressEvent | undefined) => {
-      if (ev) renderEvent(ev);
+    watch(() => sse.value?.latest.value, (ev: ProgressEvent | undefined) => {
+      if (ev) {
+        renderEvent(ev);
+        if (ev.stage === 'error') {
+          streamError.value = ev.msg || 'VS Code 安装失败';
+        }
+      }
     });
-    watch(() => sse.value?.done, async (d) => {
+    watch(() => sse.value?.done.value, async (d) => {
       if (d) {
         // Stream closed — refresh state and infer success/error from
         // completed_steps. The backend marks vscode_installed only on
@@ -33,7 +40,8 @@ async function start() {
         } else {
           props.onboarding.markStepError(
             props.step.id,
-            '安装未完成 — 请重试 (查看 launcher 日志获取详情)',
+            '安装未完成',
+            streamError.value || '请重试；如果仍失败，请查看 launcher 日志获取详情。',
           );
         }
       }

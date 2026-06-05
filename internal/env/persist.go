@@ -13,3 +13,10 @@ func PersistUserEnv(key, value string) error {
 	}
 	return persistUserEnv(key, value)
 }
+
+func DeleteUserEnv(key string) error {
+	if key == "" {
+		return errors.New("env.DeleteUserEnv: key required")
+	}
+	return deleteUserEnv(key)
+}

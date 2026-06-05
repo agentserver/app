@@ -113,7 +113,9 @@ func (s *server) handleVSCodeInstall(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer s.sse.close(streamID)
 		ch := s.sse.channel(streamID)
-		s.o.EnsureVSCode(context.Background(), ch)
+		if err := s.o.EnsureVSCode(context.Background(), ch); err != nil {
+			ch <- ProgressEvent{Stage: "error", Msg: err.Error()}
+		}
 	}()
 	writeJSON(w, 200, map[string]string{"stream_id": streamID})
 }
@@ -174,11 +176,18 @@ func (h *sseHub) channel(id string) chan<- ProgressEvent {
 
 func (h *sseHub) close(id string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if ch, ok := h.streams[id]; ok {
+	ch, ok := h.streams[id]
+	if ok {
 		close(ch)
-		delete(h.streams, id)
+		time.AfterFunc(5*time.Minute, func() {
+			h.mu.Lock()
+			defer h.mu.Unlock()
+			if h.streams[id] == ch {
+				delete(h.streams, id)
+			}
+		})
 	}
+	h.mu.Unlock()
 }
 
 func (h *sseHub) handle(w http.ResponseWriter, r *http.Request) {
@@ -202,4 +211,9 @@ func (h *sseHub) handle(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+	h.mu.Lock()
+	if h.streams[id] == ch {
+		delete(h.streams, id)
+	}
+	h.mu.Unlock()
 }

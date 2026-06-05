@@ -17,12 +17,15 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/browser"
+	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
+	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 	"github.com/agentserver/agentserver-pkg/internal/ui"
+	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
 
 func main() {
@@ -47,7 +50,9 @@ func run() error {
 
 	if s.Onboarding.Status == state.StatusComplete && s.VSCode.Path != "" {
 		// Just exec VS Code with our user-data-dir (empty workspace).
-		return execVSCode(s.VSCode.Path, p, "")
+		exe, _ := os.Executable()
+		return execVSCode(s.VSCode.Path, p, "", secrets.New(p.SecretsFile),
+			joinExe(osDir(exe), "token-refresher.exe"))
 	}
 
 	// Otherwise: serve onboarding UI.
@@ -61,16 +66,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	// ops on 2026-06-03 (see docs/ops/modelserver-oauth-client-registration.md).
 	// 8 fixed callback ports because ops registered explicit redirect_uris
 	// rather than wildcard 127.0.0.1.
-	msOAuth := oauth.AuthCodeConfig{
-		Endpoint:     "https://codeapi.cs.ac.cn",
-		AuthPath:     "/oauth2/auth",
-		TokenPath:    "/oauth2/token",
-		ClientID:     "5321f7e6-3d79-4ac9-a742-04809dbf9025",
-		Scope:        "project:inference offline_access",
-		CallbackPath: "/oauth/modelserver/callback",
-		Ports:        []int{53428, 53429, 53430, 53431, 53432, 53433, 53434, 53435},
-		// LoginTimeout: 0 → defaults to 10 * time.Minute in StartListening
-	}
+	msOAuth := modelserver.OAuthConfig()
 	// agentserver: device-code flow at /api/oauth2/device/auth, proxied
 	// to Hydra. The CLI client `agentserver-agent-cli` is pre-registered
 	// by the Helm chart with grant=device_code, public (no secret),
@@ -90,26 +86,27 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	installDir = osDir(installDir)
 
 	deps := ui.Deps{
-		State:             store,
-		Secrets:           sec,
+		State:   store,
+		Secrets: sec,
 		// codeapi.cs.ac.cn is the admin API host (returns JSON). code.cs.ac.cn
 		// is the dashboard SPA — any path there returns the SPA index HTML,
 		// which causes the modelserver client's JSON decoder to fail with
 		// "invalid character '<' looking for beginning of value". This is the
 		// SAME host PKCE uses (msOAuth.Endpoint above).
-		MS:                modelserver.New("https://codeapi.cs.ac.cn"),
-		AS:                agentserver.New("https://agent.cs.ac.cn"),
-		MSOAuth:           msOAuth,
-		ASOAuth:           asOAuth,
-		OpenBrowser:       func(url string) { _ = browser.Open(url) },
-		CodexConfigPath:   p.CodexConfigFile,
-		VSCodeUserDataDir: p.VSCodeUserDataDir,
-		VSCodeExtDir:      p.VSCodeExtDir,
-		EmbeddedVSIXPath:  joinExe(installDir, "agentserver-vscode.vsix"),
-		CodexAbsPath:      p.CodexExePath,
-		LauncherExePath:   joinExe(installDir, "launcher.exe"),
-		OpenFolderExePath: joinExe(installDir, "open-folder.exe"),
-		IconPath:          joinExe(installDir, "icon.ico"),
+		MS:                    modelserver.New("https://codeapi.cs.ac.cn"),
+		AS:                    agentserver.New("https://agent.cs.ac.cn"),
+		MSOAuth:               msOAuth,
+		ASOAuth:               asOAuth,
+		OpenBrowser:           func(url string) { _ = browser.Open(url) },
+		CodexConfigPath:       p.CodexConfigFile,
+		VSCodeUserDataDir:     p.VSCodeUserDataDir,
+		VSCodeExtDir:          p.VSCodeExtDir,
+		EmbeddedVSIXPath:      joinExe(installDir, "agentserver-vscode.vsix"),
+		CodexAbsPath:          p.CodexExePath,
+		LauncherExePath:       joinExe(installDir, "launcher.exe"),
+		OpenFolderExePath:     joinExe(installDir, "open-folder.exe"),
+		TokenRefresherExePath: joinExe(installDir, "token-refresher.exe"),
+		IconPath:              joinExe(installDir, "icon.ico"),
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -142,15 +139,20 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	return err
 }
 
-func execVSCode(codeExe string, p paths.Paths, folder string) error {
-	args := []string{
-		"--user-data-dir", p.VSCodeUserDataDir,
-		"--extensions-dir", p.VSCodeExtDir,
+func execVSCode(codeExe string, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string) error {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+		return err
 	}
-	if folder != "" {
-		args = append(args, folder)
+	if tokenRefresherExe != "" {
+		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
 	}
+	args := vscode.LaunchArgs(p.VSCodeUserDataDir, p.VSCodeExtDir, folder)
 	cmd := exec.Command(codeExe, args...)
+	if sec != nil {
+		if apiKey, err := sec.Get("modelserver_api_key"); err == nil {
+			cmd.Env = vscode.UpsertEnv(os.Environ(), "OPENAI_API_KEY", apiKey)
+		}
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Start()

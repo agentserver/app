@@ -36,7 +36,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `agentctl - maintenance CLI for agentserver-vscode
+	fmt.Fprintln(os.Stderr, `agentctl - maintenance CLI for 星池指挥官
 
 USAGE:
   agentctl doctor                 print install health

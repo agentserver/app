@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Build a portable .zip distribution of agentserver-vscode for Windows.
+# Build a portable .zip distribution of 星池指挥官 for Windows.
 # This is the Inno-Setup-free alternative used when no .exe-building
 # toolchain is available on the dev host.
 #
 # Output: dist/agentserver-vscode-<ver>-portable.zip containing:
 #   launcher.exe, onboarding-server.exe, agentctl.exe, open-folder.exe
+#   uninstall.exe, token-refresher.exe
 #   agentserver-vscode.vsix
+#   vscode-installer.exe (bundled to avoid Microsoft CDN download during install)
 #   codex.exe  (246MB, bundled to avoid GitHub download from CN)
-#   icon.ico, install.ps1, LICENSE.zh.txt, README.txt
+#   icon.ico, install.ps1, ensure-vscode.ps1, vscode-manifest.json
+#   LICENSE.zh.txt, README.txt
 #
 # codex.exe is cached in dist/cache/ across builds so re-packaging doesn't
 # re-fetch the 246MB binary. Delete dist/cache/ to force re-download.
@@ -15,7 +18,7 @@
 # User flow on Windows:
 #   1. Unzip
 #   2. Right-click install.ps1 → "Run with PowerShell" (or via cmdline)
-#   3. Double-click agentserver-vscode desktop shortcut
+#   3. Double-click 星池指挥官 desktop shortcut
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -29,6 +32,30 @@ CODEX_RELEASE="rust-v0.136.0"
 CODEX_ASSET="codex-x86_64-pc-windows-msvc.exe"
 CODEX_URL="https://github.com/openai/codex/releases/download/$CODEX_RELEASE/$CODEX_ASSET"
 CODEX_CACHE="$OUT/cache/$CODEX_RELEASE/$CODEX_ASSET"
+VSCODE_MANIFEST="packaging/windows/vscode-manifest.json"
+
+eval "$(
+python3 - "$VSCODE_MANIFEST" <<'PYEOF'
+import json, shlex, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    m = json.load(f)
+print('VSCODE_VERSION=' + shlex.quote(m['version']))
+print('VSCODE_SHA256=' + shlex.quote(m['sha256']))
+print('VSCODE_SIZE=' + shlex.quote(str(m['expected_size'])))
+print('VSCODE_URL=' + shlex.quote(m['urls'][0]))
+PYEOF
+)"
+VSCODE_CACHE="$OUT/cache/vscode/$VSCODE_VERSION/VSCodeUserSetup-x64-$VSCODE_VERSION.exe"
+
+verify_vscode_cache() {
+  [[ -f "$VSCODE_CACHE" ]] || return 1
+  local size
+  size=$(stat -c%s "$VSCODE_CACHE")
+  [[ "$size" == "$VSCODE_SIZE" ]] || return 1
+  local sum
+  sum=$(sha256sum "$VSCODE_CACHE" | awk '{print $1}')
+  [[ "$sum" == "$VSCODE_SHA256" ]]
+}
 
 # Cache codex.exe so re-packaging doesn't re-fetch 246MB
 if [[ ! -f "$CODEX_CACHE" ]]; then
@@ -48,14 +75,46 @@ fi
 codex_size=$(stat -c%s "$CODEX_CACHE")
 echo "codex.exe: $codex_size bytes (cached)"
 
+if ! verify_vscode_cache; then
+  mkdir -p "$(dirname "$VSCODE_CACHE")"
+  rm -f "$VSCODE_CACHE"
+  if [[ -f "$VSCODE_CACHE.part" ]]; then
+    part_size=$(stat -c%s "$VSCODE_CACHE.part")
+    if (( part_size > VSCODE_SIZE )); then
+      rm -f "$VSCODE_CACHE.part"
+    fi
+  fi
+  echo "Fetching VS Code installer $VSCODE_VERSION (100MB, one-time) ..."
+  echo "  URL: $VSCODE_URL"
+  curl --fail --location --continue-at - --retry 5 --retry-delay 2 \
+    --output "$VSCODE_CACHE.part" "$VSCODE_URL"
+  local_size=$(stat -c%s "$VSCODE_CACHE.part")
+  if [[ "$local_size" != "$VSCODE_SIZE" ]]; then
+    echo "ERROR: VS Code installer size mismatch: got $local_size want $VSCODE_SIZE" >&2
+    exit 2
+  fi
+  local_sum=$(sha256sum "$VSCODE_CACHE.part" | awk '{print $1}')
+  if [[ "$local_sum" != "$VSCODE_SHA256" ]]; then
+    echo "ERROR: VS Code installer SHA256 mismatch: got $local_sum want $VSCODE_SHA256" >&2
+    exit 2
+  fi
+  mv "$VSCODE_CACHE.part" "$VSCODE_CACHE"
+fi
+vscode_size=$(stat -c%s "$VSCODE_CACHE")
+echo "vscode installer: $vscode_size bytes (cached)"
+
 # Pre-flight
 for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          dist/windows/agentctl.exe dist/windows/open-folder.exe \
+         dist/windows/uninstall.exe dist/windows/token-refresher.exe \
          extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \
          internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
+         packaging/windows/ensure-vscode.ps1 \
+         packaging/windows/vscode-manifest.json \
          packaging/windows/icon.ico \
          packaging/windows/LICENSE.zh.txt \
+         "$VSCODE_CACHE" \
          "$CODEX_CACHE"; do
   if [[ ! -e "$f" ]]; then
     echo "missing: $f"
@@ -76,9 +135,14 @@ cp dist/windows/launcher.exe          "$STAGE/"
 cp dist/windows/onboarding-server.exe "$STAGE/"
 cp dist/windows/agentctl.exe          "$STAGE/"
 cp dist/windows/open-folder.exe       "$STAGE/"
+cp dist/windows/uninstall.exe         "$STAGE/"
+cp dist/windows/token-refresher.exe   "$STAGE/"
 
 # Bundled codex.exe (avoids GitHub round-trip during install)
 cp "$CODEX_CACHE" "$STAGE/codex.exe"
+
+# Bundled VS Code installer (avoids Microsoft CDN round-trip during install)
+cp "$VSCODE_CACHE" "$STAGE/vscode-installer.exe"
 
 # VS Code extension
 cp extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \
@@ -86,27 +150,30 @@ cp extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \
 
 # Resources
 cp packaging/windows/install.ps1      "$STAGE/"
+cp packaging/windows/ensure-vscode.ps1 "$STAGE/"
+cp packaging/windows/vscode-manifest.json "$STAGE/"
 cp packaging/windows/icon.ico         "$STAGE/"
 cp packaging/windows/LICENSE.zh.txt   "$STAGE/"
 
 # Plain-English readme
 cat > "$STAGE/README.txt" <<'EOF'
-agentserver-vscode portable — installation
-==========================================
+星池指挥官 portable — installation
+==================================
 
 1) Right-click `install.ps1` and choose "Run with PowerShell"
    (or open PowerShell and run:
     powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1)
 
-2) Wait for "Install complete."
+2) Wait for "Install complete." The installer automatically installs
+   VS Code if it is not already installed.
 
-3) Double-click the "agentserver-vscode" shortcut on your desktop.
+3) Double-click the "星池指挥官" shortcut on your desktop.
    The first launch opens a configuration wizard in your browser.
 
 To uninstall:
-   Open "Apps & features" → search "agentserver-vscode" → Uninstall.
-   Or run: powershell -NoProfile -ExecutionPolicy Bypass -File \
-     "%LOCALAPPDATA%\Programs\agentserver-vscode\install.ps1" -Uninstall -Silent
+   Open "Apps & features" → search "星池指挥官" → Uninstall.
+   Or run:
+     "%LOCALAPPDATA%\Programs\agentserver-vscode\uninstall.exe" --silent
 
 See LICENSE.zh.txt for what gets written to your machine.
 EOF

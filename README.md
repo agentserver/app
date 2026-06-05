@@ -1,6 +1,6 @@
-# agentserver-vscode
+# 星池指挥官
 
-Windows installer that sets up VS Code + codex pre-configured against
+Windows installer (`agentserver-vscode`) that sets up VS Code + codex pre-configured against
 modelserver (`code.cs.ac.cn`) and agentserver (`agent.cs.ac.cn`).
 
 See `docs/superpowers/specs/2026-06-02-agentserver-vscode-installer-design.md`

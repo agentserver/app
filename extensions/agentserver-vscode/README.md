@@ -1,6 +1,6 @@
-# agentserver-vscode (extension)
+# 星池指挥官 (extension)
 
-VS Code extension that ships with the `agentserver-vscode` installer.
+VS Code extension that ships with the `星池指挥官` installer.
 
 Responsibilities:
 - Prompt to open a folder when none is open
