@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,5 +36,49 @@ func TestExecVSCodeEnsuresCodexConfigBeforeLaunch(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q in:\n%s", want, s)
 		}
+	}
+}
+
+func TestLaunchCompletedInstallMigratesVSCodeSettingsBeforeLaunch(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		VSCodeUserDataDir: filepath.Join(dir, "vscode-data"),
+		VSCodeExtDir:      filepath.Join(dir, "vscode-extensions"),
+		CodexConfigFile:   filepath.Join(dir, ".codex", "config.toml"),
+		CodexExePath:      filepath.Join(dir, "bin", "codex.exe"),
+	}
+	settingsPath := filepath.Join(p.VSCodeUserDataDir, "User", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prior := `{
+	  "agentserverVscode.panel.allowed": ["terminal", "output"],
+	  "custom.key": "keep me"
+	}`
+	if err := os.WriteFile(settingsPath, []byte(prior), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := launchCompletedInstall(filepath.Join(dir, "missing-code.exe"), p, nil, "")
+	if err == nil {
+		t.Fatal("expected missing VS Code executable error")
+	}
+
+	b, readErr := os.ReadFile(settingsPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(b, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := settings["agentserverVscode.panel.allowed"]; ok {
+		t.Fatalf("agentserverVscode.panel.allowed should be removed")
+	}
+	if _, ok := settings["agentserverVscode.panel.hideViews"]; !ok {
+		t.Fatalf("agentserverVscode.panel.hideViews should be written")
+	}
+	if settings["custom.key"] != "keep me" {
+		t.Fatalf("custom.key=%v, want keep me", settings["custom.key"])
 	}
 }
