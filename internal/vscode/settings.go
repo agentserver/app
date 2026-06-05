@@ -11,6 +11,10 @@ type SettingsInput struct {
 	CodexAbsPath string // absolute path to codex.exe
 }
 
+var retiredManagedKeys = []string{
+	"agentserverVscode.panel.allowed",
+}
+
 // WriteSettings merges agentserver-vscode defaults into path. Existing
 // user keys not managed by us are preserved.
 func WriteSettings(path string, in SettingsInput) error {
@@ -68,6 +72,9 @@ func WriteSettings(path string, in SettingsInput) error {
 	}
 	for k, v := range overrides {
 		m[k] = v
+	}
+	for _, k := range retiredManagedKeys {
+		delete(m, k)
 	}
 	out, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {

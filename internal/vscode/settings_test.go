@@ -161,3 +161,31 @@ func TestWriteSettings_OverwritesManagedMinimalModeKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteSettings_RemovesRetiredManagedKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "User", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prior := `{
+	  "agentserverVscode.panel.allowed": ["terminal", "output"],
+	  "custom.key": "keep me"
+	}`
+	if err := os.WriteFile(path, []byte(prior), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteSettings(path, SettingsInput{CodexAbsPath: `C:\bin\codex.exe`}); err != nil {
+		t.Fatal(err)
+	}
+	m := readSettingsMap(t, path)
+	if _, ok := m["agentserverVscode.panel.allowed"]; ok {
+		t.Fatalf("agentserverVscode.panel.allowed should be removed")
+	}
+	if m["custom.key"] != "keep me" {
+		t.Fatalf("custom.key=%v, want keep me", m["custom.key"])
+	}
+	if _, ok := m["agentserverVscode.panel.hideViews"]; !ok {
+		t.Fatalf("agentserverVscode.panel.hideViews should be written")
+	}
+}
