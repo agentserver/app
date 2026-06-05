@@ -31,6 +31,7 @@ Set-ScriptOutputEncoding
 
 $AppName    = 'agentserver-vscode'
 $AppDisplayName = '星池指挥官'
+$ContextMenuLabel = '用星池指挥官打开'
 $Version    = '0.1.0'
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
 $RegSubKeyFile = "Software\Classes\*\shell\AgentserverVscode"
@@ -188,7 +189,7 @@ foreach ($entry in @(
     @{ Key = $RegSubKeyDir;  Arg = '%V' },
     @{ Key = $RegSubKeyBg;   Arg = '%V' }
 )) {
-    Set-RegistryStringValue $entry.Key '' '用 星池指挥官 打开'
+    Set-RegistryStringValue $entry.Key '' $ContextMenuLabel
     Set-RegistryStringValue $entry.Key 'Icon' (Join-Path $InstallDir 'icon.ico')
     $cmdKey = "$($entry.Key)\command"
     Set-RegistryStringValue $cmdKey '' "`"$handlerExe`" `"$($entry.Arg)`""

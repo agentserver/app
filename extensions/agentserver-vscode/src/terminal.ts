@@ -3,6 +3,10 @@ import * as vscode from 'vscode';
 let lastSpawn = 0;
 const DEBOUNCE_MS = 200;
 
+export function hasTerminalNamed(terminals: readonly Pick<vscode.Terminal, 'name'>[], name: string): boolean {
+  return terminals.some(t => t.name === name);
+}
+
 export async function openCodexTerminal(profileName: string, preserveFocus = true): Promise<void> {
   const term = vscode.window.createTerminal({ name: profileName });
   term.show(preserveFocus);

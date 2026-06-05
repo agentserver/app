@@ -14,8 +14,14 @@ interface MenuContribution {
 }
 
 interface PackageManifest {
+  description: string;
   contributes: {
     commands: CommandContribution[];
+    configuration: {
+      properties: Record<string, {
+        description: string;
+      }>;
+    };
     menus?: Record<string, MenuContribution[]>;
   };
 }
@@ -69,6 +75,32 @@ suite('package manifest', () => {
     assert.ok(
       !menuEntries.some(m => m.command === 'agentserverVscode.showAdvancedInterface'),
       'advanced interface command should stay hidden from menus',
+    );
+  });
+
+  test('uses simple Chinese descriptions for visible settings', () => {
+    const manifest = readManifest();
+    const properties = manifest.contributes.configuration.properties;
+
+    assert.strictEqual(
+      manifest.description,
+      '让 VS Code 作为星池指挥官的简洁文件夹和会话界面',
+    );
+    assert.strictEqual(
+      properties['agentserverVscode.startup.openFolderIfEmpty'].description,
+      '启动时如果还没有打开文件夹，就提示用户选择一个文件夹。',
+    );
+    assert.strictEqual(
+      properties['agentserverVscode.terminal.respawnOnClose'].description,
+      '关闭会话后自动创建新的会话。',
+    );
+    assert.strictEqual(
+      properties['agentserverVscode.terminal.profileName'].description,
+      '用于后台会话的内部配置名称。',
+    );
+    assert.strictEqual(
+      properties['agentserverVscode.panel.hideViews'].description,
+      '高级设置：需要隐藏的 VS Code 内部视图。',
     );
   });
 });

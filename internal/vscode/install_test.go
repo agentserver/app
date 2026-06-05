@@ -87,7 +87,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"LegacyDesktopLnk",
 				"Desktop\\$AppDisplayName.lnk",
 				"Software\\Classes\\*\\shell\\AgentserverVscode",
-				"用 星池指挥官 打开",
+				"用星池指挥官打开",
 				"Join-Path $InstallDir 'uninstall.exe'",
 				"Set-ScriptOutputEncoding",
 				"Set-RegistryStringValue",

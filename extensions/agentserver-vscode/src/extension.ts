@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { readConfig } from './config';
 import { maybePromptOpenFolder } from './folderPicker';
-import { attachTerminalRespawn, openCodexTerminal } from './terminal';
+import { attachTerminalRespawn, hasTerminalNamed, openCodexTerminal } from './terminal';
 import { lockPanelToTerminal } from './panel';
 import { registerOpenWithSystem } from './systemOpen';
 import { registerAdvancedInterface } from './advanced';
@@ -22,7 +22,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerOpenWithSystem(ctx);
 
   // 4. Ensure a codex terminal exists
-  if (vscode.window.terminals.length === 0) {
+  if (!hasTerminalNamed(vscode.window.terminals, cfg.terminalProfileName)) {
     await openCodexTerminal(cfg.terminalProfileName, true);
   }
 
