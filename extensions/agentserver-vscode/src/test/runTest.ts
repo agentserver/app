@@ -4,10 +4,11 @@ import * as path from 'path';
 import { runTests } from '@vscode/test-electron';
 
 async function main() {
+  let testWorkspace = '';
   try {
     const extensionDevelopmentPath = path.resolve(__dirname, '..', '..');
     const extensionTestsPath = path.resolve(__dirname, 'suite', 'index');
-    const testWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agentserver-vscode-test-'));
+    testWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agentserver-vscode-test-'));
     await runTests({
       extensionDevelopmentPath,
       extensionTestsPath,
@@ -15,7 +16,11 @@ async function main() {
     });
   } catch {
     console.error('Failed to run tests');
-    process.exit(1);
+    process.exitCode = 1;
+  } finally {
+    if (testWorkspace) {
+      fs.rmSync(testWorkspace, { recursive: true, force: true });
+    }
   }
 }
 main();
