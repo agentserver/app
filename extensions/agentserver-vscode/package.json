@@ -73,6 +73,10 @@
       {
         "command": "agentserverVscode.openWithSystem",
         "title": "用系统应用打开"
+      },
+      {
+        "command": "agentserverVscode.showAdvancedInterface",
+        "title": "星池指挥官: 显示高级界面"
       }
     ],
     "menus": {

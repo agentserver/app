@@ -56,4 +56,13 @@ suite('package manifest', () => {
     assert.ok(entry, 'missing explorer/context menu entry for open-with-system');
     assert.strictEqual(entry.when, 'resourceScheme == file');
   });
+
+  test('contributes hidden advanced interface command', () => {
+    const manifest = readManifest();
+    const byCommand = new Map(manifest.contributes.commands.map(c => [c.command, c.title]));
+    assert.strictEqual(
+      byCommand.get('agentserverVscode.showAdvancedInterface'),
+      '星池指挥官: 显示高级界面',
+    );
+  });
 });

@@ -3,9 +3,9 @@ import * as vscode from 'vscode';
 let lastSpawn = 0;
 const DEBOUNCE_MS = 200;
 
-export async function openCodexTerminal(profileName: string): Promise<void> {
+export async function openCodexTerminal(profileName: string, preserveFocus = true): Promise<void> {
   const term = vscode.window.createTerminal({ name: profileName });
-  term.show(false);
+  term.show(preserveFocus);
   lastSpawn = Date.now();
 }
 
@@ -21,7 +21,7 @@ export function attachTerminalRespawn(
       if (Date.now() - lastSpawn < DEBOUNCE_MS) return; // avoid runaway
       // If the window itself is closing, do nothing.
       if (!vscode.window.state.focused) return;
-      await openCodexTerminal(profileName);
+      await openCodexTerminal(profileName, true);
     }),
   );
 }
