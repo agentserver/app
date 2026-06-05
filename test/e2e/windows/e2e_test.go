@@ -50,13 +50,17 @@ func TestWindowsE2E(t *testing.T) {
 	}
 
 	// 5. Assert: desktop .lnk exists, registry has shell hook.
-	out, _, _ = c.Pwsh(`Test-Path "$env:USERPROFILE\Desktop\agentserver-vscode.lnk"`)
+	out, _, _ = c.Pwsh(`Test-Path "$env:USERPROFILE\Desktop\星池指挥官.lnk"`)
 	if strings.TrimSpace(out) != "True" {
 		t.Errorf("desktop shortcut missing: %s", out)
 	}
 	out, _, _ = c.Pwsh(`Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\AgentserverVscode'`)
 	if strings.TrimSpace(out) != "True" {
 		t.Errorf("registry key missing: %s", out)
+	}
+	out, _, _ = c.Pwsh(`(Get-Item 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\AgentserverVscode').GetValue('')`)
+	if strings.TrimSpace(out) != "用星池指挥官打开" {
+		t.Errorf("context menu label wrong: %s", out)
 	}
 
 	// 6. Launch launcher (in background — it serves onboarding-server).
