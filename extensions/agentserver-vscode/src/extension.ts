@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { readConfig } from './config';
 import { maybePromptOpenFolder } from './folderPicker';
 import { attachTerminalRespawn, openCodexTerminal, revealTerminalNamed, startupTerminalOptions } from './terminal';
-import { lockPanelToTerminal } from './panel';
+import { hidePanelViews, registerPanelCommands } from './panel';
 import { registerOpenWithSystem } from './systemOpen';
 import { registerAdvancedInterface } from './advanced';
 import { hideMinimalChrome } from './chrome';
@@ -16,8 +16,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     if (opened) return;
   }
 
-  // 2. Panel lockdown
-  lockPanelToTerminal(ctx, cfg.panelHideViews);
+  // 2. Panel commands
+  registerPanelCommands(ctx);
 
   // 3. File context commands
   registerOpenWithSystem(ctx);
@@ -26,6 +26,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   if (!revealTerminalNamed(vscode.window.terminals, cfg.terminalProfileName, startupTerminalOptions)) {
     await openCodexTerminal(cfg.terminalProfileName, startupTerminalOptions);
   }
+  await hidePanelViews(cfg.panelHideViews);
   await hideMinimalChrome();
 
   // 5. Respawn on close

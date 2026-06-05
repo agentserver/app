@@ -111,12 +111,11 @@ func TestWriteSettings_MinimalModeDefaults(t *testing.T) {
 		t.Fatalf("agentserverVscode.panel.hideViews=%T, want array", m["agentserverVscode.panel.hideViews"])
 	}
 	wantHideViews := []string{
-		"workbench.panel.markers",
+		"workbench.panel.markers.view",
 		"workbench.panel.output",
-		"workbench.panel.repl",
-		"workbench.debug.console",
+		"workbench.panel.repl.view",
 		"workbench.panel.comments",
-		"ports",
+		"~remote.forwardedPorts",
 		"workbench.panel.testResults",
 		"outline",
 		"timeline",
