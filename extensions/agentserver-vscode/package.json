@@ -64,11 +64,11 @@
     "commands": [
       {
         "command": "agentserverVscode.doctor",
-        "title": "星池指挥官: 诊断"
+        "title": "星池指挥官: 诊断工具"
       },
       {
         "command": "agentserverVscode.reopenCodexTerminal",
-        "title": "星池指挥官: 重开 codex 终端"
+        "title": "星池指挥官: 创建新的会话"
       }
     ]
   }

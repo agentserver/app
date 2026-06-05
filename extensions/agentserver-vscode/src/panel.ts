@@ -18,7 +18,7 @@ export function lockPanelToTerminal(
   // expose that event. Instead poll the activeTextEditor + activePanel
   // commands periodically, OR rely on user invoking commands. As a v1
   // pragmatic approach: re-focus terminal when configuration says so.
-  // The user can also manually run "agentserver-vscode: 重开 codex 终端".
+  // The user can also manually run "星池指挥官: 创建新的会话".
   ctx.subscriptions.push(
     vscode.commands.registerCommand('agentserverVscode.focusTerminal', async () => {
       await vscode.commands.executeCommand(TERMINAL_FOCUS_CMD);
