@@ -212,7 +212,7 @@ if ($MinimalVSCode) {
     Write-Step "Writing install mode minimal_vscode..."
     & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'minimal_vscode' -Path (Join-Path $InstallDir 'install-mode.json')
     Write-Step "Ensuring VS Code is installed..."
-    & (Join-Path $InstallDir 'ensure-vscode.ps1') -ManifestPath (Join-Path $InstallDir 'vscode-manifest.json')
+    & (Join-Path $InstallDir 'ensure-vscode.ps1') -ManifestPath (Join-Path $InstallDir 'vscode-manifest.json') -LocalInstallerPath (Join-Path $srcDir 'vscode-installer.exe')
 } else {
     Write-Step "Writing install mode codex_desktop..."
     & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'codex_desktop' -Path (Join-Path $InstallDir 'install-mode.json')

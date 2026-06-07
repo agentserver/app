@@ -203,6 +203,17 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 	}
 }
 
+func TestWindowsPortableMinimalVSCodeUsesBundledInstaller(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "& (Join-Path $InstallDir 'ensure-vscode.ps1') -ManifestPath (Join-Path $InstallDir 'vscode-manifest.json') -LocalInstallerPath (Join-Path $srcDir 'vscode-installer.exe')"
+	if !strings.Contains(string(body), want) {
+		t.Fatalf("install.ps1 should pass the portable bundled VS Code installer to ensure-vscode.ps1; missing %q", want)
+	}
+}
+
 func TestWindowsInnoChineseLanguageFileIsBundled(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/ChineseSimplified.isl")
 	if err != nil {
