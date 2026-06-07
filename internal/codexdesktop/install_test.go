@@ -3,6 +3,7 @@ package codexdesktop
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -56,6 +57,26 @@ func TestEnsureInstalledRunsWingetThenVerifies(t *testing.T) {
 	}
 }
 
+func TestEnsureInstalledReturnsInitialDetectError(t *testing.T) {
+	detectErr := errors.New("registry unavailable")
+	calls := 0
+	_, err := EnsureInstalled(context.Background(), Options{
+		Detect: func() (Detected, error) {
+			return Detected{}, detectErr
+		},
+		RunWinget: func(context.Context, []string) (string, error) {
+			calls++
+			return "", nil
+		},
+	})
+	if !errors.Is(err, detectErr) {
+		t.Fatalf("err=%v, want detect error", err)
+	}
+	if calls != 0 {
+		t.Fatalf("winget called %d times", calls)
+	}
+}
+
 func TestEnsureInstalledClassifiesWingetFailure(t *testing.T) {
 	_, err := EnsureInstalled(context.Background(), Options{
 		Detect: func() (Detected, error) { return Detected{Installed: false}, nil },
@@ -65,5 +86,38 @@ func TestEnsureInstalledClassifiesWingetFailure(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "Microsoft Store source") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestEnsureInstalledSurfacesPostInstallDetectError(t *testing.T) {
+	detectCalls := 0
+	detectErr := errors.New("post-install registry read failed")
+	_, err := EnsureInstalled(context.Background(), Options{
+		Detect: func() (Detected, error) {
+			detectCalls++
+			if detectCalls == 1 {
+				return Detected{Installed: false}, ErrNotFound
+			}
+			return Detected{}, detectErr
+		},
+		RunWinget: func(context.Context, []string) (string, error) {
+			return "installed output", nil
+		},
+	})
+	if !errors.Is(err, detectErr) {
+		t.Fatalf("err=%v, want post-install detect error", err)
+	}
+	if !strings.Contains(err.Error(), "installed output") {
+		t.Fatalf("err=%v, want winget output", err)
+	}
+}
+
+func TestEnsureInstalledDefaultUnsupportedOnNonWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-Windows behavior")
+	}
+	_, err := EnsureInstalled(context.Background(), Options{})
+	if !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Fatalf("err=%v, want unsupported platform", err)
 	}
 }

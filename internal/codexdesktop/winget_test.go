@@ -39,3 +39,20 @@ func TestClassifyWingetError(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyWingetErrorWrapsWingetNotFound(t *testing.T) {
+	got := ClassifyWingetError(ErrWingetNotFound, "")
+	if !errors.Is(got, ErrWingetNotFound) {
+		t.Fatalf("err=%v, want ErrWingetNotFound", got)
+	}
+}
+
+func TestClassifyWingetErrorDoesNotTreatAnyMsstoreOutputAsSourceFailure(t *testing.T) {
+	got := ClassifyWingetError(errors.New("exit 1"), "msstore package lookup returned no matching package")
+	if strings.Contains(got.Error(), "Microsoft Store source") {
+		t.Fatalf("err=%v, want generic winget failure", got)
+	}
+	if !strings.Contains(got.Error(), "winget install Codex") {
+		t.Fatalf("err=%v, want generic winget failure", got)
+	}
+}

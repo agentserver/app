@@ -19,7 +19,11 @@ func ThreadURL(folder string) string {
 }
 
 func Launch(ctx context.Context, folder string, opener Opener) error {
-	_ = ctx
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	if opener == nil {
 		opener = browser.Open
 	}

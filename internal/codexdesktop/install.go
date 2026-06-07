@@ -2,8 +2,10 @@ package codexdesktop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
+	"runtime"
 )
 
 type Options struct {
@@ -20,21 +22,35 @@ func EnsureInstalled(ctx context.Context, opts Options) (Detected, error) {
 	if run == nil {
 		run = runWinget
 	}
-	if det, err := detect(); err == nil && det.Installed {
-		return det, nil
+	det, err := detect()
+	if err == nil {
+		if det.Installed {
+			return det, nil
+		}
+	} else if !errors.Is(err, ErrNotFound) {
+		return Detected{}, fmt.Errorf("detect Codex Desktop: %w", err)
 	}
 	out, err := run(ctx, WingetInstallArgs())
 	if err != nil {
 		return Detected{}, ClassifyWingetError(err, out)
 	}
-	det, err := detect()
-	if err != nil || !det.Installed {
+	det, err = detect()
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return Detected{}, fmt.Errorf("Codex Desktop 安装后仍未检测到；winget 输出: %s", out)
+		}
+		return Detected{}, fmt.Errorf("Codex Desktop 安装后检测失败: %w；winget 输出: %s", err, out)
+	}
+	if !det.Installed {
 		return Detected{}, fmt.Errorf("Codex Desktop 安装后仍未检测到；winget 输出: %s", out)
 	}
 	return det, nil
 }
 
 func runWinget(ctx context.Context, args []string) (string, error) {
+	if runtime.GOOS != "windows" {
+		return "", ErrUnsupportedPlatform
+	}
 	if err := RequireWinget(); err != nil {
 		return "", err
 	}

@@ -8,6 +8,7 @@ import (
 )
 
 var ErrWingetNotFound = errors.New("winget not found")
+var ErrUnsupportedPlatform = errors.New("codex desktop winget install unsupported on this platform")
 
 func WingetInstallArgs() []string {
 	return []string{
@@ -32,14 +33,43 @@ func ClassifyWingetError(err error, output string) error {
 		return nil
 	}
 	lower := strings.ToLower(output)
-	if errors.Is(err, ErrWingetNotFound) {
-		return errors.New("未找到 winget；请安装或更新 Windows App Installer / Windows Package Manager 后重试")
+	trimmed := strings.TrimSpace(output)
+	if errors.Is(err, ErrUnsupportedPlatform) {
+		return fmt.Errorf("Codex Desktop winget install is only supported on Windows: %w", err)
 	}
-	if strings.Contains(lower, "source") || strings.Contains(lower, "msstore") {
-		return fmt.Errorf("Microsoft Store source 不可用；请检查 Store 源、网络或企业策略。winget 输出: %s", strings.TrimSpace(output))
+	if errors.Is(err, ErrWingetNotFound) {
+		return fmt.Errorf("未找到 winget；请安装或更新 Windows App Installer / Windows Package Manager 后重试: %w", err)
+	}
+	if isWingetSourceUnavailable(lower) {
+		return fmt.Errorf("Microsoft Store source 不可用；请检查 Store 源、网络或企业策略。winget 输出: %s", trimmed)
 	}
 	if strings.Contains(lower, "network") || strings.Contains(lower, "internet") || strings.Contains(lower, "connection") {
-		return fmt.Errorf("网络不可用，无法通过 winget 安装 Codex Desktop。winget 输出: %s", strings.TrimSpace(output))
+		return fmt.Errorf("网络不可用，无法通过 winget 安装 Codex Desktop。winget 输出: %s", trimmed)
 	}
-	return fmt.Errorf("winget install Codex -s msstore 失败: %w。输出: %s", err, strings.TrimSpace(output))
+	return fmt.Errorf("winget install Codex -s msstore 失败: %w。输出: %s", err, trimmed)
+}
+
+func isWingetSourceUnavailable(lower string) bool {
+	compact := strings.Join(strings.Fields(lower), " ")
+	if strings.Contains(compact, "no sources") || strings.Contains(compact, "no available sources") {
+		return true
+	}
+	if strings.Contains(compact, "source") && strings.Contains(compact, "not found") {
+		return true
+	}
+	for _, phrase := range []string{
+		"failed to open source",
+		"failed to open the source",
+		"failed when opening source",
+		"failed when opening the source",
+		"could not open source",
+		"could not open the source",
+		"unable to open source",
+		"unable to open the source",
+	} {
+		if strings.Contains(compact, phrase) {
+			return true
+		}
+	}
+	return false
 }
