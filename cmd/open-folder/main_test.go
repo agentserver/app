@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -89,5 +90,47 @@ func TestLoadOpenFolderStateSyncsInstallModeFile(t *testing.T) {
 	}
 	if got.FrontendMode != state.FrontendModeMinimalVSCode {
 		t.Fatalf("FrontendMode = %q, want %q", got.FrontendMode, state.FrontendModeMinimalVSCode)
+	}
+}
+
+func TestEnsureConsoleStartsLauncherWhenMissing(t *testing.T) {
+	calls := 0
+	err := ensureConsoleBackground(context.Background(), consoleBackgroundDeps{
+		LauncherExe: "launcher.exe",
+		PortFile:    "console-port.json",
+		Discover: func(context.Context, string) (console.InstanceInfo, bool) {
+			return console.InstanceInfo{}, false
+		},
+		Start: func(string, ...string) error {
+			calls++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("start calls=%d", calls)
+	}
+}
+
+func TestEnsureConsoleDoesNotStartWhenHealthy(t *testing.T) {
+	calls := 0
+	err := ensureConsoleBackground(context.Background(), consoleBackgroundDeps{
+		LauncherExe: "launcher.exe",
+		PortFile:    "console-port.json",
+		Discover: func(context.Context, string) (console.InstanceInfo, bool) {
+			return console.InstanceInfo{Port: 1234}, true
+		},
+		Start: func(string, ...string) error {
+			calls++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("start calls=%d", calls)
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
+	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/launchprep"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
@@ -31,15 +32,20 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	installDir := ""
 	tokenRefresherExe := ""
 	embeddedVSIXPath := ""
 	installModePath := ""
 	if exe, err := os.Executable(); err == nil {
-		installDir := filepath.Dir(exe)
+		installDir = filepath.Dir(exe)
 		tokenRefresherExe = filepath.Join(installDir, "token-refresher.exe")
 		embeddedVSIXPath = filepath.Join(installDir, "agentserver-vscode.vsix")
 		installModePath = installmode.PathForExecutable(exe)
 	}
+	_ = ensureConsoleBackground(context.Background(), consoleBackgroundDeps{
+		LauncherExe: filepath.Join(installDir, "launcher.exe"),
+		PortFile:    p.ConsolePortFile,
+	})
 	s, err := loadOpenFolderState(p, installModePath)
 	if err != nil {
 		log.Fatal(err)
@@ -68,6 +74,39 @@ func loadOpenFolderState(p paths.Paths, installModePath string) (*state.State, e
 		}
 	}
 	return store.Load()
+}
+
+type consoleBackgroundDeps struct {
+	LauncherExe string
+	PortFile    string
+	Discover    func(context.Context, string) (console.InstanceInfo, bool)
+	Start       func(string, ...string) error
+}
+
+func ensureConsoleBackground(ctx context.Context, d consoleBackgroundDeps) error {
+	discover := d.Discover
+	if discover == nil {
+		discover = console.DiscoverInstance
+	}
+	if _, ok := discover(ctx, d.PortFile); ok {
+		return nil
+	}
+	if d.LauncherExe == "" {
+		return nil
+	}
+	start := d.Start
+	if start == nil {
+		start = startDetached
+	}
+	return start(d.LauncherExe, "--background")
+}
+
+func startDetached(exe string, args ...string) error {
+	cmd := exec.Command(exe, args...)
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Start()
 }
 
 func openFolder(ctx context.Context, codeExe string, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string) error {
