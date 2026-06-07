@@ -31,6 +31,27 @@ func TestServerStateEndpoint(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&s)
 }
 
+func TestServerConsoleHealthEndpoint(t *testing.T) {
+	srv := httptest.NewServer(NewServer(noopOrchestrator{}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/console/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["state"] != "ok" {
+		t.Fatalf("body=%+v", body)
+	}
+}
+
 func TestServerStepEndpoint(t *testing.T) {
 	srv := httptest.NewServer(NewServer(noopOrchestrator{}))
 	defer srv.Close()

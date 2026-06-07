@@ -8,10 +8,95 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
+
+func TestLauncherOptionsDefaultOpensPageAndFrontend(t *testing.T) {
+	got := parseLauncherOptions([]string{})
+	if got.Background || !got.OpenPage || !got.OpenFrontend {
+		t.Fatalf("options=%+v", got)
+	}
+}
+
+func TestLauncherOptionsBackgroundDoesNotOpenPageOrFrontend(t *testing.T) {
+	got := parseLauncherOptions([]string{"--background"})
+	if !got.Background || got.OpenPage || got.OpenFrontend {
+		t.Fatalf("options=%+v", got)
+	}
+}
+
+func TestCompletedLauncherReusesExistingConsole(t *testing.T) {
+	called := launcherCalls{}
+	err := runCompletedConsole(context.Background(), completedConsoleDeps{
+		Options:  launcherOptions{OpenPage: true, OpenFrontend: true},
+		PortFile: "ignored",
+		Discover: func(context.Context, string) (console.InstanceInfo, bool) {
+			return console.InstanceInfo{Port: 34567}, true
+		},
+		OpenBrowser: func(url string) error {
+			called.openedURL = url
+			return nil
+		},
+		Post: func(ctx context.Context, url string) error {
+			called.posted = append(called.posted, url)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(called.openedURL, "127.0.0.1:34567") {
+		t.Fatalf("openedURL=%q", called.openedURL)
+	}
+	if len(called.posted) != 1 || !strings.Contains(called.posted[0], "/api/console/open-frontend") {
+		t.Fatalf("posted=%+v", called.posted)
+	}
+}
+
+type launcherCalls struct {
+	openedURL string
+	posted    []string
+}
+
+func TestCompletedStateOrchestratorLoadsDashboardState(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login", "agentserver_login", "shortcuts_created"}
+		s.FrontendMode = state.FrontendModeMinimalVSCode
+		s.Modelserver.ProjectID = "proj-1"
+		s.Agentserver.WorkspaceID = "workspace-1"
+		s.VSCode.Path = filepath.Join(dir, "Code.exe")
+		s.VSCode.Version = "1.2.3"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := (completedStateOrchestrator{store: store}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OnboardingStatus != string(state.StatusComplete) {
+		t.Fatalf("OnboardingStatus=%q", got.OnboardingStatus)
+	}
+	if got.FrontendMode != string(state.FrontendModeMinimalVSCode) {
+		t.Fatalf("FrontendMode=%q", got.FrontendMode)
+	}
+	if got.FrontendName != "极简界面" {
+		t.Fatalf("FrontendName=%q", got.FrontendName)
+	}
+	if got.ModelserverProjectID != "proj-1" || got.AgentserverWorkspaceID != "workspace-1" {
+		t.Fatalf("state=%+v", got)
+	}
+	if len(got.CompletedSteps) != 3 {
+		t.Fatalf("CompletedSteps=%+v", got.CompletedSteps)
+	}
+}
 
 func TestExecVSCodeEnsuresCodexConfigBeforeLaunch(t *testing.T) {
 	dir := t.TempDir()

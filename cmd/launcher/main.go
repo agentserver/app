@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -21,6 +22,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/browser"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
+	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/launchprep"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
@@ -40,6 +42,28 @@ func main() {
 }
 
 func run() error {
+	return runWithOptions(context.Background(), parseLauncherOptions(os.Args[1:]))
+}
+
+type launcherOptions struct {
+	Background   bool
+	OpenPage     bool
+	OpenFrontend bool
+}
+
+func parseLauncherOptions(args []string) launcherOptions {
+	opts := launcherOptions{OpenPage: true, OpenFrontend: true}
+	for _, arg := range args {
+		if arg == "--background" {
+			opts.Background = true
+			opts.OpenPage = false
+			opts.OpenFrontend = false
+		}
+	}
+	return opts
+}
+
+func runWithOptions(ctx context.Context, opts launcherOptions) error {
 	p, err := paths.Default()
 	if err != nil {
 		return err
@@ -59,12 +83,195 @@ func run() error {
 	}
 
 	if s.Onboarding.Status == state.StatusComplete {
-		return launchCompletedFrontend(context.Background(), s, p, secrets.New(p.SecretsFile),
-			joinExe(installDir, "token-refresher.exe"), joinExe(installDir, "agentserver-vscode.vsix"), nil)
+		err := runCompletedConsole(ctx, completedConsoleDeps{
+			Options:     opts,
+			PortFile:    p.ConsolePortFile,
+			OpenBrowser: browser.Open,
+			Post:        postConsole,
+		})
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, errNoRunningConsole) {
+			return err
+		}
+		return serveCompletedConsole(ctx, completedServeInput{
+			Paths:      p,
+			State:      store,
+			Secrets:    secrets.New(p.SecretsFile),
+			InstallDir: installDir,
+			Options:    opts,
+		})
 	}
 
 	// Otherwise: serve onboarding UI.
 	return serveOnboarding(p, store)
+}
+
+type completedConsoleDeps struct {
+	Options     launcherOptions
+	PortFile    string
+	Discover    func(context.Context, string) (console.InstanceInfo, bool)
+	OpenBrowser func(string) error
+	Post        func(context.Context, string) error
+}
+
+var errNoRunningConsole = errors.New("no running console")
+
+func runCompletedConsole(ctx context.Context, d completedConsoleDeps) error {
+	discover := d.Discover
+	if discover == nil {
+		discover = console.DiscoverInstance
+	}
+	post := d.Post
+	if post == nil {
+		post = postConsole
+	}
+	if info, ok := discover(ctx, d.PortFile); ok {
+		base := fmt.Sprintf("http://127.0.0.1:%d", info.Port)
+		if d.Options.OpenPage && d.OpenBrowser != nil {
+			if err := d.OpenBrowser(base + "/"); err != nil {
+				return err
+			}
+		}
+		if d.Options.OpenFrontend {
+			if err := post(ctx, base+"/api/console/open-frontend"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return errNoRunningConsole
+}
+
+func postConsole(ctx context.Context, url string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("console POST %s: status %d", url, resp.StatusCode)
+	}
+	return nil
+}
+
+type completedServeInput struct {
+	Paths       paths.Paths
+	State       *state.Store
+	Secrets     secrets.Store
+	InstallDir  string
+	Options     launcherOptions
+	OpenBrowser func(string) error
+}
+
+func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
+	sec := in.Secrets
+	if sec == nil {
+		sec = secrets.New(in.Paths.SecretsFile)
+	}
+	openBrowser := in.OpenBrowser
+	if openBrowser == nil {
+		openBrowser = browser.Open
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{}
+	ctrl := console.NewController(console.Deps{
+		State:                 in.State,
+		Secrets:               sec,
+		MS:                    modelserver.New("https://codeapi.cs.ac.cn"),
+		AS:                    agentserver.New("https://agent.cs.ac.cn"),
+		ModelserverWebBaseURL: "https://code.cs.ac.cn",
+		OpenURL:               openBrowser,
+		OpenFrontend: func(ctx context.Context) error {
+			current, err := in.State.Load()
+			if err != nil {
+				return err
+			}
+			return launchCompletedFrontend(ctx, current, in.Paths, sec,
+				joinExe(in.InstallDir, "token-refresher.exe"),
+				joinExe(in.InstallDir, "agentserver-vscode.vsix"),
+				nil)
+		},
+		Quit: func() {
+			go srv.Shutdown(context.Background())
+		},
+	})
+	srv.Handler = ui.NewServerWithConsole(newCompletedStateOrchestrator(in.State), ctrl)
+
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := console.WriteInstanceInfo(in.Paths.ConsolePortFile, console.InstanceInfo{Port: port, PID: os.Getpid()}); err != nil {
+		ln.Close()
+		return err
+	}
+	defer os.Remove(in.Paths.ConsolePortFile)
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if in.Options.OpenPage {
+		go func() { _ = openBrowser(base + "/") }()
+	}
+	if in.Options.OpenFrontend {
+		go func() { _ = ctrl.OpenFrontend(ctx) }()
+	}
+
+	err = srv.Serve(ln)
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
+}
+
+type completedStateOrchestrator struct {
+	ui.Orchestrator
+	store *state.Store
+}
+
+func newCompletedStateOrchestrator(store *state.Store) ui.Orchestrator {
+	return completedStateOrchestrator{
+		Orchestrator: ui.NewNoopOrchestrator(),
+		store:        store,
+	}
+}
+
+func (o completedStateOrchestrator) State(ctx context.Context) (ui.SanitizedState, error) {
+	if o.store == nil {
+		return o.Orchestrator.State(ctx)
+	}
+	s, err := o.store.Load()
+	if err != nil {
+		return ui.SanitizedState{}, err
+	}
+	mode := state.NormalizeFrontendMode(s.FrontendMode)
+	return ui.SanitizedState{
+		SchemaVersion:          s.SchemaVersion,
+		InstallID:              s.InstallID,
+		OnboardingStatus:       string(s.Onboarding.Status),
+		CompletedSteps:         append([]string(nil), s.Onboarding.CompletedSteps...),
+		LastError:              s.Onboarding.LastError,
+		FrontendMode:           string(mode),
+		FrontendName:           completedFrontendName(mode),
+		ModelserverProjectID:   s.Modelserver.ProjectID,
+		AgentserverWorkspaceID: s.Agentserver.WorkspaceID,
+		VSCodePath:             s.VSCode.Path,
+		VSCodeVersion:          s.VSCode.Version,
+		CodexDesktopInstalled:  s.CodexDesktop.Installed,
+		CodexDesktopVersion:    s.CodexDesktop.Version,
+	}, nil
+}
+
+func completedFrontendName(mode state.FrontendMode) string {
+	if state.NormalizeFrontendMode(mode) == state.FrontendModeMinimalVSCode {
+		return "极简界面"
+	}
+	return "Codex Desktop"
 }
 
 func serveOnboarding(p paths.Paths, store *state.Store) error {

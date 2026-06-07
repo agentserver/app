@@ -43,6 +43,9 @@ func NewServerWithConsole(o Orchestrator, c ConsoleController) http.Handler {
 	mux.HandleFunc("/api/launch", s.handleLaunch)
 	mux.HandleFunc("/api/launch-vscode", s.handleLaunch)
 
+	mux.HandleFunc("/api/console/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{"state": "ok"})
+	})
 	mux.HandleFunc("/api/console/state", s.handleConsoleState)
 	mux.HandleFunc("/api/console/refresh", s.handleConsoleRefresh)
 	mux.HandleFunc("/api/console/open-frontend", s.handleConsoleOpenFrontend)
