@@ -1,77 +1,59 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { onMounted } from 'vue';
 import { useOnboarding } from './composables/useOnboarding';
+import Dashboard from './components/Dashboard.vue';
 import StepCard from './components/StepCard.vue';
 import OauthStep from './components/OauthStep.vue';
 import ActionStep from './components/ActionStep.vue';
 import ProgressStep from './components/ProgressStep.vue';
-import SuccessBanner from './components/SuccessBanner.vue';
-import * as api from './api';
 
 const onboarding = useOnboarding();
-const launching = ref(false);
 
 onMounted(async () => {
   await onboarding.init();
 });
-
-async function launchFrontend() {
-  launching.value = true;
-  try {
-    await api.launchFrontend();
-    // launcher will shut down its HTTP server ~500ms after responding.
-    // Subsequent fetchState calls will fail; UI freezes in launching state.
-  } catch (e) {
-    launching.value = false;
-    // Surface error somehow; for now use a connectionError-style banner
-    onboarding.connectionError.value = '启动失败: ' + (e instanceof Error ? e.message : String(e));
-  }
-}
 </script>
 
 <template>
   <div class="container">
-    <h1>星池指挥官配置向导</h1>
+    <Dashboard v-if="onboarding.isComplete.value" />
 
-    <el-alert
-      v-if="onboarding.connectionError.value"
-      type="error"
-      :title="onboarding.connectionError.value"
-      :closable="false"
-      show-icon
-      class="conn-error"
-    />
+    <template v-else>
+      <h1>星池指挥官配置向导</h1>
 
-    <SuccessBanner
-      v-if="onboarding.isComplete.value"
-      :launching="launching"
-      :frontend-name="onboarding.frontendName.value"
-      @launch="launchFrontend"
-    />
+      <el-alert
+        v-if="onboarding.connectionError.value"
+        type="error"
+        :title="onboarding.connectionError.value"
+        :closable="false"
+        show-icon
+        class="conn-error"
+      />
 
-    <StepCard
-      v-for="step in onboarding.steps.value"
-      :key="step.id"
-      :step="step"
-    >
-      <template #action>
-        <OauthStep
-          v-if="step.kind === 'oauth' && (step.runtime.status === 'active' || step.runtime.status === 'in_progress' || step.runtime.status === 'error')"
-          :step="step"
-          :onboarding="onboarding"
-        />
-        <ProgressStep
-          v-else-if="step.kind === 'progress' && (step.runtime.status === 'active' || step.runtime.status === 'in_progress' || step.runtime.status === 'error')"
-          :step="step"
-          :onboarding="onboarding"
-        />
-        <ActionStep
-          v-else-if="step.kind === 'action' && (step.runtime.status === 'active' || step.runtime.status === 'in_progress' || step.runtime.status === 'error')"
-          :step="step"
-          :onboarding="onboarding"
-        />
-      </template>
-    </StepCard>
+      <StepCard
+        v-for="step in onboarding.steps.value"
+        :key="step.id"
+        :step="step"
+      >
+        <template #action>
+          <OauthStep
+            v-if="step.kind === 'oauth' && (step.runtime.status === 'active' || step.runtime.status === 'in_progress' || step.runtime.status === 'error')"
+            :step="step"
+            :onboarding="onboarding"
+          />
+          <ProgressStep
+            v-else-if="step.kind === 'progress' && (step.runtime.status === 'active' || step.runtime.status === 'in_progress' || step.runtime.status === 'error')"
+            :step="step"
+            :onboarding="onboarding"
+          />
+          <ActionStep
+            v-else-if="step.kind === 'action' && (step.runtime.status === 'active' || step.runtime.status === 'in_progress' || step.runtime.status === 'error')"
+            :step="step"
+            :onboarding="onboarding"
+          />
+        </template>
+      </StepCard>
+    </template>
   </div>
 </template>
 

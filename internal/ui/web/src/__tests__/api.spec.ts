@@ -65,4 +65,29 @@ describe('api', () => {
       message: expect.stringContaining('Failed to fetch'),
     });
   });
+
+  it('getConsoleState returns dashboard state', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        frontend_mode: 'codex_desktop',
+        frontend_name: 'Codex Desktop',
+        subscription_url: 'https://code.cs.ac.cn/projects/proj-1/subscription',
+        quotas: [{ window: '5h', percentage: 58, remaining_percentage: 42 }],
+      }),
+    } as Response);
+    const s = await api.getConsoleState();
+    expect(s.quotas[0].window).toBe('5h');
+  });
+
+  it('openConsoleFrontend POSTs to console endpoint', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ state: 'opened' }),
+    } as Response);
+    await api.openConsoleFrontend();
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/open-frontend', expect.objectContaining({ method: 'POST' }));
+  });
 });

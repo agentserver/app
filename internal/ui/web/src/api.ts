@@ -32,6 +32,25 @@ export interface StreamHandle {
   stream_id: string;
 }
 
+export interface ConsoleQuota {
+  window: string;
+  percentage: number;
+  remaining_percentage: number;
+  resets_at?: string;
+}
+
+export interface ConsoleState {
+  frontend_mode: 'codex_desktop' | 'minimal_vscode';
+  frontend_name: string;
+  onboarding_status: string;
+  modelserver: { project_id?: string; project_name?: string };
+  agentserver: { workspace_id?: string; workspace_name?: string };
+  quotas: ConsoleQuota[];
+  quota_error?: string;
+  subscription_url?: string;
+  last_refreshed_at?: string;
+}
+
 export class OnboardingError extends Error {
   constructor(
     message: string,
@@ -83,6 +102,17 @@ export const finalize = () =>
 
 export const launchFrontend = () =>
   request<{ state: 'launching' }>('/api/launch', { method: 'POST' });
+
+export const getConsoleState = () => request<ConsoleState>('/api/console/state');
+
+export const refreshConsoleState = () =>
+  request<ConsoleState>('/api/console/refresh', { method: 'POST' });
+
+export const openConsoleFrontend = () =>
+  request<{ state: 'opened' }>('/api/console/open-frontend', { method: 'POST' });
+
+export const openConsoleSubscription = () =>
+  request<{ state: 'opened' }>('/api/console/open-subscription', { method: 'POST' });
 
 export const startVSCodeInstall = startFrontendInstall;
 export const configureVSCode = configureFrontend;
