@@ -33,6 +33,19 @@ func (c *Client) ListProjects(ctx context.Context, accessToken string) ([]Projec
 	return wrap.Data, nil
 }
 
+func (c *Client) SubscriptionUsage(ctx context.Context, token, projectID string) ([]SubscriptionUsageWindow, error) {
+	var wrap struct {
+		Data []SubscriptionUsageWindow `json:"data"`
+	}
+	if projectID == "" {
+		return nil, fmt.Errorf("modelserver: projectID required")
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/projects/"+projectID+"/subscription/usage", token, nil, &wrap); err != nil {
+		return nil, err
+	}
+	return wrap.Data, nil
+}
+
 func (c *Client) CreateProject(ctx context.Context, token, name string) (Project, error) {
 	var wrap struct {
 		Data Project `json:"data"`

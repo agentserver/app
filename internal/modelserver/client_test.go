@@ -94,3 +94,33 @@ func TestPickOrCreateProject_FoundDefault(t *testing.T) {
 		t.Errorf("expected existing, got %+v", p)
 	}
 }
+
+func TestSubscriptionUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/p1/subscription/usage" {
+			t.Fatalf("got %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer AT" {
+			t.Fatalf("auth %q", got)
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"window": "5h", "percentage": 58.2, "resets_at": "2026-06-07T12:34:56Z"},
+				{"window": "7d", "percentage": 22.0},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	got, err := c.SubscriptionUsage(context.Background(), "AT", "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Window != "5h" || got[0].Percentage != 58.2 {
+		t.Fatalf("got %+v", got)
+	}
+	if got[0].ResetsAt != "2026-06-07T12:34:56Z" {
+		t.Fatalf("resets_at=%q", got[0].ResetsAt)
+	}
+}

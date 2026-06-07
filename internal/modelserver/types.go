@@ -7,6 +7,12 @@ type Project struct {
 	Name string `json:"name"`
 }
 
+type SubscriptionUsageWindow struct {
+	Window     string  `json:"window"`
+	Percentage float64 `json:"percentage"`
+	ResetsAt   string  `json:"resets_at,omitempty"`
+}
+
 type APIKey struct {
 	ID        string    `json:"id"`
 	ProjectID string    `json:"project_id"`
