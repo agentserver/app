@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,7 +28,33 @@ func WriteInstanceInfo(path string, info InstanceInfo) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 func DiscoverInstance(ctx context.Context, path string) (InstanceInfo, bool) {
@@ -41,15 +68,35 @@ func DiscoverInstance(ctx context.Context, path string) (InstanceInfo, bool) {
 		return InstanceInfo{}, false
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/api/console/health", info.Port), nil)
-	client := http.Client{Timeout: 500 * time.Millisecond}
+	client := http.Client{
+		Timeout: 500 * time.Millisecond,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode/100 != 2 {
+	if err != nil {
 		if resp != nil {
 			resp.Body.Close()
+		}
+		if ctx.Err() != nil {
+			return InstanceInfo{}, false
 		}
 		_ = os.Remove(path)
 		return InstanceInfo{}, false
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		_ = os.Remove(path)
+		return InstanceInfo{}, false
+	}
+	var health struct {
+		State string `json:"state"`
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || json.Unmarshal(body, &health) != nil || health.State != "ok" {
+		_ = os.Remove(path)
+		return InstanceInfo{}, false
+	}
 	return info, true
 }
