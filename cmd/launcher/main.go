@@ -32,6 +32,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
+	"github.com/agentserver/agentserver-pkg/internal/tray"
 	"github.com/agentserver/agentserver-pkg/internal/ui"
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
@@ -222,6 +223,40 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	}()
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
+	trayCtx, stopTray := context.WithCancel(ctx)
+	defer stopTray()
+	trayApp := tray.New(preferredIconPath(in.InstallDir))
+	trayActions := tray.Actions{
+		OpenDashboard: func() {
+			runAsyncLauncherAction("open console page", func() error {
+				return openBrowser(base + "/")
+			})
+		},
+		OpenFrontend: func() {
+			runAsyncLauncherAction("open completed frontend", func() error {
+				return ctrl.OpenFrontend(context.Background())
+			})
+		},
+		OpenSubscription: func() {
+			runAsyncLauncherAction("open subscription page", func() error {
+				return ctrl.OpenSubscription(context.Background())
+			})
+		},
+		Quit: func() {
+			runAsyncLauncherAction("quit completed console", func() error {
+				return ctrl.Quit(context.Background())
+			})
+		},
+	}
+	go func() {
+		if err := trayApp.Run(trayCtx, trayActions); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("launcher: tray run: %v", err)
+		}
+	}()
+	go runTrayStatusLoop(trayCtx, trayApp, ctrl, console.ReminderEngine{
+		Store: console.NewFileReminderStore(in.Paths.ConsoleNotificationsFile),
+	})
+
 	if in.Options.OpenPage {
 		runAsyncLauncherAction("open console page", func() error {
 			return openBrowser(base + "/")
@@ -238,6 +273,26 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		return nil
 	}
 	return err
+}
+
+func runTrayStatusLoop(ctx context.Context, app tray.App, ctrl trayConsoleController, reminders console.ReminderEngine) {
+	refresh := func() {
+		if err := updateTrayOnce(ctx, app, ctrl, reminders); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("launcher: update tray: %v", err)
+		}
+	}
+	refresh()
+
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
+	}
 }
 
 func runAsyncLauncherAction(name string, fn func() error) {
@@ -291,6 +346,58 @@ func (o completedStateOrchestrator) State(ctx context.Context) (ui.SanitizedStat
 		return ui.SanitizedState{}, err
 	}
 	return ui.SanitizeState(s), nil
+}
+
+type trayConsoleController interface {
+	State(context.Context) (console.State, error)
+}
+
+func updateTrayOnce(ctx context.Context, app tray.App, ctrl trayConsoleController, reminders console.ReminderEngine) error {
+	st, err := ctrl.State(ctx)
+	if err != nil {
+		return err
+	}
+	app.Update(trayStateFromConsole(st))
+
+	var errs []error
+	for _, reminder := range reminders.Evaluate(st.Quotas) {
+		title := "星池指挥官额度提醒"
+		message := fmt.Sprintf("%s额度已用 %d%%", quotaLabel(reminder.Window), reminder.Threshold)
+		if err := app.Notify(title, message); err != nil {
+			errs = append(errs, fmt.Errorf("tray notify %s %d%%: %w", reminder.Window, reminder.Threshold, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func trayStateFromConsole(st console.State) tray.State {
+	state := tray.State{
+		Tooltip:  "星池指挥官\n额度暂不可用",
+		FiveHour: "5小时额度：暂不可用",
+		SevenDay: "7天额度：暂不可用",
+	}
+	for _, q := range st.Quotas {
+		line := fmt.Sprintf("%s额度：已用 %.0f%%，剩余约 %.0f%%", quotaLabel(q.Window), q.Percentage, q.RemainingPercentage)
+		if q.Window == "5h" {
+			state.FiveHour = line
+		}
+		if q.Window == "7d" {
+			state.SevenDay = line
+		}
+	}
+	state.Tooltip = "星池指挥官\n" + state.FiveHour + "\n" + state.SevenDay
+	return state
+}
+
+func quotaLabel(window string) string {
+	switch window {
+	case "5h":
+		return "5小时"
+	case "7d":
+		return "7天"
+	default:
+		return window
+	}
 }
 
 func serveOnboarding(p paths.Paths, store *state.Store) error {

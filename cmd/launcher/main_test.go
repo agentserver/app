@@ -13,6 +13,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
+	"github.com/agentserver/agentserver-pkg/internal/tray"
 )
 
 func TestLauncherOptionsDefaultOpensPageAndFrontend(t *testing.T) {
@@ -126,6 +127,150 @@ func TestCompletedStateOrchestratorLoadsDashboardState(t *testing.T) {
 	if len(got.CompletedSteps) != 3 {
 		t.Fatalf("CompletedSteps=%+v", got.CompletedSteps)
 	}
+}
+
+func TestTrayStateFromConsoleFormatsQuotaRows(t *testing.T) {
+	got := trayStateFromConsole(console.State{
+		Quotas: []console.QuotaWindow{
+			{Window: "5h", Percentage: 58.2, RemainingPercentage: 41.8},
+			{Window: "7d", Percentage: 22.4, RemainingPercentage: 77.6},
+		},
+	})
+
+	if got.FiveHour != "5小时额度：已用 58%，剩余约 42%" {
+		t.Fatalf("FiveHour=%q", got.FiveHour)
+	}
+	if got.SevenDay != "7天额度：已用 22%，剩余约 78%" {
+		t.Fatalf("SevenDay=%q", got.SevenDay)
+	}
+	wantTooltip := "星池指挥官\n5小时额度：已用 58%，剩余约 42%\n7天额度：已用 22%，剩余约 78%"
+	if got.Tooltip != wantTooltip {
+		t.Fatalf("Tooltip=%q, want %q", got.Tooltip, wantTooltip)
+	}
+}
+
+func TestTrayStateFromConsoleDefaultsWhenQuotaUnavailable(t *testing.T) {
+	got := trayStateFromConsole(console.State{})
+
+	if got.FiveHour != "5小时额度：暂不可用" {
+		t.Fatalf("FiveHour=%q", got.FiveHour)
+	}
+	if got.SevenDay != "7天额度：暂不可用" {
+		t.Fatalf("SevenDay=%q", got.SevenDay)
+	}
+	wantTooltip := "星池指挥官\n5小时额度：暂不可用\n7天额度：暂不可用"
+	if got.Tooltip != wantTooltip {
+		t.Fatalf("Tooltip=%q, want %q", got.Tooltip, wantTooltip)
+	}
+}
+
+func TestQuotaLabelFallsBackForUnknownWindow(t *testing.T) {
+	if got := quotaLabel("monthly"); got != "monthly" {
+		t.Fatalf("quotaLabel()=%q", got)
+	}
+}
+
+func TestUpdateTrayOnceUpdatesStateAndSendsReminder(t *testing.T) {
+	app := &fakeTrayApp{}
+	ctrl := &fakeTrayController{
+		state: console.State{
+			Quotas: []console.QuotaWindow{
+				{Window: "5h", Percentage: 50, RemainingPercentage: 50, ResetsAt: "reset-1"},
+				{Window: "7d", Percentage: 42, RemainingPercentage: 58, ResetsAt: "reset-7"},
+			},
+		},
+	}
+
+	err := updateTrayOnce(context.Background(), app, ctrl, console.ReminderEngine{Store: console.NewMemoryReminderStore()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctrl.calls != 1 {
+		t.Fatalf("State calls=%d", ctrl.calls)
+	}
+	if len(app.updates) != 1 || app.updates[0].FiveHour != "5小时额度：已用 50%，剩余约 50%" {
+		t.Fatalf("updates=%+v", app.updates)
+	}
+	if len(app.notifications) != 1 {
+		t.Fatalf("notifications=%+v", app.notifications)
+	}
+	if app.notifications[0].title != "星池指挥官额度提醒" {
+		t.Fatalf("title=%q", app.notifications[0].title)
+	}
+	if app.notifications[0].message != "5小时额度已用 50%" {
+		t.Fatalf("message=%q", app.notifications[0].message)
+	}
+}
+
+func TestUpdateTrayOnceDoesNotRepeatSeenReminder(t *testing.T) {
+	app := &fakeTrayApp{}
+	ctrl := &fakeTrayController{
+		state: console.State{
+			Quotas: []console.QuotaWindow{
+				{Window: "7d", Percentage: 80, RemainingPercentage: 20, ResetsAt: "reset-1"},
+			},
+		},
+	}
+	engine := console.ReminderEngine{Store: console.NewMemoryReminderStore()}
+
+	if err := updateTrayOnce(context.Background(), app, ctrl, engine); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateTrayOnce(context.Background(), app, ctrl, engine); err != nil {
+		t.Fatal(err)
+	}
+	if len(app.notifications) != 2 {
+		t.Fatalf("notifications=%+v", app.notifications)
+	}
+	if app.notifications[0].message != "7天额度已用 50%" || app.notifications[1].message != "7天额度已用 80%" {
+		t.Fatalf("notifications=%+v", app.notifications)
+	}
+}
+
+func TestUpdateTrayOnceReturnsStateError(t *testing.T) {
+	app := &fakeTrayApp{}
+	stateErr := errors.New("state failed")
+	ctrl := &fakeTrayController{err: stateErr}
+
+	err := updateTrayOnce(context.Background(), app, ctrl, console.ReminderEngine{Store: console.NewMemoryReminderStore()})
+	if !errors.Is(err, stateErr) {
+		t.Fatalf("err=%v, want %v", err, stateErr)
+	}
+	if len(app.updates) != 0 {
+		t.Fatalf("updates=%+v", app.updates)
+	}
+}
+
+type fakeTrayController struct {
+	state console.State
+	err   error
+	calls int
+}
+
+func (f *fakeTrayController) State(context.Context) (console.State, error) {
+	f.calls++
+	return f.state, f.err
+}
+
+type fakeTrayNotification struct {
+	title   string
+	message string
+}
+
+type fakeTrayApp struct {
+	updates       []tray.State
+	notifications []fakeTrayNotification
+}
+
+func (f *fakeTrayApp) Run(context.Context, tray.Actions) error { return nil }
+
+func (f *fakeTrayApp) Update(st tray.State) {
+	f.updates = append(f.updates, st)
+}
+
+func (f *fakeTrayApp) Notify(title, message string) error {
+	f.notifications = append(f.notifications, fakeTrayNotification{title: title, message: message})
+	return nil
 }
 
 func TestRemoveConsolePortFileIfMatchesKeepsNewerInstance(t *testing.T) {
