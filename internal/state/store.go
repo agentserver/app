@@ -43,6 +43,7 @@ func (s *Store) loadLocked() (*State, error) {
 		_ = os.Rename(s.path, backup)
 		return freshState(), nil
 	}
+	st.FrontendMode = NormalizeFrontendMode(st.FrontendMode)
 	return &st, nil
 }
 
@@ -57,6 +58,7 @@ func (s *Store) saveLocked(st *State) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("mkdir state dir: %w", err)
 	}
+	st.FrontendMode = NormalizeFrontendMode(st.FrontendMode)
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal state: %w", err)

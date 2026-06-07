@@ -37,7 +37,10 @@ func Write(path string, mode state.FrontendMode) error {
 	if err != nil {
 		return fmt.Errorf("marshal install mode: %w", err)
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write install mode: %w", err)
+	}
+	return nil
 }
 
 func SyncStore(store *state.Store, path string) error {

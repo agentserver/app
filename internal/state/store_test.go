@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -41,6 +42,48 @@ func TestStoreSaveLoad(t *testing.T) {
 	}
 	if !loaded.Onboarding.HasCompleted("modelserver_login") {
 		t.Errorf("step not persisted")
+	}
+}
+
+func TestStoreLoadLegacyStateDefaultsFrontendMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := writeBytes(path, []byte(`{"schema_version":1,"install_id":"legacy-1"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewStore(path)
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.FrontendMode != FrontendModeCodexDesktop {
+		t.Fatalf("FrontendMode = %q, want %q", loaded.FrontendMode, FrontendModeCodexDesktop)
+	}
+}
+
+func TestStoreSaveNormalizesFrontendMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	store := NewStore(path)
+
+	if err := store.Save(&State{
+		SchemaVersion: CurrentSchemaVersion,
+		InstallID:     "save-1",
+		FrontendMode:  FrontendMode("bogus"),
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved state: %v", err)
+	}
+	var got State
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal saved state: %v", err)
+	}
+	if got.FrontendMode != FrontendModeCodexDesktop {
+		t.Fatalf("saved FrontendMode = %q, want %q", got.FrontendMode, FrontendModeCodexDesktop)
 	}
 }
 
