@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -50,7 +51,7 @@ func run() error {
 	exe, _ := os.Executable()
 	installDir := osDir(exe)
 	store := state.NewStore(p.StateFile)
-	if err := installmode.SyncStore(store, joinExe(installDir, "install-mode.json")); err != nil {
+	if err := syncInstallModeIfPresent(store, joinExe(installDir, "install-mode.json")); err != nil {
 		return err
 	}
 	s, err := store.Load()
@@ -65,6 +66,15 @@ func run() error {
 
 	// Otherwise: serve onboarding UI.
 	return serveOnboarding(p, store)
+}
+
+func syncInstallModeIfPresent(store *state.Store, path string) error {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("stat install mode: %w", err)
+	}
+	return installmode.SyncStore(store, path)
 }
 
 func serveOnboarding(p paths.Paths, store *state.Store) error {

@@ -40,15 +40,12 @@ func runTestInstallVSCode() {
 		// Persist detected install into state so downstream test-configure
 		// doesn't fail with "VS Code path unknown".
 		store := state.NewStore(p.StateFile)
-		_ = store.Update(func(s *state.State) error {
-			s.VSCode.Path = det.Path
-			s.VSCode.Version = det.Version
-			s.VSCode.InstalledByUs = false
-			s.VSCode.UserDataDir = p.VSCodeUserDataDir
-			s.VSCode.ExtensionsDir = p.VSCodeExtDir
-			s.Onboarding.AddCompleted("vscode_installed")
+		if err := store.Update(func(s *state.State) error {
+			recordTestVSCodeInstall(s, p, det, false)
 			return nil
-		})
+		}); err != nil {
+			die(err)
+		}
 		return
 	}
 	plan := vscode.PlanInstall()
@@ -81,16 +78,23 @@ func runTestInstallVSCode() {
 		die(fmt.Errorf("install: %w", err))
 	}
 	store := state.NewStore(p.StateFile)
-	_ = store.Update(func(s *state.State) error {
-		s.VSCode.Path = det2.Path
-		s.VSCode.Version = det2.Version
-		s.VSCode.InstalledByUs = true
-		s.VSCode.UserDataDir = p.VSCodeUserDataDir
-		s.VSCode.ExtensionsDir = p.VSCodeExtDir
-		s.Onboarding.AddCompleted("vscode_installed")
+	if err := store.Update(func(s *state.State) error {
+		recordTestVSCodeInstall(s, p, det2, true)
 		return nil
-	})
+	}); err != nil {
+		die(err)
+	}
 	fmt.Printf("VS Code installed at %s (version %s)\n", det2.Path, det2.Version)
+}
+
+func recordTestVSCodeInstall(s *state.State, p paths.Paths, det vscode.Detected, installedByUs bool) {
+	s.FrontendMode = state.FrontendModeMinimalVSCode
+	s.VSCode.Path = det.Path
+	s.VSCode.Version = det.Version
+	s.VSCode.InstalledByUs = installedByUs
+	s.VSCode.UserDataDir = p.VSCodeUserDataDir
+	s.VSCode.ExtensionsDir = p.VSCodeExtDir
+	s.Onboarding.AddCompleted("vscode_installed")
 }
 
 // runTestDownloadCodex fetches codex.exe to the configured bin path. Idempotent.
@@ -185,11 +189,18 @@ func runTestConfigure() {
 		die(err)
 	}
 	store := state.NewStore(p.StateFile)
-	_ = store.Update(func(s *state.State) error {
-		s.Onboarding.AddCompleted("vscode_configured")
+	if err := store.Update(func(s *state.State) error {
+		recordTestVSCodeConfigure(s)
 		return nil
-	})
+	}); err != nil {
+		die(err)
+	}
 	fmt.Println("configure complete")
+}
+
+func recordTestVSCodeConfigure(s *state.State) {
+	s.FrontendMode = state.FrontendModeMinimalVSCode
+	s.Onboarding.AddCompleted("vscode_configured")
 }
 
 func runTestInstallCodexDesktop() {
@@ -204,14 +215,16 @@ func runTestInstallCodexDesktop() {
 		die(err)
 	}
 	store := state.NewStore(p.StateFile)
-	_ = store.Update(func(s *state.State) error {
+	if err := store.Update(func(s *state.State) error {
 		s.FrontendMode = state.FrontendModeCodexDesktop
 		s.CodexDesktop.Installed = true
 		s.CodexDesktop.Version = det.Version
 		s.CodexDesktop.InstalledByUs = true
 		s.Onboarding.AddCompleted("codex_desktop_installed")
 		return nil
-	})
+	}); err != nil {
+		die(err)
+	}
 	fmt.Printf("Codex Desktop installed (version %s)\n", det.Version)
 }
 
@@ -231,11 +244,13 @@ func runTestConfigureCodexDesktop() {
 		die(err)
 	}
 	store := state.NewStore(p.StateFile)
-	_ = store.Update(func(s *state.State) error {
+	if err := store.Update(func(s *state.State) error {
 		s.FrontendMode = state.FrontendModeCodexDesktop
 		s.Onboarding.AddCompleted("codex_desktop_configured")
 		return nil
-	})
+	}); err != nil {
+		die(err)
+	}
 	fmt.Printf("wrote codex config: %s\n", p.CodexConfigFile)
 }
 
@@ -252,19 +267,44 @@ func runTestOpenFolder(args []string) {
 	if err != nil {
 		die(err)
 	}
-	if s.VSCode.Path == "" {
-		die(fmt.Errorf("VS Code path unknown"))
+	msg, err := openTestFolder(context.Background(), s, p, args[0], nil, nil)
+	if err != nil {
+		die(err)
 	}
-	cmd := exec.Command(s.VSCode.Path,
-		"--user-data-dir", p.VSCodeUserDataDir,
-		"--extensions-dir", p.VSCodeExtDir,
-		args[0])
+	fmt.Println(msg)
+}
+
+func openTestFolder(ctx context.Context, s *state.State, p paths.Paths, folder string, opener codexdesktop.Opener, runVSCode func(string, []string) (int, error)) (string, error) {
+	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeCodexDesktop {
+		if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+			return "", err
+		}
+		if err := codexdesktop.Launch(ctx, folder, opener); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("opened %s with Codex Desktop", folder), nil
+	}
+	if s.VSCode.Path == "" {
+		return "", fmt.Errorf("VS Code path unknown")
+	}
+	if runVSCode == nil {
+		runVSCode = startTestVSCode
+	}
+	pid, err := runVSCode(s.VSCode.Path, vscode.LaunchArgs(p.VSCodeUserDataDir, p.VSCodeExtDir, folder))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("opened %s with VS Code (pid %d)", folder, pid), nil
+}
+
+func startTestVSCode(codeExe string, args []string) (int, error) {
+	cmd := exec.Command(codeExe, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
-		die(err)
+		return 0, err
 	}
-	fmt.Printf("opened %s with VS Code (pid %d)\n", args[0], cmd.Process.Pid)
+	return cmd.Process.Pid, nil
 }
 
 // runTestMarkComplete writes onboarding.status = complete so that the launcher

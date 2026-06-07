@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/state"
 )
 
 func TestExecVSCodeEnsuresCodexConfigBeforeLaunch(t *testing.T) {
@@ -121,5 +122,28 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `model_provider = "modelserver"`) {
 		t.Fatalf("config missing modelserver provider:\n%s", b)
+	}
+}
+
+func TestSyncInstallModeIfPresentPreservesExistingModeWhenFileMissing(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeMinimalVSCode
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := syncInstallModeIfPresent(store, filepath.Join(dir, "missing", "install-mode.json")); err != nil {
+		t.Fatalf("syncInstallModeIfPresent: %v", err)
+	}
+
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FrontendMode != state.FrontendModeMinimalVSCode {
+		t.Fatalf("FrontendMode=%q, want %q", got.FrontendMode, state.FrontendModeMinimalVSCode)
 	}
 }
