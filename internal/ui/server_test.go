@@ -248,20 +248,90 @@ func TestServerConsoleOpenFrontendEndpoint(t *testing.T) {
 	}
 }
 
+func TestServerConsoleActionEndpointsRequirePost(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		called func(*fakeConsoleController) bool
+	}{
+		{
+			name: "refresh",
+			path: "/api/console/refresh",
+			called: func(cc *fakeConsoleController) bool {
+				return cc.refreshed
+			},
+		},
+		{
+			name: "open frontend",
+			path: "/api/console/open-frontend",
+			called: func(cc *fakeConsoleController) bool {
+				return cc.openedFrontend
+			},
+		},
+		{
+			name: "open subscription",
+			path: "/api/console/open-subscription",
+			called: func(cc *fakeConsoleController) bool {
+				return cc.openedSubscription
+			},
+		},
+		{
+			name: "quit",
+			path: "/api/console/quit",
+			called: func(cc *fakeConsoleController) bool {
+				return cc.quit
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cc := &fakeConsoleController{}
+			srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+			defer srv.Close()
+
+			resp, err := http.Get(srv.URL + tt.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Fatalf("status=%d", resp.StatusCode)
+			}
+			if resp.Header.Get("Allow") != http.MethodPost {
+				t.Fatalf("Allow=%q", resp.Header.Get("Allow"))
+			}
+			if tt.called(cc) {
+				t.Fatal("controller method was called")
+			}
+		})
+	}
+}
+
 type fakeConsoleController struct {
-	state          console.State
-	openedFrontend bool
+	state              console.State
+	refreshed          bool
+	openedFrontend     bool
+	openedSubscription bool
+	quit               bool
 }
 
 func (f *fakeConsoleController) State(context.Context) (console.State, error) {
 	return f.state, nil
 }
 func (f *fakeConsoleController) Refresh(context.Context) (console.State, error) {
+	f.refreshed = true
 	return f.state, nil
 }
 func (f *fakeConsoleController) OpenFrontend(context.Context) error {
 	f.openedFrontend = true
 	return nil
 }
-func (f *fakeConsoleController) OpenSubscription(context.Context) error { return nil }
-func (f *fakeConsoleController) Quit(context.Context) error             { return nil }
+func (f *fakeConsoleController) OpenSubscription(context.Context) error {
+	f.openedSubscription = true
+	return nil
+}
+func (f *fakeConsoleController) Quit(context.Context) error {
+	f.quit = true
+	return nil
+}

@@ -70,6 +70,15 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]string{"error": err.Error()})
 }
 
+func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method == method {
+		return true
+	}
+	w.Header().Set("Allow", method)
+	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	return false
+}
+
 func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 	st, err := s.o.State(r.Context())
 	if err != nil {
@@ -173,6 +182,9 @@ func (s *server) handleConsoleState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleConsoleRefresh(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
 	st, err := s.c.Refresh(r.Context())
 	if err != nil {
 		writeErr(w, 500, err)
@@ -182,6 +194,9 @@ func (s *server) handleConsoleRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleConsoleOpenFrontend(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
 	if err := s.c.OpenFrontend(r.Context()); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -190,6 +205,9 @@ func (s *server) handleConsoleOpenFrontend(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *server) handleConsoleOpenSubscription(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
 	if err := s.c.OpenSubscription(r.Context()); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -198,6 +216,9 @@ func (s *server) handleConsoleOpenSubscription(w http.ResponseWriter, r *http.Re
 }
 
 func (s *server) handleConsoleQuit(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
 	if err := s.c.Quit(r.Context()); err != nil {
 		writeErr(w, 500, err)
 		return
