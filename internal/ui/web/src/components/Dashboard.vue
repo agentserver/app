@@ -5,37 +5,60 @@ import QuotaCard from './QuotaCard.vue';
 
 const state = ref<api.ConsoleState | null>(null);
 const error = ref('');
+const refreshing = ref(false);
 const opening = ref(false);
+const openingSubscription = ref(false);
+
+function errorMessage(e: unknown) {
+  return e instanceof Error ? e.message : String(e);
+}
 
 async function load() {
   try {
     state.value = await api.getConsoleState();
     error.value = '';
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    error.value = errorMessage(e);
   }
 }
 
 async function refresh() {
+  if (refreshing.value) return;
+  refreshing.value = true;
   try {
     state.value = await api.refreshConsoleState();
     error.value = '';
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    error.value = errorMessage(e);
+  } finally {
+    refreshing.value = false;
   }
 }
 
 async function openFrontend() {
+  if (opening.value) return;
   opening.value = true;
   try {
     await api.openConsoleFrontend();
+    error.value = '';
+  } catch (e) {
+    error.value = errorMessage(e);
   } finally {
     opening.value = false;
   }
 }
 
 async function openSubscription() {
-  await api.openConsoleSubscription();
+  if (openingSubscription.value || !state.value?.subscription_url) return;
+  openingSubscription.value = true;
+  try {
+    await api.openConsoleSubscription();
+    error.value = '';
+  } catch (e) {
+    error.value = errorMessage(e);
+  } finally {
+    openingSubscription.value = false;
+  }
 }
 
 onMounted(load);
@@ -49,8 +72,8 @@ onMounted(load);
         <p>{{ state?.frontend_name || '正在读取状态' }}</p>
       </div>
       <div class="dashboard-actions">
-        <el-button @click="refresh">刷新状态</el-button>
-        <el-button type="primary" :loading="opening" @click="openFrontend">
+        <el-button :loading="refreshing" :disabled="refreshing" @click="refresh">刷新状态</el-button>
+        <el-button type="primary" :loading="opening" :disabled="opening" @click="openFrontend">
           打开 {{ state?.frontend_name || '前端' }}
         </el-button>
       </div>
@@ -74,7 +97,13 @@ onMounted(load);
       </div>
     </section>
 
-    <el-button :disabled="!state?.subscription_url" @click="openSubscription">打开订阅页</el-button>
+    <el-button
+      :loading="openingSubscription"
+      :disabled="openingSubscription || !state?.subscription_url"
+      @click="openSubscription"
+    >
+      打开订阅页
+    </el-button>
   </div>
 </template>
 
