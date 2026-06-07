@@ -13,6 +13,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/branding"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/download"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
@@ -52,6 +53,9 @@ type Deps struct {
 	// CodexDownloadURL overrides the default GitHub Releases URL when set.
 	CodexDownloadURL string
 
+	CodexDesktopEnsure func(context.Context) (codexdesktop.Detected, error)
+	CodexDesktopOpen   func(string) error
+
 	// OpenBrowser is invoked by the orchestrator after starting the PKCE
 	// listener. Optional in tests.
 	OpenBrowser func(string)
@@ -84,21 +88,41 @@ func NewRealOrchestrator(d Deps) Orchestrator {
 	return &realOrchestrator{d: d}
 }
 
+func frontendName(mode state.FrontendMode) string {
+	if state.NormalizeFrontendMode(mode) == state.FrontendModeMinimalVSCode {
+		return "极简界面"
+	}
+	return "Codex Desktop"
+}
+
+func (r *realOrchestrator) frontendMode() (state.FrontendMode, error) {
+	s, err := r.d.State.Load()
+	if err != nil {
+		return state.FrontendModeCodexDesktop, err
+	}
+	return state.NormalizeFrontendMode(s.FrontendMode), nil
+}
+
 func (r *realOrchestrator) State(ctx context.Context) (SanitizedState, error) {
 	s, err := r.d.State.Load()
 	if err != nil {
 		return SanitizedState{}, err
 	}
+	mode := state.NormalizeFrontendMode(s.FrontendMode)
 	return SanitizedState{
 		SchemaVersion:          s.SchemaVersion,
 		InstallID:              s.InstallID,
 		OnboardingStatus:       string(s.Onboarding.Status),
 		CompletedSteps:         append([]string(nil), s.Onboarding.CompletedSteps...),
 		LastError:              s.Onboarding.LastError,
+		FrontendMode:           string(mode),
+		FrontendName:           frontendName(mode),
 		ModelserverProjectID:   s.Modelserver.ProjectID,
 		AgentserverWorkspaceID: s.Agentserver.WorkspaceID,
 		VSCodePath:             s.VSCode.Path,
 		VSCodeVersion:          s.VSCode.Version,
+		CodexDesktopInstalled:  s.CodexDesktop.Installed,
+		CodexDesktopVersion:    s.CodexDesktop.Version,
 	}, nil
 }
 
@@ -270,6 +294,54 @@ func (r *realOrchestrator) PollAgentserverLogin(ctx context.Context) (agentserve
 	return key, nil
 }
 
+func (r *realOrchestrator) EnsureFrontend(ctx context.Context, ch chan<- ProgressEvent) error {
+	mode, err := r.frontendMode()
+	if err != nil {
+		return err
+	}
+	if mode == state.FrontendModeMinimalVSCode {
+		return r.EnsureVSCode(ctx, ch)
+	}
+	return r.EnsureCodexDesktop(ctx, ch)
+}
+
+func (r *realOrchestrator) ConfigureFrontend(ctx context.Context) error {
+	mode, err := r.frontendMode()
+	if err != nil {
+		return err
+	}
+	if mode == state.FrontendModeMinimalVSCode {
+		return r.ConfigureVSCode(ctx)
+	}
+	return r.ConfigureCodexDesktop(ctx)
+}
+
+func (r *realOrchestrator) EnsureCodexDesktop(ctx context.Context, ch chan<- ProgressEvent) error {
+	ensure := r.d.CodexDesktopEnsure
+	if ensure == nil {
+		ensure = func(ctx context.Context) (codexdesktop.Detected, error) {
+			return codexdesktop.EnsureInstalled(ctx, codexdesktop.Options{})
+		}
+	}
+	if ch != nil {
+		ch <- ProgressEvent{Stage: "checking", Msg: "正在检查 Codex Desktop..."}
+	}
+	det, err := ensure(ctx)
+	if err != nil {
+		return err
+	}
+	if ch != nil {
+		ch <- ProgressEvent{Stage: "verified", Msg: "已检测到 Codex Desktop"}
+	}
+	return r.d.State.Update(func(s *state.State) error {
+		s.CodexDesktop.Installed = true
+		s.CodexDesktop.Version = det.Version
+		s.CodexDesktop.InstalledByUs = true
+		s.Onboarding.AddCompleted("codex_desktop_installed")
+		return nil
+	})
+}
+
 func (r *realOrchestrator) EnsureVSCode(ctx context.Context, ch chan<- ProgressEvent) error {
 	det, _ := vscode.Detect()
 	if det.Installed {
@@ -327,6 +399,34 @@ func downloadAdapter(ui chan<- ProgressEvent) chan<- download.ProgressEvent {
 		}
 	}()
 	return out
+}
+
+func (r *realOrchestrator) configureSharedCodex(ctx context.Context) error {
+	_ = ctx
+	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.ModelserverSettings()); err != nil {
+		return err
+	}
+	if r.d.Secrets != nil {
+		apiKey, err := r.d.Secrets.Get("modelserver_api_key")
+		if err == nil {
+			_ = env.PersistUserEnv("OPENAI_API_KEY", apiKey)
+			_ = os.Setenv("OPENAI_API_KEY", apiKey)
+		}
+	}
+	if r.d.TokenRefresherExePath != "" {
+		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
+	}
+	return nil
+}
+
+func (r *realOrchestrator) ConfigureCodexDesktop(ctx context.Context) error {
+	if err := r.configureSharedCodex(ctx); err != nil {
+		return err
+	}
+	return r.d.State.Update(func(s *state.State) error {
+		s.Onboarding.AddCompleted("codex_desktop_configured")
+		return nil
+	})
 }
 
 func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
@@ -392,20 +492,8 @@ func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	// Write/merge ~/.codex/config.toml
-	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.ModelserverSettings()); err != nil {
+	if err := r.configureSharedCodex(ctx); err != nil {
 		return err
-	}
-	// Setx OPENAI_API_KEY (no-op on non-Windows)
-	if r.d.Secrets != nil {
-		apiKey, err := r.d.Secrets.Get("modelserver_api_key")
-		if err == nil {
-			_ = env.PersistUserEnv("OPENAI_API_KEY", apiKey)
-			_ = os.Setenv("OPENAI_API_KEY", apiKey)
-		}
-	}
-	if r.d.TokenRefresherExePath != "" {
-		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 	}
 	// Install zh-hans language pack + our embedded .vsix
 	if err := vscode.InstallExtensions(ctx, vscode.Installer{
@@ -487,6 +575,20 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 	s, err := r.d.State.Load()
 	if err != nil {
 		return err
+	}
+	mode := state.NormalizeFrontendMode(s.FrontendMode)
+	if mode == state.FrontendModeCodexDesktop {
+		open := r.d.CodexDesktopOpen
+		if open == nil {
+			open = func(u string) error { return codexdesktop.Launch(ctx, "", nil) }
+		}
+		if err := open(codexdesktop.ThreadURL("")); err != nil {
+			return fmt.Errorf("launch Codex Desktop: %w", err)
+		}
+		if r.d.Shutdown != nil {
+			r.d.Shutdown()
+		}
+		return nil
 	}
 	if s.VSCode.Path == "" {
 		return fmt.Errorf("VS Code path unknown; was vscode_install completed?")

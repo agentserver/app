@@ -30,11 +30,14 @@ func NewServer(o Orchestrator) http.Handler {
 	mux.HandleFunc("/api/step/modelserver_login/status", s.handleMSStatus)
 	mux.HandleFunc("/api/step/agentserver_login", s.handleASLogin)
 	mux.HandleFunc("/api/step/agentserver_login/status", s.handleASStatus)
-	mux.HandleFunc("/api/step/vscode_install", s.handleVSCodeInstall)
-	mux.HandleFunc("/api/step/vscode_configure", s.handleVSCodeConfigure)
+	mux.HandleFunc("/api/step/frontend_install", s.handleFrontendInstall)
+	mux.HandleFunc("/api/step/frontend_configure", s.handleFrontendConfigure)
+	mux.HandleFunc("/api/step/vscode_install", s.handleFrontendInstall)
+	mux.HandleFunc("/api/step/vscode_configure", s.handleFrontendConfigure)
 	mux.HandleFunc("/api/finalize", s.handleFinalize)
 	mux.HandleFunc("/api/abort", s.handleAbort)
-	mux.HandleFunc("/api/launch-vscode", s.handleLaunchVSCode)
+	mux.HandleFunc("/api/launch", s.handleLaunch)
+	mux.HandleFunc("/api/launch-vscode", s.handleLaunch)
 
 	// SSE
 	mux.HandleFunc("/api/events", s.sse.handle)
@@ -108,20 +111,20 @@ func (s *server) handleASStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"state": "success", "key_suffix": key.KeySuffix})
 }
 
-func (s *server) handleVSCodeInstall(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleFrontendInstall(w http.ResponseWriter, r *http.Request) {
 	streamID := s.sse.newStream()
 	go func() {
 		defer s.sse.close(streamID)
 		ch := s.sse.channel(streamID)
-		if err := s.o.EnsureVSCode(context.Background(), ch); err != nil {
+		if err := s.o.EnsureFrontend(context.Background(), ch); err != nil {
 			ch <- ProgressEvent{Stage: "error", Msg: err.Error()}
 		}
 	}()
 	writeJSON(w, 200, map[string]string{"stream_id": streamID})
 }
 
-func (s *server) handleVSCodeConfigure(w http.ResponseWriter, r *http.Request) {
-	if err := s.o.ConfigureVSCode(r.Context()); err != nil {
+func (s *server) handleFrontendConfigure(w http.ResponseWriter, r *http.Request) {
+	if err := s.o.ConfigureFrontend(r.Context()); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -141,7 +144,7 @@ func (s *server) handleAbort(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"state": "aborted"})
 }
 
-func (s *server) handleLaunchVSCode(w http.ResponseWriter, r *http.Request) {
+func (s *server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	if err := s.o.LaunchAndShutdown(r.Context()); err != nil {
 		writeErr(w, 500, err)
 		return

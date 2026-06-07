@@ -7,6 +7,7 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
+	"github.com/agentserver/agentserver-pkg/internal/state"
 )
 
 // Orchestrator is the side-effecting backend driven by the SPA.
@@ -28,6 +29,8 @@ type Orchestrator interface {
 
 	EnsureVSCode(ctx context.Context, progress chan<- ProgressEvent) error
 	ConfigureVSCode(ctx context.Context) error
+	EnsureFrontend(ctx context.Context, progress chan<- ProgressEvent) error
+	ConfigureFrontend(ctx context.Context) error
 
 	Finalize(ctx context.Context) error
 	Abort(ctx context.Context) error
@@ -50,10 +53,14 @@ type SanitizedState struct {
 	OnboardingStatus       string   `json:"onboarding_status"`
 	CompletedSteps         []string `json:"completed_steps"`
 	LastError              string   `json:"last_error,omitempty"`
+	FrontendMode           string   `json:"frontend_mode"`
+	FrontendName           string   `json:"frontend_name"`
 	ModelserverProjectID   string   `json:"modelserver_project_id,omitempty"`
 	AgentserverWorkspaceID string   `json:"agentserver_workspace_id,omitempty"`
 	VSCodePath             string   `json:"vscode_path,omitempty"`
 	VSCodeVersion          string   `json:"vscode_version,omitempty"`
+	CodexDesktopInstalled  bool     `json:"codex_desktop_installed,omitempty"`
+	CodexDesktopVersion    string   `json:"codex_desktop_version,omitempty"`
 }
 
 type ProgressEvent struct {
@@ -72,7 +79,13 @@ type noopOrchestrator struct{}
 func NewNoopOrchestrator() Orchestrator { return noopOrchestrator{} }
 
 func (noopOrchestrator) State(context.Context) (SanitizedState, error) {
-	return SanitizedState{}, nil
+	return SanitizedState{
+		SchemaVersion:    1,
+		InstallID:        "noop",
+		OnboardingStatus: string(state.StatusPending),
+		FrontendMode:     string(state.FrontendModeCodexDesktop),
+		FrontendName:     "Codex Desktop",
+	}, nil
 }
 func (noopOrchestrator) LoginModelserver(context.Context) (string, error) {
 	return "https://example.invalid/oauth/test", nil
@@ -88,6 +101,10 @@ func (noopOrchestrator) PollAgentserverLogin(context.Context) (agentserver.Works
 }
 func (noopOrchestrator) EnsureVSCode(context.Context, chan<- ProgressEvent) error { return nil }
 func (noopOrchestrator) ConfigureVSCode(context.Context) error                    { return nil }
-func (noopOrchestrator) Finalize(context.Context) error                           { return nil }
-func (noopOrchestrator) Abort(context.Context) error                              { return nil }
-func (noopOrchestrator) LaunchAndShutdown(context.Context) error                  { return nil }
+func (noopOrchestrator) EnsureFrontend(context.Context, chan<- ProgressEvent) error {
+	return nil
+}
+func (noopOrchestrator) ConfigureFrontend(context.Context) error { return nil }
+func (noopOrchestrator) Finalize(context.Context) error          { return nil }
+func (noopOrchestrator) Abort(context.Context) error             { return nil }
+func (noopOrchestrator) LaunchAndShutdown(context.Context) error { return nil }

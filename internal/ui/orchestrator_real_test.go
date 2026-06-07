@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -245,6 +246,7 @@ exit 0
 	}
 	store := state.NewStore(filepath.Join(dir, "state.json"))
 	store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeMinimalVSCode
 		s.VSCode.Path = codeExe
 		return nil
 	})
@@ -708,6 +710,96 @@ func TestAbortReleasesListener(t *testing.T) {
 		t.Errorf("login after Abort should reuse port: %v", loginErr)
 	}
 	r.cleanupMS()
+}
+
+func TestEnsureFrontendCodexDesktopSkipsVSCode(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := &realOrchestrator{d: Deps{
+		State: store,
+		CodexDesktopEnsure: func(ctx context.Context) (codexdesktop.Detected, error) {
+			return codexdesktop.Detected{Installed: true, Version: "9.9.9"}, nil
+		},
+	}}
+	if err := r.EnsureFrontend(context.Background(), nil); err != nil {
+		t.Fatalf("EnsureFrontend: %v", err)
+	}
+	s, _ := store.Load()
+	if !s.Onboarding.HasCompleted("codex_desktop_installed") {
+		t.Fatalf("codex_desktop_installed not marked")
+	}
+	if s.VSCode.Path != "" {
+		t.Fatalf("VSCode.Path should remain empty in Codex Desktop mode, got %q", s.VSCode.Path)
+	}
+}
+
+func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "")
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	if err := sec.Set("modelserver_api_key", "desktop-token"); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := &realOrchestrator{d: Deps{
+		State:           store,
+		Secrets:         sec,
+		CodexConfigPath: filepath.Join(dir, ".codex", "config.toml"),
+	}}
+	if err := r.ConfigureFrontend(context.Background()); err != nil {
+		t.Fatalf("ConfigureFrontend: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `model_provider = "modelserver"`) {
+		t.Fatalf("config missing modelserver provider:\n%s", b)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "desktop-token" {
+		t.Fatalf("OPENAI_API_KEY=%q", got)
+	}
+	s, _ := store.Load()
+	if !s.Onboarding.HasCompleted("codex_desktop_configured") {
+		t.Fatalf("codex_desktop_configured not marked")
+	}
+}
+
+func TestLaunchAndShutdownCodexDesktopUsesDeepLink(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var opened string
+	r := &realOrchestrator{d: Deps{
+		State: store,
+		CodexDesktopOpen: func(url string) error {
+			opened = url
+			return nil
+		},
+	}}
+	if err := r.LaunchAndShutdown(context.Background()); err != nil {
+		t.Fatalf("LaunchAndShutdown: %v", err)
+	}
+	if opened != "codex://threads/new" {
+		t.Fatalf("opened=%q", opened)
+	}
 }
 
 // TestLoginAgentserver_ReturnsURL verifies the new oauth_url contract:
