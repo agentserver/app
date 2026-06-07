@@ -96,7 +96,7 @@ verify:
 	if !strings.Contains(strings.ToLower(out), "codex") {
 		t.Errorf("Codex Desktop not listed by winget: %s", out)
 	}
-	out, _, _ = c.Pwsh(`(Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\codex\shell\open\command') -or (Test-Path 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\codex\shell\open\command')`)
+	out, _, _ = c.Pwsh(codexDesktopInstalledPowerShell())
 	if strings.TrimSpace(out) != "True" {
 		t.Errorf("codex URL scheme missing: %s", out)
 	}
@@ -144,6 +144,24 @@ func fillOAuth(t *testing.T, wd *harness.WebDriver, user, pass string) {
 	wd.FindAndType("input[name='username']", user)
 	wd.FindAndType("input[name='password']", pass)
 	wd.Click("button[type='submit']")
+}
+
+func codexDesktopInstalledPowerShell() string {
+	return `(Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\codex\shell\open\command') -or (Test-Path 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\codex\shell\open\command') -or [bool](Get-AppxPackage | Where-Object { $_.Name -like '*Codex*' -or $_.PackageFullName -like '*Codex*' } | Select-Object -First 1)`
+}
+
+func TestCodexDesktopInstalledPowerShellIncludesAppxFallback(t *testing.T) {
+	script := codexDesktopInstalledPowerShell()
+	for _, want := range []string{
+		`Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\codex\shell\open\command'`,
+		`Test-Path 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\codex\shell\open\command'`,
+		"Get-AppxPackage",
+		"*Codex*",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("codex desktop check script missing %q:\n%s", want, script)
+		}
+	}
 }
 
 // Avoid "imported and not used" on json/io

@@ -105,11 +105,13 @@ if ! verify_vscode_cache; then
   fi
   local_size=$(stat -c%s "$VSCODE_CACHE.part")
   if [[ "$local_size" != "$VSCODE_SIZE" ]]; then
+    rm -f "$VSCODE_CACHE.part"
     echo "ERROR: VS Code installer size mismatch: got $local_size want $VSCODE_SIZE" >&2
     exit 2
   fi
   local_sum=$(sha256sum "$VSCODE_CACHE.part" | awk '{print $1}')
   if [[ "$local_sum" != "$VSCODE_SHA256" ]]; then
+    rm -f "$VSCODE_CACHE.part"
     echo "ERROR: VS Code installer SHA256 mismatch: got $local_sum want $VSCODE_SHA256" >&2
     exit 2
   fi

@@ -244,6 +244,22 @@ func TestWindowsInnoInstallerUsesPerUserDesktopShortcut(t *testing.T) {
 	}
 }
 
+func TestWindowsInnoInstallerDesktopShortcutEnabledByDefault(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.Contains(line, `Name: "desktopicon"`) {
+			if strings.Contains(line, "unchecked") {
+				t.Fatalf("desktop shortcut task should be selected by default, got line: %s", line)
+			}
+			return
+		}
+	}
+	t.Fatal("installer.iss missing desktopicon task")
+}
+
 func TestWindowsInnoInstallerFrontendRunEntriesAreMutuallyExclusive(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
@@ -281,6 +297,38 @@ func TestWindowsInnoInstallerFrontendRunEntriesAreMutuallyExclusive(t *testing.T
 				"    Flags: runhidden waituntilterminated; " + tc.qualifier
 			if !strings.Contains(s, want) {
 				t.Fatalf("installer.iss missing guarded run entry:\n%s", want)
+			}
+		})
+	}
+}
+
+func TestWindowsPackageScriptsDeleteBadVSCodePartFiles(t *testing.T) {
+	for _, path := range []string{
+		"../../scripts/package-windows.sh",
+		"../../scripts/package-windows-zip.sh",
+	} {
+		t.Run(path, func(t *testing.T) {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := string(body)
+			for _, marker := range []string{
+				`if [[ "$local_size" != "$VSCODE_SIZE" ]]; then`,
+				`if [[ "$local_sum" != "$VSCODE_SHA256" ]]; then`,
+			} {
+				start := strings.Index(s, marker)
+				if start < 0 {
+					t.Fatalf("%s missing validation block %q", path, marker)
+				}
+				end := strings.Index(s[start:], "\n  fi")
+				if end < 0 {
+					t.Fatalf("%s validation block %q missing fi", path, marker)
+				}
+				block := s[start : start+end]
+				if !strings.Contains(block, `rm -f "$VSCODE_CACHE.part"`) {
+					t.Fatalf("%s validation block %q should delete bad partial file:\n%s", path, marker, block)
+				}
 			}
 		})
 	}
