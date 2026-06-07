@@ -129,6 +129,10 @@ func (c *Controller) Refresh(ctx context.Context) (State, error) {
 	return c.State(ctx)
 }
 
+func (c *Controller) Healthy(context.Context) bool {
+	return true
+}
+
 func (c *Controller) OpenFrontend(ctx context.Context) error {
 	if c.d.OpenFrontend == nil {
 		return nil

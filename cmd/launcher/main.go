@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -129,17 +130,18 @@ func runCompletedConsole(ctx context.Context, d completedConsoleDeps) error {
 	}
 	if info, ok := discover(ctx, d.PortFile); ok {
 		base := fmt.Sprintf("http://127.0.0.1:%d", info.Port)
+		var errs []error
 		if d.Options.OpenPage && d.OpenBrowser != nil {
 			if err := d.OpenBrowser(base + "/"); err != nil {
-				return err
+				errs = append(errs, fmt.Errorf("open console page: %w", err))
 			}
 		}
 		if d.Options.OpenFrontend {
 			if err := post(ctx, base+"/api/console/open-frontend"); err != nil {
-				return err
+				errs = append(errs, fmt.Errorf("open completed frontend: %w", err))
 			}
 		}
-		return nil
+		return errors.Join(errs...)
 	}
 	return errNoRunningConsole
 }
@@ -208,18 +210,27 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	srv.Handler = ui.NewServerWithConsole(newCompletedStateOrchestrator(in.State), ctrl)
 
 	port := ln.Addr().(*net.TCPAddr).Port
-	if err := console.WriteInstanceInfo(in.Paths.ConsolePortFile, console.InstanceInfo{Port: port, PID: os.Getpid()}); err != nil {
+	info := console.InstanceInfo{Port: port, PID: os.Getpid()}
+	if err := console.WriteInstanceInfo(in.Paths.ConsolePortFile, info); err != nil {
 		ln.Close()
 		return err
 	}
-	defer os.Remove(in.Paths.ConsolePortFile)
+	defer func() {
+		if err := removeConsolePortFileIfMatches(in.Paths.ConsolePortFile, info); err != nil {
+			log.Printf("launcher: cleanup console port file: %v", err)
+		}
+	}()
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if in.Options.OpenPage {
-		go func() { _ = openBrowser(base + "/") }()
+		runAsyncLauncherAction("open console page", func() error {
+			return openBrowser(base + "/")
+		})
 	}
 	if in.Options.OpenFrontend {
-		go func() { _ = ctrl.OpenFrontend(ctx) }()
+		runAsyncLauncherAction("open completed frontend", func() error {
+			return ctrl.OpenFrontend(ctx)
+		})
 	}
 
 	err = srv.Serve(ln)
@@ -227,6 +238,36 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		return nil
 	}
 	return err
+}
+
+func runAsyncLauncherAction(name string, fn func() error) {
+	go func() {
+		if err := fn(); err != nil {
+			log.Printf("launcher: %s: %v", name, err)
+		}
+	}()
+}
+
+func removeConsolePortFileIfMatches(path string, expected console.InstanceInfo) error {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var current console.InstanceInfo
+	if err := json.Unmarshal(b, &current); err != nil {
+		return nil
+	}
+	if current.Port != expected.Port || current.PID != expected.PID {
+		return nil
+	}
+	if err := os.Remove(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else {
+		return err
+	}
 }
 
 type completedStateOrchestrator struct {
@@ -249,29 +290,7 @@ func (o completedStateOrchestrator) State(ctx context.Context) (ui.SanitizedStat
 	if err != nil {
 		return ui.SanitizedState{}, err
 	}
-	mode := state.NormalizeFrontendMode(s.FrontendMode)
-	return ui.SanitizedState{
-		SchemaVersion:          s.SchemaVersion,
-		InstallID:              s.InstallID,
-		OnboardingStatus:       string(s.Onboarding.Status),
-		CompletedSteps:         append([]string(nil), s.Onboarding.CompletedSteps...),
-		LastError:              s.Onboarding.LastError,
-		FrontendMode:           string(mode),
-		FrontendName:           completedFrontendName(mode),
-		ModelserverProjectID:   s.Modelserver.ProjectID,
-		AgentserverWorkspaceID: s.Agentserver.WorkspaceID,
-		VSCodePath:             s.VSCode.Path,
-		VSCodeVersion:          s.VSCode.Version,
-		CodexDesktopInstalled:  s.CodexDesktop.Installed,
-		CodexDesktopVersion:    s.CodexDesktop.Version,
-	}, nil
-}
-
-func completedFrontendName(mode state.FrontendMode) string {
-	if state.NormalizeFrontendMode(mode) == state.FrontendModeMinimalVSCode {
-		return "极简界面"
-	}
-	return "Codex Desktop"
+	return ui.SanitizeState(s), nil
 }
 
 func serveOnboarding(p paths.Paths, store *state.Store) error {

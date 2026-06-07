@@ -31,8 +31,24 @@ func TestServerStateEndpoint(t *testing.T) {
 	json.NewDecoder(resp.Body).Decode(&s)
 }
 
-func TestServerConsoleHealthEndpoint(t *testing.T) {
+func TestServerConsoleHealthEndpointRequiresCompletedConsole(t *testing.T) {
 	srv := httptest.NewServer(NewServer(noopOrchestrator{}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/console/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil && resp.StatusCode/100 == 2 && body["state"] == "ok" {
+		t.Fatalf("plain server should not report completed-console health: status=%d body=%+v", resp.StatusCode, body)
+	}
+}
+
+func TestServerConsoleHealthEndpointReportsHealthyCompletedConsole(t *testing.T) {
+	cc := &fakeConsoleController{healthy: true}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/api/console/health")
@@ -331,6 +347,7 @@ func TestServerConsoleActionEndpointsRequirePost(t *testing.T) {
 
 type fakeConsoleController struct {
 	state              console.State
+	healthy            bool
 	refreshed          bool
 	openedFrontend     bool
 	openedSubscription bool
@@ -343,6 +360,9 @@ func (f *fakeConsoleController) State(context.Context) (console.State, error) {
 func (f *fakeConsoleController) Refresh(context.Context) (console.State, error) {
 	f.refreshed = true
 	return f.state, nil
+}
+func (f *fakeConsoleController) Healthy(context.Context) bool {
+	return f.healthy
 }
 func (f *fakeConsoleController) OpenFrontend(context.Context) error {
 	f.openedFrontend = true

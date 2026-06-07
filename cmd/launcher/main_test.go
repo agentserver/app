@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,6 +62,35 @@ type launcherCalls struct {
 	posted    []string
 }
 
+func TestCompletedLauncherAttemptsFrontendWhenOpenPageFails(t *testing.T) {
+	called := launcherCalls{}
+	browserErr := errors.New("browser failed")
+	err := runCompletedConsole(context.Background(), completedConsoleDeps{
+		Options:  launcherOptions{OpenPage: true, OpenFrontend: true},
+		PortFile: "ignored",
+		Discover: func(context.Context, string) (console.InstanceInfo, bool) {
+			return console.InstanceInfo{Port: 34567}, true
+		},
+		OpenBrowser: func(url string) error {
+			called.openedURL = url
+			return browserErr
+		},
+		Post: func(ctx context.Context, url string) error {
+			called.posted = append(called.posted, url)
+			return nil
+		},
+	})
+	if !errors.Is(err, browserErr) {
+		t.Fatalf("err=%v, want %v", err, browserErr)
+	}
+	if !strings.Contains(called.openedURL, "127.0.0.1:34567") {
+		t.Fatalf("openedURL=%q", called.openedURL)
+	}
+	if len(called.posted) != 1 || !strings.Contains(called.posted[0], "/api/console/open-frontend") {
+		t.Fatalf("posted=%+v", called.posted)
+	}
+}
+
 func TestCompletedStateOrchestratorLoadsDashboardState(t *testing.T) {
 	dir := t.TempDir()
 	store := state.NewStore(filepath.Join(dir, "state.json"))
@@ -95,6 +125,42 @@ func TestCompletedStateOrchestratorLoadsDashboardState(t *testing.T) {
 	}
 	if len(got.CompletedSteps) != 3 {
 		t.Fatalf("CompletedSteps=%+v", got.CompletedSteps)
+	}
+}
+
+func TestRemoveConsolePortFileIfMatchesKeepsNewerInstance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "console-port.json")
+	oldInfo := console.InstanceInfo{Port: 12345, PID: 111}
+	newInfo := console.InstanceInfo{Port: 23456, PID: 222}
+	if err := console.WriteInstanceInfo(path, oldInfo); err != nil {
+		t.Fatal(err)
+	}
+	if err := console.WriteInstanceInfo(path, newInfo); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeConsolePortFileIfMatches(path, oldInfo); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("newer port file should remain: %v", err)
+	}
+}
+
+func TestRemoveConsolePortFileIfMatchesRemovesMatchingInstance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "console-port.json")
+	info := console.InstanceInfo{Port: 12345, PID: 111}
+	if err := console.WriteInstanceInfo(path, info); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeConsolePortFileIfMatches(path, info); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("matching port file should be removed, err=%v", err)
 	}
 }
 

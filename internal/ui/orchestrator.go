@@ -63,6 +63,32 @@ type SanitizedState struct {
 	CodexDesktopVersion    string   `json:"codex_desktop_version,omitempty"`
 }
 
+func SanitizeState(s *state.State) SanitizedState {
+	mode := state.NormalizeFrontendMode(s.FrontendMode)
+	return SanitizedState{
+		SchemaVersion:          s.SchemaVersion,
+		InstallID:              s.InstallID,
+		OnboardingStatus:       string(s.Onboarding.Status),
+		CompletedSteps:         append([]string(nil), s.Onboarding.CompletedSteps...),
+		LastError:              s.Onboarding.LastError,
+		FrontendMode:           string(mode),
+		FrontendName:           frontendName(mode),
+		ModelserverProjectID:   s.Modelserver.ProjectID,
+		AgentserverWorkspaceID: s.Agentserver.WorkspaceID,
+		VSCodePath:             s.VSCode.Path,
+		VSCodeVersion:          s.VSCode.Version,
+		CodexDesktopInstalled:  s.CodexDesktop.Installed,
+		CodexDesktopVersion:    s.CodexDesktop.Version,
+	}
+}
+
+func frontendName(mode state.FrontendMode) string {
+	if state.NormalizeFrontendMode(mode) == state.FrontendModeMinimalVSCode {
+		return "极简界面"
+	}
+	return "Codex Desktop"
+}
+
 type ProgressEvent struct {
 	Stage      string `json:"stage"`
 	Downloaded int64  `json:"downloaded,omitempty"`

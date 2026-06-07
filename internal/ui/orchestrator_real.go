@@ -88,13 +88,6 @@ func NewRealOrchestrator(d Deps) Orchestrator {
 	return &realOrchestrator{d: d}
 }
 
-func frontendName(mode state.FrontendMode) string {
-	if state.NormalizeFrontendMode(mode) == state.FrontendModeMinimalVSCode {
-		return "极简界面"
-	}
-	return "Codex Desktop"
-}
-
 func (r *realOrchestrator) frontendMode() (state.FrontendMode, error) {
 	s, err := r.d.State.Load()
 	if err != nil {
@@ -108,22 +101,7 @@ func (r *realOrchestrator) State(ctx context.Context) (SanitizedState, error) {
 	if err != nil {
 		return SanitizedState{}, err
 	}
-	mode := state.NormalizeFrontendMode(s.FrontendMode)
-	return SanitizedState{
-		SchemaVersion:          s.SchemaVersion,
-		InstallID:              s.InstallID,
-		OnboardingStatus:       string(s.Onboarding.Status),
-		CompletedSteps:         append([]string(nil), s.Onboarding.CompletedSteps...),
-		LastError:              s.Onboarding.LastError,
-		FrontendMode:           string(mode),
-		FrontendName:           frontendName(mode),
-		ModelserverProjectID:   s.Modelserver.ProjectID,
-		AgentserverWorkspaceID: s.Agentserver.WorkspaceID,
-		VSCodePath:             s.VSCode.Path,
-		VSCodeVersion:          s.VSCode.Version,
-		CodexDesktopInstalled:  s.CodexDesktop.Installed,
-		CodexDesktopVersion:    s.CodexDesktop.Version,
-	}, nil
+	return SanitizeState(s), nil
 }
 
 func (r *realOrchestrator) LoginModelserver(ctx context.Context) (string, error) {
