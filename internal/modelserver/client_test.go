@@ -117,8 +117,14 @@ func TestSubscriptionUsage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0].Window != "5h" || got[0].Percentage != 58.2 {
+	if len(got) != 2 {
 		t.Fatalf("got %+v", got)
+	}
+	if got[0].Window != "5h" || got[0].Percentage != 58.2 {
+		t.Fatalf("got[0]=%+v", got[0])
+	}
+	if got[1].Window != "7d" || got[1].Percentage != 22.0 {
+		t.Fatalf("got[1]=%+v", got[1])
 	}
 	if got[0].ResetsAt != "2026-06-07T12:34:56Z" {
 		t.Fatalf("resets_at=%q", got[0].ResetsAt)
