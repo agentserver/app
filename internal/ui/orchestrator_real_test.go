@@ -550,19 +550,21 @@ func jwtWithASWorkspace(t *testing.T, workspaceID string) string {
 }
 
 func TestPollAgentserverLoginStoresWorkspaceID(t *testing.T) {
+	accessToken := jwtWithASWorkspace(t, "ws-claim")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"access_token":"` + jwtWithASWorkspace(t, "ws-claim") + `","token_type":"Bearer","expires_in":3600}`))
+		w.Write([]byte(`{"access_token":"` + accessToken + `","token_type":"Bearer","expires_in":3600}`))
 	})
 	fake := httptest.NewServer(mux)
 	defer fake.Close()
 
 	dir := t.TempDir()
 	store := state.NewStore(filepath.Join(dir, "state.json"))
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
 	r := &realOrchestrator{d: Deps{
 		State:   store,
-		Secrets: secrets.New(filepath.Join(dir, "secrets.json")),
+		Secrets: sec,
 		AS:      agentserver.New(fake.URL),
 		ASOAuth: oauth.Config{Endpoint: fake.URL, TokenPath: "/api/oauth2/token", ClientID: "client-x"},
 	}}
@@ -573,6 +575,9 @@ func TestPollAgentserverLoginStoresWorkspaceID(t *testing.T) {
 	}
 	if key.Secret == "" {
 		t.Fatal("secret missing")
+	}
+	if got, _ := sec.Get("agentserver_ws_api_key"); got != accessToken {
+		t.Fatalf("agentserver_ws_api_key=%q, want access token", got)
 	}
 	s, _ := store.Load()
 	if s.Agentserver.WorkspaceID != "ws-claim" {
