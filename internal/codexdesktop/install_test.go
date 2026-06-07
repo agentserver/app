@@ -112,6 +112,50 @@ func TestEnsureInstalledSurfacesPostInstallDetectError(t *testing.T) {
 	}
 }
 
+func TestEnsureInstalledPostInstallErrNotFoundWrapsSentinel(t *testing.T) {
+	detectCalls := 0
+	_, err := EnsureInstalled(context.Background(), Options{
+		Detect: func() (Detected, error) {
+			detectCalls++
+			if detectCalls == 1 {
+				return Detected{Installed: false}, ErrNotFound
+			}
+			return Detected{Installed: false}, ErrNotFound
+		},
+		RunWinget: func(context.Context, []string) (string, error) {
+			return "installed output", nil
+		},
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err=%v, want ErrNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "installed output") {
+		t.Fatalf("err=%v, want winget output", err)
+	}
+}
+
+func TestEnsureInstalledPostInstallInstalledFalseWrapsSentinel(t *testing.T) {
+	detectCalls := 0
+	_, err := EnsureInstalled(context.Background(), Options{
+		Detect: func() (Detected, error) {
+			detectCalls++
+			if detectCalls == 1 {
+				return Detected{Installed: false}, ErrNotFound
+			}
+			return Detected{Installed: false}, nil
+		},
+		RunWinget: func(context.Context, []string) (string, error) {
+			return "installed output", nil
+		},
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err=%v, want ErrNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "installed output") {
+		t.Fatalf("err=%v, want winget output", err)
+	}
+}
+
 func TestEnsureInstalledDefaultUnsupportedOnNonWindows(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("non-Windows behavior")
