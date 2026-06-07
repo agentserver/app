@@ -208,6 +208,51 @@ begin
   end;
 end;
 
+function StopRunningAgentserverProcesses(): Boolean;
+var
+  RunnerPath: String;
+  ScriptBody: String;
+  PowerShellExe: String;
+  ResultCode: Integer;
+begin
+  RunnerPath := ExpandConstant('{tmp}\agentserver-stop-processes.ps1');
+  DeleteFile(RunnerPath);
+
+  ScriptBody :=
+    '$ErrorActionPreference = ''Stop''' + #13#10 +
+    '$installDir = ' + PowerShellQuote(ExpandConstant('{app}')) + #13#10 +
+    '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''codex.exe'')' + #13#10 +
+    '$filter = {' + #13#10 +
+    '  $_.ExecutablePath -and ($names -contains $_.Name) -and $_.ExecutablePath -like ($installDir + ''*'')' + #13#10 +
+    '}' + #13#10 +
+    '$procs = @(Get-CimInstance Win32_Process | Where-Object $filter)' + #13#10 +
+    'foreach ($p in $procs) {' + #13#10 +
+    '  Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue' + #13#10 +
+    '}' + #13#10 +
+    '$deadline = (Get-Date).AddSeconds(8)' + #13#10 +
+    'do {' + #13#10 +
+    '  Start-Sleep -Milliseconds 250' + #13#10 +
+    '  $remaining = @(Get-CimInstance Win32_Process | Where-Object $filter)' + #13#10 +
+    '} while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline)' + #13#10;
+
+  if not SaveStringToFile(RunnerPath, ScriptBody, False) then begin
+    Result := False;
+    Exit;
+  end;
+
+  PowerShellExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  Result := Exec(PowerShellExe, '-NoProfile -ExecutionPolicy Bypass -File "' + RunnerPath + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  if StopRunningAgentserverProcesses() then begin
+    Result := '';
+  end else begin
+    Result := '无法关闭正在运行的星池指挥官后台程序。请关闭后重试。';
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ModePath: String;

@@ -297,6 +297,29 @@ func TestWindowsInnoInstallerFrontendInstallUsesEstimatedProgress(t *testing.T) 
 	}
 }
 
+func TestWindowsInnoInstallerStopsRunningAppProcessesBeforeReplacingFiles(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"function PrepareToInstall(var NeedsRestart: Boolean): String;",
+		"StopRunningAgentserverProcesses",
+		"Get-CimInstance Win32_Process",
+		"token-refresher",
+		"launcher",
+		"onboarding-server",
+		"open-folder",
+		"Stop-Process -Id",
+		"$_.ExecutablePath -like ($installDir + ''*'')",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("installer.iss should stop running app processes before replacing files; missing %q", want)
+		}
+	}
+}
+
 func TestWindowsPackageScriptsDeleteBadVSCodePartFiles(t *testing.T) {
 	for _, path := range []string{
 		"../../scripts/package-windows.sh",
