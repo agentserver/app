@@ -341,6 +341,31 @@ func TestMakefileBuildsWindowsHelperExecutables(t *testing.T) {
 	}
 }
 
+func TestMakefileCrossWindowsBuildsLauncherAndOpenFolderAsGUI(t *testing.T) {
+	body, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	start := strings.Index(s, "cross-windows: ui-build")
+	if start < 0 {
+		t.Fatal("Makefile missing cross-windows target")
+	}
+	end := strings.Index(s[start:], "\n\ntest:")
+	if end < 0 {
+		t.Fatal("could not find end of cross-windows target")
+	}
+	recipe := s[start : start+end]
+	for _, want := range []string{
+		`case "$$cmd" in launcher|open-folder) ldflags="$(LDFLAGS) -H=windowsgui" ;; esac;`,
+		`-ldflags="$$ldflags"`,
+	} {
+		if !strings.Contains(recipe, want) {
+			t.Fatalf("cross-windows recipe should build launcher.exe and open-folder.exe with Windows GUI subsystem; missing %q in:\n%s", want, recipe)
+		}
+	}
+}
+
 func TestWindowsInstallScriptAvoidsUnsupportedLiteralPathNewItem(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/install.ps1")
 	if err != nil {
