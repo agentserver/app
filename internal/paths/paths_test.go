@@ -17,3 +17,16 @@ func TestPathsConsistent(t *testing.T) {
 		t.Errorf("missing cache dir")
 	}
 }
+
+func TestPathsIncludesConsoleRuntimeFiles(t *testing.T) {
+	p, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ConsolePortFile == "" {
+		t.Fatal("ConsolePortFile empty")
+	}
+	if p.ConsoleNotificationsFile == "" {
+		t.Fatal("ConsoleNotificationsFile empty")
+	}
+}

@@ -12,12 +12,14 @@ type Paths struct {
 	UserHome string
 
 	// Per-install state root (~/.agentserver-vscode/)
-	InstallRoot       string
-	StateFile         string
-	SecretsFile       string
-	CacheDir          string
-	VSCodeUserDataDir string
-	VSCodeExtDir      string
+	InstallRoot              string
+	StateFile                string
+	SecretsFile              string
+	CacheDir                 string
+	ConsolePortFile          string
+	ConsoleNotificationsFile string
+	VSCodeUserDataDir        string
+	VSCodeExtDir             string
 
 	// Codex config
 	CodexDir        string
@@ -36,15 +38,17 @@ func Default() (Paths, error) {
 	root := filepath.Join(home, ".agentserver-vscode")
 	codex := filepath.Join(home, ".codex")
 	p := Paths{
-		UserHome:          home,
-		InstallRoot:       root,
-		StateFile:         filepath.Join(root, "state.json"),
-		SecretsFile:       filepath.Join(root, "secrets.json"),
-		CacheDir:          filepath.Join(root, "cache"),
-		VSCodeUserDataDir: filepath.Join(root, "vscode-data"),
-		VSCodeExtDir:      filepath.Join(root, "vscode-extensions"),
-		CodexDir:          codex,
-		CodexConfigFile:   filepath.Join(codex, "config.toml"),
+		UserHome:                 home,
+		InstallRoot:              root,
+		StateFile:                filepath.Join(root, "state.json"),
+		SecretsFile:              filepath.Join(root, "secrets.json"),
+		CacheDir:                 filepath.Join(root, "cache"),
+		ConsolePortFile:          filepath.Join(root, "console-port.json"),
+		ConsoleNotificationsFile: filepath.Join(root, "console-notifications.json"),
+		VSCodeUserDataDir:        filepath.Join(root, "vscode-data"),
+		VSCodeExtDir:             filepath.Join(root, "vscode-extensions"),
+		CodexDir:                 codex,
+		CodexConfigFile:          filepath.Join(codex, "config.toml"),
 	}
 	switch runtime.GOOS {
 	case "windows":
