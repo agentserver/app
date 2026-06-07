@@ -32,18 +32,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	installDir := ""
+	launcherExe := ""
 	tokenRefresherExe := ""
 	embeddedVSIXPath := ""
 	installModePath := ""
 	if exe, err := os.Executable(); err == nil {
-		installDir = filepath.Dir(exe)
+		installDir := filepath.Dir(exe)
+		launcherExe = filepath.Join(installDir, "launcher.exe")
 		tokenRefresherExe = filepath.Join(installDir, "token-refresher.exe")
 		embeddedVSIXPath = filepath.Join(installDir, "agentserver-vscode.vsix")
 		installModePath = installmode.PathForExecutable(exe)
 	}
 	_ = ensureConsoleBackground(context.Background(), consoleBackgroundDeps{
-		LauncherExe: filepath.Join(installDir, "launcher.exe"),
+		LauncherExe: launcherExe,
 		PortFile:    p.ConsolePortFile,
 	})
 	s, err := loadOpenFolderState(p, installModePath)

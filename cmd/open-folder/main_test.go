@@ -94,20 +94,36 @@ func TestLoadOpenFolderStateSyncsInstallModeFile(t *testing.T) {
 }
 
 func TestEnsureConsoleStartsLauncherWhenMissing(t *testing.T) {
+	expectedLauncher := filepath.Join("install-dir", "launcher.exe")
+	expectedPortFile := "console-port.json"
 	calls := 0
+	discoverCalls := 0
 	err := ensureConsoleBackground(context.Background(), consoleBackgroundDeps{
-		LauncherExe: "launcher.exe",
-		PortFile:    "console-port.json",
-		Discover: func(context.Context, string) (console.InstanceInfo, bool) {
+		LauncherExe: expectedLauncher,
+		PortFile:    expectedPortFile,
+		Discover: func(_ context.Context, portFile string) (console.InstanceInfo, bool) {
+			discoverCalls++
+			if portFile != expectedPortFile {
+				t.Fatalf("portFile=%q, want %q", portFile, expectedPortFile)
+			}
 			return console.InstanceInfo{}, false
 		},
-		Start: func(string, ...string) error {
+		Start: func(exe string, args ...string) error {
 			calls++
+			if exe != expectedLauncher {
+				t.Fatalf("exe=%q, want %q", exe, expectedLauncher)
+			}
+			if len(args) != 1 || args[0] != "--background" {
+				t.Fatalf("args=%v, want [--background]", args)
+			}
 			return nil
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if discoverCalls != 1 {
+		t.Fatalf("discover calls=%d", discoverCalls)
 	}
 	if calls != 1 {
 		t.Fatalf("start calls=%d", calls)
@@ -121,6 +137,27 @@ func TestEnsureConsoleDoesNotStartWhenHealthy(t *testing.T) {
 		PortFile:    "console-port.json",
 		Discover: func(context.Context, string) (console.InstanceInfo, bool) {
 			return console.InstanceInfo{Port: 1234}, true
+		},
+		Start: func(string, ...string) error {
+			calls++
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("start calls=%d", calls)
+	}
+}
+
+func TestEnsureConsoleDoesNotStartWithoutLauncher(t *testing.T) {
+	calls := 0
+	err := ensureConsoleBackground(context.Background(), consoleBackgroundDeps{
+		LauncherExe: "",
+		PortFile:    "console-port.json",
+		Discover: func(context.Context, string) (console.InstanceInfo, bool) {
+			return console.InstanceInfo{}, false
 		},
 		Start: func(string, ...string) error {
 			calls++
