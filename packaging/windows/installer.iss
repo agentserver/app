@@ -72,18 +72,6 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; \
 Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 
 [Run]
-Filename: "powershell"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\write-install-mode.ps1"" -Mode codex_desktop -Path ""{app}\install-mode.json"""; \
-    Flags: runhidden waituntilterminated; Check: ShouldInstallCodexDesktop
-Filename: "powershell"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\ensure-codex-desktop.ps1"""; \
-    Flags: runhidden waituntilterminated; Check: ShouldInstallCodexDesktop
-Filename: "powershell"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\write-install-mode.ps1"" -Mode minimal_vscode -Path ""{app}\install-mode.json"""; \
-    Flags: runhidden waituntilterminated; Tasks: minimalvscode
-Filename: "powershell"; \
-    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\ensure-vscode.ps1"" -ManifestPath ""{app}\vscode-manifest.json"""; \
-    Flags: runhidden waituntilterminated; Tasks: minimalvscode
 Filename: "{app}\{#MyAppExeName}"; \
     Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
@@ -91,6 +79,155 @@ Filename: "{app}\{#MyAppExeName}"; \
 function ShouldInstallCodexDesktop(): Boolean;
 begin
   Result := not WizardIsTaskSelected('minimalvscode');
+end;
+
+function PowerShellQuote(Value: String): String;
+begin
+  StringChangeEx(Value, '''', '''''', True);
+  Result := '''' + Value + '''';
+end;
+
+function FormatDuration(Seconds: Integer): String;
+var
+  Minutes: Integer;
+  Rest: Integer;
+begin
+  if Seconds < 60 then begin
+    Result := IntToStr(Seconds) + '秒';
+  end else begin
+    Minutes := Seconds div 60;
+    Rest := Seconds mod 60;
+    if Rest = 0 then begin
+      Result := IntToStr(Minutes) + '分钟';
+    end else begin
+      Result := IntToStr(Minutes) + '分' + IntToStr(Rest) + '秒';
+    end;
+  end;
+end;
+
+function BuildPowerShellRunner(TargetScript: String; TargetArgs: String; ExitPath: String; LogPath: String): String;
+begin
+  Result :=
+    '$ErrorActionPreference = ''Stop''' + #13#10 +
+    '$exitPath = ' + PowerShellQuote(ExitPath) + #13#10 +
+    '$logPath = ' + PowerShellQuote(LogPath) + #13#10 +
+    'try {' + #13#10 +
+    '  & ' + PowerShellQuote(TargetScript) + ' ' + TargetArgs + ' *> $logPath' + #13#10 +
+    '  $code = $LASTEXITCODE' + #13#10 +
+    '  if ($null -eq $code) { $code = 0 }' + #13#10 +
+    '  Set-Content -LiteralPath $exitPath -Value $code -Encoding ASCII' + #13#10 +
+    '} catch {' + #13#10 +
+    '  Set-Content -LiteralPath $exitPath -Value (''ERROR: '' + $_.Exception.Message) -Encoding UTF8' + #13#10 +
+    '  exit 1' + #13#10 +
+    '}' + #13#10;
+end;
+
+procedure UpdateEstimatedProgress(StatusText: String; ElapsedSeconds: Integer; EstimateSeconds: Integer);
+var
+  DetailText: String;
+  RemainingSeconds: Integer;
+  Progress: Integer;
+begin
+  if EstimateSeconds <= 0 then begin
+    Progress := 50;
+    DetailText := '已用 ' + FormatDuration(ElapsedSeconds) + '，请勿关闭安装器。';
+  end else begin
+    Progress := (ElapsedSeconds * 95) div EstimateSeconds;
+    if Progress > 95 then begin
+      Progress := 95;
+    end;
+    if Progress < 1 then begin
+      Progress := 1;
+    end;
+    RemainingSeconds := EstimateSeconds - ElapsedSeconds;
+    if RemainingSeconds > 0 then begin
+      DetailText := '已用 ' + FormatDuration(ElapsedSeconds) + '，预计还需 ' + FormatDuration(RemainingSeconds) + '。';
+    end else begin
+      DetailText := '已用 ' + FormatDuration(ElapsedSeconds) + '，仍在安装，请勿关闭安装器。';
+    end;
+  end;
+
+  WizardForm.StatusLabel.Caption := StatusText;
+  WizardForm.FilenameLabel.Caption := DetailText;
+  WizardForm.ProgressGauge.Min := 0;
+  WizardForm.ProgressGauge.Max := 100;
+  WizardForm.ProgressGauge.Position := Progress;
+  WizardForm.Refresh;
+end;
+
+procedure RunEstimatedPowerShellStep(StepID: String; StatusText: String; ScriptName: String; ScriptArgs: String; EstimateSeconds: Integer);
+var
+  RunnerPath: String;
+  ExitPath: String;
+  LogPath: String;
+  ScriptPath: String;
+  ScriptBody: String;
+  PowerShellExe: String;
+  ResultCode: Integer;
+  ElapsedSeconds: Integer;
+  ResultText: AnsiString;
+begin
+  RunnerPath := ExpandConstant('{tmp}\agentserver-' + StepID + '.ps1');
+  ExitPath := ExpandConstant('{tmp}\agentserver-' + StepID + '.exit');
+  LogPath := ExpandConstant('{tmp}\agentserver-' + StepID + '.log');
+  ScriptPath := ExpandConstant('{app}\' + ScriptName);
+
+  DeleteFile(RunnerPath);
+  DeleteFile(ExitPath);
+  DeleteFile(LogPath);
+
+  ScriptBody := BuildPowerShellRunner(ScriptPath, ScriptArgs, ExitPath, LogPath);
+  if not SaveStringToFile(RunnerPath, ScriptBody, False) then begin
+    RaiseException('无法准备安装步骤：' + StatusText);
+  end;
+
+  PowerShellExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  UpdateEstimatedProgress(StatusText, 0, EstimateSeconds);
+  if not Exec(PowerShellExe, '-NoProfile -ExecutionPolicy Bypass -File "' + RunnerPath + '"', '', SW_HIDE, ewNoWait, ResultCode) then begin
+    RaiseException('无法启动安装步骤：' + StatusText);
+  end;
+
+  ElapsedSeconds := 0;
+  while not FileExists(ExitPath) do begin
+    Sleep(1000);
+    ElapsedSeconds := ElapsedSeconds + 1;
+    UpdateEstimatedProgress(StatusText, ElapsedSeconds, EstimateSeconds);
+  end;
+
+  WizardForm.StatusLabel.Caption := StatusText;
+  WizardForm.FilenameLabel.Caption := '正在验证结果...';
+  WizardForm.ProgressGauge.Position := 100;
+  WizardForm.Refresh;
+
+  if not LoadStringFromFile(ExitPath, ResultText) then begin
+    RaiseException('无法读取安装步骤结果：' + StatusText + '。日志：' + LogPath);
+  end;
+  ResultText := Trim(ResultText);
+  if ResultText <> '0' then begin
+    RaiseException(StatusText + ' 失败：' + ResultText + '。日志：' + LogPath);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ModePath: String;
+begin
+  if CurStep <> ssPostInstall then begin
+    Exit;
+  end;
+
+  ModePath := ExpandConstant('{app}\install-mode.json');
+  if ShouldInstallCodexDesktop then begin
+    RunEstimatedPowerShellStep('codex-mode', '正在准备 Codex Desktop 模式...', 'write-install-mode.ps1',
+      '-Mode ' + PowerShellQuote('codex_desktop') + ' -Path ' + PowerShellQuote(ModePath), 10);
+    RunEstimatedPowerShellStep('codex-install', '正在安装 Codex Desktop（通过 Microsoft Store，可能需要几分钟，请勿关闭）...', 'ensure-codex-desktop.ps1',
+      '', 240);
+  end else begin
+    RunEstimatedPowerShellStep('vscode-mode', '正在准备极简风模式...', 'write-install-mode.ps1',
+      '-Mode ' + PowerShellQuote('minimal_vscode') + ' -Path ' + PowerShellQuote(ModePath), 10);
+    RunEstimatedPowerShellStep('vscode-install', '正在安装极简 VS Code（可能需要几分钟，请勿关闭）...', 'ensure-vscode.ps1',
+      '-ManifestPath ' + PowerShellQuote(ExpandConstant('{app}\vscode-manifest.json')), 180);
+  end;
 end;
 
 [UninstallRun]

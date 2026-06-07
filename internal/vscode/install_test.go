@@ -260,45 +260,40 @@ func TestWindowsInnoInstallerDesktopShortcutEnabledByDefault(t *testing.T) {
 	t.Fatal("installer.iss missing desktopicon task")
 }
 
-func TestWindowsInnoInstallerFrontendRunEntriesAreMutuallyExclusive(t *testing.T) {
+func TestWindowsInnoInstallerFrontendInstallUsesEstimatedProgress(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(body)
-	for _, tc := range []struct {
-		name      string
-		params    string
-		qualifier string
-	}{
-		{
-			name:      "codex desktop mode writer",
-			params:    `-NoProfile -ExecutionPolicy Bypass -File ""{app}\write-install-mode.ps1"" -Mode codex_desktop -Path ""{app}\install-mode.json""`,
-			qualifier: "Check: ShouldInstallCodexDesktop",
-		},
-		{
-			name:      "codex desktop installer",
-			params:    `-NoProfile -ExecutionPolicy Bypass -File ""{app}\ensure-codex-desktop.ps1""`,
-			qualifier: "Check: ShouldInstallCodexDesktop",
-		},
-		{
-			name:      "minimal vscode mode writer",
-			params:    `-NoProfile -ExecutionPolicy Bypass -File ""{app}\write-install-mode.ps1"" -Mode minimal_vscode -Path ""{app}\install-mode.json""`,
-			qualifier: "Tasks: minimalvscode",
-		},
-		{
-			name:      "minimal vscode installer",
-			params:    `-NoProfile -ExecutionPolicy Bypass -File ""{app}\ensure-vscode.ps1"" -ManifestPath ""{app}\vscode-manifest.json""`,
-			qualifier: "Tasks: minimalvscode",
-		},
+	for _, want := range []string{
+		"procedure CurStepChanged(CurStep: TSetupStep);",
+		"RunEstimatedPowerShellStep(",
+		"WizardForm.ProgressGauge.Position",
+		"FormatDuration(",
+		"预计还需",
+		"已用",
+		"仍在安装，请勿关闭",
+		"write-install-mode.ps1",
+		"ensure-codex-desktop.ps1",
+		"ensure-vscode.ps1",
+		"ShouldInstallCodexDesktop",
+		"WizardIsTaskSelected('minimalvscode')",
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			want := "Parameters: \"" + tc.params + "\"; \\\n" +
-				"    Flags: runhidden waituntilterminated; " + tc.qualifier
-			if !strings.Contains(s, want) {
-				t.Fatalf("installer.iss missing guarded run entry:\n%s", want)
-			}
-		})
+		if !strings.Contains(s, want) {
+			t.Fatalf("installer.iss should run long frontend install steps with estimated progress; missing %q", want)
+		}
+	}
+	runSectionStart := strings.Index(s, "[Run]")
+	codeSectionStart := strings.Index(s, "[Code]")
+	if runSectionStart < 0 || codeSectionStart < 0 || codeSectionStart <= runSectionStart {
+		t.Fatal("installer.iss should contain [Run] before [Code]")
+	}
+	runSection := s[runSectionStart:codeSectionStart]
+	for _, notWant := range []string{"write-install-mode.ps1", "ensure-codex-desktop.ps1", "ensure-vscode.ps1"} {
+		if strings.Contains(runSection, notWant) {
+			t.Fatalf("[Run] must not hide-wait long frontend step %q; use estimated progress code instead:\n%s", notWant, runSection)
+		}
 	}
 }
 
