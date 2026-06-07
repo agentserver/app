@@ -73,10 +73,12 @@ func TestFullOnboarding_MS_AS(t *testing.T) {
 		!s.Onboarding.HasCompleted("agentserver_login") {
 		t.Errorf("steps not complete: %+v", s.Onboarding.CompletedSteps)
 	}
-	// ProjectID and WorkspaceID are intentionally empty: the PKCE/device-flow
-	// access tokens can't reach the admin APIs that would populate them. The
-	// API-key-suffix fields hold the last 4 chars of the access_token, which
-	// is the credential codex/loom will use directly.
+	if s.Modelserver.ProjectID == "" {
+		t.Fatalf("modelserver project id missing")
+	}
+	if s.Agentserver.WorkspaceID == "" {
+		t.Fatalf("agentserver workspace id missing")
+	}
 	if s.Modelserver.APIKeySuffix == "" || s.Agentserver.WorkspaceAPIKeySuffix == "" {
 		t.Errorf("missing key suffixes: %+v", s)
 	}

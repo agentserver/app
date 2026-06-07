@@ -29,7 +29,10 @@ type Server struct {
 // Start spins up the fake. Caller must Close. Approval is automatic
 // after 50ms by default to keep tests fast.
 func Start() *Server {
-	s := &Server{}
+	s := &Server{
+		projects: []map[string]string{{"id": "proj-1", "name": "default"}},
+		wsList:   []map[string]string{{"id": "ws-1", "name": "Default workspace"}},
+	}
 	mux := http.NewServeMux()
 
 	// ---- modelserver routes ----

@@ -187,9 +187,7 @@ func (r *realOrchestrator) PollModelserverLogin(ctx context.Context) (modelserve
 		// Use the PKCE access_token directly as the OPENAI_API_KEY for codex.
 		// The proxy path /v1/* (internal/proxy/auth_middleware.go) accepts any
 		// raw Hydra token via introspection fallback when it doesn't match the
-		// "ms-" API-key prefix. The admin path /api/v1/* requires modelserver's
-		// own JWT, which PKCE doesn't produce — so we skip PickOrCreateProject
-		// and CreateAPIKey entirely.
+		// "ms-" API-key prefix.
 		key := modelserver.APIKey{
 			Secret:    tok.AccessToken,
 			KeySuffix: lastN(tok.AccessToken, 4),
@@ -198,11 +196,20 @@ func (r *realOrchestrator) PollModelserverLogin(ctx context.Context) (modelserve
 			r.cleanupMS()
 			return modelserver.APIKey{}, err
 		}
+		project, err := r.d.MS.PickOrCreateProject(ctx, tok.AccessToken, "default")
+		if err != nil {
+			r.cleanupMS()
+			return modelserver.APIKey{}, fmt.Errorf("resolve modelserver project: %w", err)
+		}
+		if project.ID == "" {
+			r.cleanupMS()
+			return modelserver.APIKey{}, fmt.Errorf("resolve modelserver project: empty project id")
+		}
 		if r.d.TokenRefresherExePath != "" {
 			_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 		}
 		if err := r.d.State.Update(func(s *state.State) error {
-			// ProjectID intentionally left empty: PKCE flow doesn't have one.
+			s.Modelserver.ProjectID = project.ID
 			s.Modelserver.APIKeySuffix = key.KeySuffix
 			s.Onboarding.AddCompleted("modelserver_login")
 			return nil
@@ -265,15 +272,8 @@ func (r *realOrchestrator) PollAgentserverLogin(ctx context.Context) (agentserve
 	r.asToken = tok
 
 	// Use the device-code access_token directly as the agentserver credential.
-	// agentserver's admin API (/api/workspaces, /api/workspaces/{id}/api-keys)
-	// requires its own dashboard JWT and refuses the Hydra OAuth bearer with
-	// 401. This mirrors modelserver: we skip GetOrCreateDefaultWorkspace +
-	// CreateWorkspaceAPIKey and store the access_token itself, which the
-	// downstream loom driver/slave should be able to use directly (they were
-	// granted the agent:register scope when the user confirmed in Hydra).
-	//
-	// User already chose a workspace during the Hydra device-verify flow;
-	// that's persisted server-side as part of the device grant.
+	// Resolve and persist the workspace ID separately, but keep the OAuth
+	// token as the secret used by downstream loom components.
 	key := agentserver.WorkspaceAPIKey{
 		Secret:    tok.AccessToken,
 		KeySuffix: lastN(tok.AccessToken, 4),
@@ -281,10 +281,19 @@ func (r *realOrchestrator) PollAgentserverLogin(ctx context.Context) (agentserve
 	if err := r.d.Secrets.Set("agentserver_ws_api_key", key.Secret); err != nil {
 		return agentserver.WorkspaceAPIKey{}, err
 	}
+	current, err := r.d.State.Load()
+	if err != nil {
+		return agentserver.WorkspaceAPIKey{}, err
+	}
+	workspace, err := agentserver.ResolveWorkspaceID(ctx, r.d.AS, tok.AccessToken, current.Agentserver.WorkspaceID)
+	if err != nil {
+		return agentserver.WorkspaceAPIKey{}, fmt.Errorf("resolve agentserver workspace: %w", err)
+	}
+	if workspace.ID == "" {
+		return agentserver.WorkspaceAPIKey{}, fmt.Errorf("resolve agentserver workspace: empty workspace id")
+	}
 	if err := r.d.State.Update(func(s *state.State) error {
-		// WorkspaceID intentionally left empty: device-flow user-side selection
-		// isn't surfaced back to us via the OAuth response. Downstream loom
-		// startup will need to discover the workspace via its own bearer call.
+		s.Agentserver.WorkspaceID = workspace.ID
 		s.Agentserver.WorkspaceAPIKeySuffix = key.KeySuffix
 		s.Onboarding.AddCompleted("agentserver_login")
 		return nil

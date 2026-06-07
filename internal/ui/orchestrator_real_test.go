@@ -2,6 +2,8 @@ package ui
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
@@ -403,8 +406,7 @@ func TestLoginModelserver_StartsListenerOpensBrowser(t *testing.T) {
 func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 	port := freeUIPort(t)
 
-	// Fake modelserver: serves both Hydra /oauth2/token and the
-	// admin /api/v1/projects + /api/v1/projects/{id}/keys.
+	// Fake modelserver: serves Hydra /oauth2/token and project resolution.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -417,16 +419,13 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 		w.Write([]byte(`{"access_token":"fake-at","token_type":"Bearer","refresh_token":"fake-rt","expires_in":3600}`))
 	})
 	mux.HandleFunc("/api/v1/projects", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			w.WriteHeader(201)
-			w.Write([]byte(`{"data":{"id":"proj-1","name":"default"}}`))
-			return
+		if r.Method != http.MethodGet {
+			t.Errorf("/api/v1/projects got method %s", r.Method)
 		}
-		w.Write([]byte(`{"data":[]}`))
-	})
-	mux.HandleFunc("/api/v1/projects/proj-1/keys", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(201)
-		w.Write([]byte(`{"data":{"id":"k1","key_suffix":"wxyz"},"key":"ms-fakekey-xxx"}`))
+		if got := r.Header.Get("Authorization"); got != "Bearer fake-at" {
+			t.Errorf("/api/v1/projects auth %q", got)
+		}
+		w.Write([]byte(`{"data":[{"id":"proj-1","name":"default"}]}`))
 	})
 	fake := httptest.NewServer(mux)
 	defer fake.Close()
@@ -474,9 +473,6 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PollModelserverLogin: %v", err)
 	}
-	// New behavior: skip PickOrCreateProject + CreateAPIKey because PKCE
-	// access_token can't reach the admin /api/v1/* path (JWT-only). The
-	// access_token itself is what gets stored as OPENAI_API_KEY.
 	if key.Secret != "fake-at" {
 		t.Errorf("key.Secret = %q, want access_token", key.Secret)
 	}
@@ -490,14 +486,130 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 		t.Errorf("access token expiry not stored")
 	}
 	s, _ := store.Load()
-	if s.Modelserver.ProjectID != "" {
-		t.Errorf("project id = %q, want empty (PKCE has no project)", s.Modelserver.ProjectID)
+	if s.Modelserver.ProjectID != "proj-1" {
+		t.Errorf("project id = %q, want proj-1", s.Modelserver.ProjectID)
 	}
 	if s.Modelserver.APIKeySuffix != "e-at" {
 		t.Errorf("key suffix = %q, want last 4 of 'fake-at'", s.Modelserver.APIKeySuffix)
 	}
 	if !s.Onboarding.HasCompleted("modelserver_login") {
 		t.Errorf("step not marked completed")
+	}
+}
+
+func TestPollModelserverLoginRequiresProjectIDBeforeCompletion(t *testing.T) {
+	port := freeUIPort(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"fake-at","refresh_token":"fake-rt","token_type":"Bearer","expires_in":3600}`))
+	})
+	mux.HandleFunc("/api/v1/projects", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	r := &realOrchestrator{d: Deps{
+		State:   store,
+		Secrets: secrets.New(filepath.Join(dir, "secrets.json")),
+		MS:      modelserver.New(fake.URL),
+		MSOAuth: oauth.AuthCodeConfig{
+			Endpoint: fake.URL, AuthPath: "/oauth2/auth", TokenPath: "/oauth2/token",
+			ClientID: "client-x", CallbackPath: "/oauth/modelserver/callback",
+			Ports: []int{port}, LoginTimeout: 3 * time.Second,
+		},
+		OpenBrowser: func(string) {},
+	}}
+	if _, err := r.LoginModelserver(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/oauth/modelserver/callback?code=x&state=%s", port, r.msSession.State))
+	}()
+	if _, err := r.PollModelserverLogin(context.Background()); err == nil {
+		t.Fatal("expected project resolution error")
+	}
+	s, _ := store.Load()
+	if s.Onboarding.HasCompleted("modelserver_login") {
+		t.Fatal("modelserver_login should not complete without ProjectID")
+	}
+}
+
+func jwtWithASWorkspace(t *testing.T, workspaceID string) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload, err := json.Marshal(map[string]string{"workspace_id": workspaceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+}
+
+func TestPollAgentserverLoginStoresWorkspaceID(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"` + jwtWithASWorkspace(t, "ws-claim") + `","token_type":"Bearer","expires_in":3600}`))
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	r := &realOrchestrator{d: Deps{
+		State:   store,
+		Secrets: secrets.New(filepath.Join(dir, "secrets.json")),
+		AS:      agentserver.New(fake.URL),
+		ASOAuth: oauth.Config{Endpoint: fake.URL, TokenPath: "/api/oauth2/token", ClientID: "client-x"},
+	}}
+	r.asChallenge = oauth.DeviceCodeChallenge{DeviceCode: "dev", ExpiresIn: 30, Interval: 1}
+	key, err := r.PollAgentserverLogin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Secret == "" {
+		t.Fatal("secret missing")
+	}
+	s, _ := store.Load()
+	if s.Agentserver.WorkspaceID != "ws-claim" {
+		t.Fatalf("WorkspaceID=%q, want ws-claim", s.Agentserver.WorkspaceID)
+	}
+	if !s.Onboarding.HasCompleted("agentserver_login") {
+		t.Fatal("agentserver_login not completed")
+	}
+}
+
+func TestPollAgentserverLoginRequiresWorkspaceID(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"opaque-token","token_type":"Bearer","expires_in":3600}`))
+	})
+	mux.HandleFunc("/api/workspaces", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	r := &realOrchestrator{d: Deps{
+		State:   store,
+		Secrets: secrets.New(filepath.Join(dir, "secrets.json")),
+		AS:      agentserver.New(fake.URL),
+		ASOAuth: oauth.Config{Endpoint: fake.URL, TokenPath: "/api/oauth2/token", ClientID: "client-x"},
+	}}
+	r.asChallenge = oauth.DeviceCodeChallenge{DeviceCode: "dev", ExpiresIn: 30, Interval: 1}
+	if _, err := r.PollAgentserverLogin(context.Background()); err == nil {
+		t.Fatal("expected workspace resolution error")
+	}
+	s, _ := store.Load()
+	if s.Onboarding.HasCompleted("agentserver_login") {
+		t.Fatal("agentserver_login should not complete without WorkspaceID")
 	}
 }
 

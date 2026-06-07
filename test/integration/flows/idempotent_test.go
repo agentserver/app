@@ -60,11 +60,11 @@ func TestIdempotentWorkspace(t *testing.T) {
 	pollUntilSuccess(t, srv.URL+"/api/step/agentserver_login/status")
 
 	s, _ := store.Load()
-	// WorkspaceID is intentionally empty under PKCE/device-flow: see comment
-	// in PollAgentserverLogin. Idempotency here is about the step completing
-	// twice without erroring, not about admin-level dedup.
 	if !s.Onboarding.HasCompleted("agentserver_login") {
 		t.Errorf("agentserver_login not marked completed after two attempts: %+v", s.Onboarding.CompletedSteps)
+	}
+	if s.Agentserver.WorkspaceID == "" {
+		t.Fatalf("agentserver workspace id missing")
 	}
 	if s.Agentserver.WorkspaceAPIKeySuffix == "" {
 		t.Errorf("key suffix missing: %+v", s.Agentserver)
