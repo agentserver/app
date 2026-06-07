@@ -56,3 +56,13 @@ func TestClassifyWingetErrorDoesNotTreatAnyMsstoreOutputAsSourceFailure(t *testi
 		t.Fatalf("err=%v, want generic winget failure", got)
 	}
 }
+
+func TestClassifyWingetErrorDoesNotTreatPackageNotFoundInSourceAsSourceFailure(t *testing.T) {
+	got := ClassifyWingetError(errors.New("exit 1"), "package Codex was not found in source msstore")
+	if strings.Contains(got.Error(), "Microsoft Store source") {
+		t.Fatalf("err=%v, want generic winget failure", got)
+	}
+	if !strings.Contains(got.Error(), "winget install Codex") {
+		t.Fatalf("err=%v, want generic winget failure", got)
+	}
+}

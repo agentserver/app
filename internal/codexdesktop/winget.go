@@ -54,10 +54,11 @@ func isWingetSourceUnavailable(lower string) bool {
 	if strings.Contains(compact, "no sources") || strings.Contains(compact, "no available sources") {
 		return true
 	}
-	if strings.Contains(compact, "source") && strings.Contains(compact, "not found") {
-		return true
-	}
 	for _, phrase := range []string{
+		"msstore source was not found",
+		"source msstore was not found",
+		"source 'msstore' was not found",
+		"source \"msstore\" was not found",
 		"failed to open source",
 		"failed to open the source",
 		"failed when opening source",
