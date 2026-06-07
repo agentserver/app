@@ -94,7 +94,14 @@ func DiscoverInstance(ctx context.Context, path string) (InstanceInfo, bool) {
 		State string `json:"state"`
 	}
 	body, err := io.ReadAll(resp.Body)
-	if err != nil || json.Unmarshal(body, &health) != nil || health.State != "ok" {
+	if err != nil {
+		if ctx.Err() != nil {
+			return InstanceInfo{}, false
+		}
+		_ = os.Remove(path)
+		return InstanceInfo{}, false
+	}
+	if json.Unmarshal(body, &health) != nil || health.State != "ok" {
 		_ = os.Remove(path)
 		return InstanceInfo{}, false
 	}

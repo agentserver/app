@@ -101,6 +101,47 @@ func TestDiscoverInstanceKeepsPortFileWhenContextCanceled(t *testing.T) {
 	}
 }
 
+func TestDiscoverInstanceKeepsPortFileWhenContextCanceledDuringHealthBody(t *testing.T) {
+	headersFlushed := make(chan struct{})
+	releaseBody := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/console/health" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Length", "14")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(headersFlushed)
+		<-releaseBody
+	}))
+	defer srv.Close()
+	defer close(releaseBody)
+	path := writeInstanceForServer(t, srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan bool, 1)
+	go func() {
+		_, ok := DiscoverInstance(ctx, path)
+		result <- ok
+	}()
+
+	select {
+	case <-headersFlushed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for health headers")
+	}
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	if ok := receiveDiscoveryResult(t, result); ok {
+		t.Fatal("canceled discovery should not be healthy")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("port file should remain after canceled body read, err=%v", err)
+	}
+}
+
 func TestWriteInstanceInfoPublishesValidJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "console-port.json")
@@ -156,6 +197,17 @@ func receiveHealthRequest(t *testing.T, requests <-chan healthRequest) healthReq
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for health request")
 		return healthRequest{}
+	}
+}
+
+func receiveDiscoveryResult(t *testing.T, result <-chan bool) bool {
+	t.Helper()
+	select {
+	case ok := <-result:
+		return ok
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for discovery result")
+		return false
 	}
 }
 
