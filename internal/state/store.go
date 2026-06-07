@@ -85,6 +85,7 @@ func freshState() *State {
 		SchemaVersion: CurrentSchemaVersion,
 		InstallID:     uuid.NewString(),
 		CreatedAt:     time.Now().UTC(),
+		FrontendMode:  NormalizeFrontendMode(FrontendModeCodexDesktop),
 		Onboarding:    OnboardingState{Status: StatusPending},
 		Modelserver:   ModelserverState{BaseURL: "https://code.cs.ac.cn"},
 		Agentserver:   AgentserverState{BaseURL: "https://agent.cs.ac.cn"},

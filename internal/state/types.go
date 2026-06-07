@@ -15,15 +15,33 @@ const (
 	StatusFailed     Status = "failed"
 )
 
+type FrontendMode string
+
+const (
+	FrontendModeCodexDesktop  FrontendMode = "codex_desktop"
+	FrontendModeMinimalVSCode FrontendMode = "minimal_vscode"
+)
+
+func NormalizeFrontendMode(mode FrontendMode) FrontendMode {
+	switch mode {
+	case FrontendModeMinimalVSCode:
+		return FrontendModeMinimalVSCode
+	default:
+		return FrontendModeCodexDesktop
+	}
+}
+
 type State struct {
-	SchemaVersion int              `json:"schema_version"`
-	InstallID     string           `json:"install_id"`
-	CreatedAt     time.Time        `json:"created_at"`
-	Onboarding    OnboardingState  `json:"onboarding"`
-	Modelserver   ModelserverState `json:"modelserver"`
-	Agentserver   AgentserverState `json:"agentserver"`
-	VSCode        VSCodeState      `json:"vscode"`
-	Shortcuts     ShortcutsState   `json:"shortcuts"`
+	SchemaVersion int               `json:"schema_version"`
+	InstallID     string            `json:"install_id"`
+	CreatedAt     time.Time         `json:"created_at"`
+	FrontendMode  FrontendMode      `json:"frontend_mode,omitempty"`
+	Onboarding    OnboardingState   `json:"onboarding"`
+	Modelserver   ModelserverState  `json:"modelserver"`
+	Agentserver   AgentserverState  `json:"agentserver"`
+	VSCode        VSCodeState       `json:"vscode"`
+	CodexDesktop  CodexDesktopState `json:"codex_desktop"`
+	Shortcuts     ShortcutsState    `json:"shortcuts"`
 }
 
 type OnboardingState struct {
@@ -74,6 +92,12 @@ type VSCodeState struct {
 	UserDataDir      string `json:"user_data_dir,omitempty"`
 	ExtensionsDir    string `json:"extensions_dir,omitempty"`
 	ExtensionVersion string `json:"extension_version,omitempty"`
+}
+
+type CodexDesktopState struct {
+	Installed     bool   `json:"installed"`
+	Version       string `json:"version,omitempty"`
+	InstalledByUs bool   `json:"installed_by_us"`
 }
 
 type ShortcutsState struct {

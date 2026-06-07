@@ -52,3 +52,53 @@ func TestHasCompleted(t *testing.T) {
 		t.Errorf("HasCompleted wrong")
 	}
 }
+
+func TestFrontendModeNormalize(t *testing.T) {
+	for _, tc := range []struct {
+		in   FrontendMode
+		want FrontendMode
+	}{
+		{"", FrontendModeCodexDesktop},
+		{"bogus", FrontendModeCodexDesktop},
+		{FrontendModeCodexDesktop, FrontendModeCodexDesktop},
+		{FrontendModeMinimalVSCode, FrontendModeMinimalVSCode},
+	} {
+		if got := NormalizeFrontendMode(tc.in); got != tc.want {
+			t.Fatalf("NormalizeFrontendMode(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestFreshStateDefaultsToCodexDesktop(t *testing.T) {
+	got := freshState()
+	if got.FrontendMode != FrontendModeCodexDesktop {
+		t.Fatalf("FrontendMode = %q, want %q", got.FrontendMode, FrontendModeCodexDesktop)
+	}
+}
+
+func TestStateRoundtripFrontendModeAndCodexDesktop(t *testing.T) {
+	s := State{
+		SchemaVersion: CurrentSchemaVersion,
+		InstallID:     "front-1",
+		FrontendMode:  FrontendModeMinimalVSCode,
+		CodexDesktop: CodexDesktopState{
+			Installed:     true,
+			Version:       "1.2.3",
+			InstalledByUs: true,
+		},
+	}
+	b, err := json.Marshal(&s)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got State
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.FrontendMode != FrontendModeMinimalVSCode {
+		t.Fatalf("FrontendMode = %q", got.FrontendMode)
+	}
+	if !got.CodexDesktop.Installed || got.CodexDesktop.Version != "1.2.3" || !got.CodexDesktop.InstalledByUs {
+		t.Fatalf("CodexDesktop roundtrip lost data: %+v", got.CodexDesktop)
+	}
+}
