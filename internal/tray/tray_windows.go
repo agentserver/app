@@ -17,17 +17,13 @@ import (
 
 const (
 	trayClassName = "AgentserverPkgTrayWindow"
-	trayIconID    = 1
 
-	wmClose       = 0x0010
-	wmCommand     = 0x0111
-	wmDestroy     = 0x0002
-	wmNull        = 0x0000
-	wmRButtonUp   = 0x0205
-	wmContextMenu = 0x007B
-	wmLButtonDbl  = 0x0203
-	wmApp         = 0x8000
-	wmTray        = wmApp + 1
+	wmClose   = 0x0010
+	wmCommand = 0x0111
+	wmDestroy = 0x0002
+	wmNull    = 0x0000
+	wmApp     = 0x8000
+	wmTray    = wmApp + 1
 
 	nimAdd        = 0x00000000
 	nimModify     = 0x00000001
@@ -448,7 +444,11 @@ func windowProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	switch msg {
 	case wmTray:
 		if app != nil {
-			switch uint32(lParam) {
+			event, ok := trayCallbackEvent(lParam)
+			if !ok {
+				return 0
+			}
+			switch event {
 			case wmRButtonUp, wmContextMenu:
 				app.showMenu()
 				return 0
