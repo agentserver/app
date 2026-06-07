@@ -67,6 +67,9 @@ func NewController(d Deps) *Controller {
 }
 
 func (c *Controller) State(ctx context.Context) (State, error) {
+	if c.d.State == nil {
+		return State{}, errors.New("console: state store required")
+	}
 	st, err := c.d.State.Load()
 	if err != nil {
 		return State{}, err

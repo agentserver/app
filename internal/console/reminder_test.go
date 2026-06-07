@@ -1,7 +1,10 @@
 package console
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -64,4 +67,80 @@ func TestFileReminderStorePersistsSeenState(t *testing.T) {
 	if got, ok := reloaded.LastPercentage("5h"); !ok || got != 58 {
 		t.Fatalf("last percentage got %v ok=%v", got, ok)
 	}
+}
+
+func TestFileReminderStoreReportsCorruptJSONAndClearsAfterSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "console-notifications.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewFileReminderStore(path)
+	if store.LastError() == nil {
+		t.Fatal("expected corrupt JSON diagnostic")
+	}
+	store.Mark("5h", "r1", 50)
+	if !store.Seen("5h", "r1", 50) {
+		t.Fatal("store was not usable after corrupt JSON")
+	}
+	if err := store.LastError(); err != nil {
+		t.Fatalf("LastError after successful save=%v", err)
+	}
+}
+
+func TestFileReminderStoreReportsSaveError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "console-notifications-dir")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewFileReminderStore(path)
+	store.Mark("5h", "r1", 50)
+	if store.LastError() == nil {
+		t.Fatal("expected save diagnostic")
+	}
+	if !store.Seen("5h", "r1", 50) {
+		t.Fatal("store should keep in-memory update when save fails")
+	}
+}
+
+func TestReminderStoresConcurrentAccess(t *testing.T) {
+	t.Run("memory", func(t *testing.T) {
+		store := NewMemoryReminderStore()
+		runReminderStoreConcurrently(t, store)
+	})
+	t.Run("file", func(t *testing.T) {
+		store := NewFileReminderStore(filepath.Join(t.TempDir(), "console-notifications.json"))
+		runReminderStoreConcurrently(t, store)
+		if err := store.LastError(); err != nil {
+			t.Fatalf("LastError=%v", err)
+		}
+	})
+}
+
+func runReminderStoreConcurrently(t *testing.T, store ReminderStore) {
+	t.Helper()
+	var wg sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				window := fmt.Sprintf("w%d", (worker+i)%4)
+				resetKey := fmt.Sprintf("r%d", i%3)
+				threshold := 50
+				if i%2 == 0 {
+					threshold = 80
+				}
+				store.Mark(window, resetKey, threshold)
+				_ = store.Seen(window, resetKey, threshold)
+				store.SetLastPercentage(window, float64(worker*100+i))
+				_, _ = store.LastPercentage(window)
+				if i%17 == 0 {
+					store.ClearWindow(window)
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
 }

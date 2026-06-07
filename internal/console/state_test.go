@@ -81,6 +81,13 @@ func TestControllerStateAggregatesQuotaAndWorkspace(t *testing.T) {
 	}
 }
 
+func TestControllerStateRequiresStateStore(t *testing.T) {
+	_, err := NewController(Deps{}).State(context.Background())
+	if err == nil || err.Error() != "console: state store required" {
+		t.Fatalf("State err=%v", err)
+	}
+}
+
 func TestControllerStateKeepsLaunchUsableWhenQuotaFails(t *testing.T) {
 	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/projects" {

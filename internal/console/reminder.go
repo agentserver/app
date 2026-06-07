@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type Reminder struct {
@@ -54,6 +55,7 @@ func (r ReminderEngine) Evaluate(windows []QuotaWindow) []Reminder {
 }
 
 type MemoryReminderStore struct {
+	mu   sync.RWMutex
 	seen map[string]bool
 	last map[string]float64
 }
@@ -66,23 +68,33 @@ func NewMemoryReminderStore() *MemoryReminderStore {
 }
 
 func (m *MemoryReminderStore) Seen(window, resetKey string, threshold int) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.seen[reminderKey(window, resetKey, threshold)]
 }
 
 func (m *MemoryReminderStore) Mark(window, resetKey string, threshold int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.seen[reminderKey(window, resetKey, threshold)] = true
 }
 
 func (m *MemoryReminderStore) LastPercentage(window string) (float64, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	v, ok := m.last[window]
 	return v, ok
 }
 
 func (m *MemoryReminderStore) SetLastPercentage(window string, percentage float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.last[window] = percentage
 }
 
 func (m *MemoryReminderStore) ClearWindow(window string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	prefix := window + "|"
 	for key := range m.seen {
 		if strings.HasPrefix(key, prefix) {
@@ -92,8 +104,10 @@ func (m *MemoryReminderStore) ClearWindow(window string) {
 }
 
 type FileReminderStore struct {
-	path string
-	mem  *MemoryReminderStore
+	mu      sync.Mutex
+	path    string
+	mem     *MemoryReminderStore
+	lastErr error
 }
 
 type reminderDiskState struct {
@@ -103,40 +117,69 @@ type reminderDiskState struct {
 
 func NewFileReminderStore(path string) *FileReminderStore {
 	f := &FileReminderStore{path: path, mem: NewMemoryReminderStore()}
-	f.load()
+	f.loadLocked()
 	return f
 }
 
+func (f *FileReminderStore) LastError() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastErr
+}
+
 func (f *FileReminderStore) Seen(window, resetKey string, threshold int) bool {
-	return f.mem.Seen(window, resetKey, threshold)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.mem.seen[reminderKey(window, resetKey, threshold)]
 }
 
 func (f *FileReminderStore) Mark(window, resetKey string, threshold int) {
-	f.mem.Mark(window, resetKey, threshold)
-	f.save()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mem.seen[reminderKey(window, resetKey, threshold)] = true
+	f.saveLocked()
 }
 
 func (f *FileReminderStore) LastPercentage(window string) (float64, bool) {
-	return f.mem.LastPercentage(window)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.mem.last[window]
+	return v, ok
 }
 
 func (f *FileReminderStore) SetLastPercentage(window string, percentage float64) {
-	f.mem.SetLastPercentage(window, percentage)
-	f.save()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mem.last[window] = percentage
+	f.saveLocked()
 }
 
 func (f *FileReminderStore) ClearWindow(window string) {
-	f.mem.ClearWindow(window)
-	f.save()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	prefix := window + "|"
+	for key := range f.mem.seen {
+		if strings.HasPrefix(key, prefix) {
+			delete(f.mem.seen, key)
+		}
+	}
+	f.saveLocked()
 }
 
-func (f *FileReminderStore) load() {
+func (f *FileReminderStore) loadLocked() {
+	if f.path == "" {
+		return
+	}
 	b, err := os.ReadFile(f.path)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			f.lastErr = err
+		}
 		return
 	}
 	var disk reminderDiskState
 	if err := json.Unmarshal(b, &disk); err != nil {
+		f.lastErr = err
 		return
 	}
 	if disk.Seen != nil {
@@ -145,19 +188,29 @@ func (f *FileReminderStore) load() {
 	if disk.Last != nil {
 		f.mem.last = disk.Last
 	}
+	f.lastErr = nil
 }
 
-func (f *FileReminderStore) save() {
+func (f *FileReminderStore) saveLocked() {
 	if f.path == "" {
+		f.lastErr = nil
 		return
 	}
-	_ = os.MkdirAll(filepath.Dir(f.path), 0o755)
+	if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
+		f.lastErr = err
+		return
+	}
 	disk := reminderDiskState{Seen: f.mem.seen, Last: f.mem.last}
 	b, err := json.MarshalIndent(disk, "", "  ")
 	if err != nil {
+		f.lastErr = err
 		return
 	}
-	_ = os.WriteFile(f.path, b, 0o644)
+	if err := os.WriteFile(f.path, b, 0o644); err != nil {
+		f.lastErr = err
+		return
+	}
+	f.lastErr = nil
 }
 
 func reminderKey(window, resetKey string, threshold int) string {
