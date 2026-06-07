@@ -12,6 +12,9 @@ import (
 
 func TestDiscoverInstanceUsesHealthyPortFile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method=%s", r.Method)
+		}
 		if r.URL.Path != "/api/console/health" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
