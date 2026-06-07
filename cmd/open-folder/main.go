@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
+	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/launchprep"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -30,16 +31,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	s, err := state.NewStore(p.StateFile).Load()
-	if err != nil {
-		log.Fatal(err)
-	}
 	tokenRefresherExe := ""
 	embeddedVSIXPath := ""
+	installModePath := ""
 	if exe, err := os.Executable(); err == nil {
 		installDir := filepath.Dir(exe)
 		tokenRefresherExe = filepath.Join(installDir, "token-refresher.exe")
 		embeddedVSIXPath = filepath.Join(installDir, "agentserver-vscode.vsix")
+		installModePath = installmode.PathForExecutable(exe)
+	}
+	s, err := loadOpenFolderState(p, installModePath)
+	if err != nil {
+		log.Fatal(err)
 	}
 	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeCodexDesktop {
 		if err := openFolderCodexDesktop(context.Background(), p, folder, secrets.New(p.SecretsFile), tokenRefresherExe, nil); err != nil {
@@ -55,6 +58,16 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Printf("opened %s\n", folder)
+}
+
+func loadOpenFolderState(p paths.Paths, installModePath string) (*state.State, error) {
+	store := state.NewStore(p.StateFile)
+	if installModePath != "" {
+		if err := installmode.SyncStoreIfPresent(store, installModePath); err != nil {
+			return nil, err
+		}
+	}
+	return store.Load()
 }
 
 func openFolder(ctx context.Context, codeExe string, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string) error {

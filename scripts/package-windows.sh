@@ -21,6 +21,19 @@ print('VSCODE_URL=' + shlex.quote(m['urls'][0]))
 PYEOF
 )"
 VSCODE_CACHE="dist/cache/vscode/$VSCODE_VERSION/VSCodeUserSetup-x64-$VSCODE_VERSION.exe"
+mapfile -t VSCODE_URLS < <(
+python3 - "$VSCODE_MANIFEST" <<'PYEOF'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    m = json.load(f)
+for url in m.get('urls', []):
+    print(url)
+PYEOF
+)
+if [[ "${#VSCODE_URLS[@]}" -eq 0 ]]; then
+  echo "ERROR: no VS Code installer URLs in $VSCODE_MANIFEST" >&2
+  exit 2
+fi
 
 verify_vscode_cache() {
   [[ -f "$VSCODE_CACHE" ]] || return 1
@@ -30,6 +43,32 @@ verify_vscode_cache() {
   local sum
   sum=$(sha256sum "$VSCODE_CACHE" | awk '{print $1}')
   [[ "$sum" == "$VSCODE_SHA256" ]]
+}
+
+download_vscode_installer() {
+  local attempt max_attempts local_size url
+  max_attempts=2
+  for url in "${VSCODE_URLS[@]}"; do
+    echo "  URL: $url"
+    for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+      if curl --fail --location --continue-at - --retry 2 --retry-delay 2 --retry-connrefused \
+        --speed-limit 131072 --speed-time 30 \
+        --output "$VSCODE_CACHE.part" "$url"; then
+        local_size=$(stat -c%s "$VSCODE_CACHE.part")
+        if [[ "$local_size" == "$VSCODE_SIZE" ]]; then
+          return 0
+        fi
+        if (( local_size > VSCODE_SIZE )); then
+          rm -f "$VSCODE_CACHE.part"
+        fi
+        echo "VS Code installer partial size $local_size/$VSCODE_SIZE; retrying..." >&2
+      else
+        echo "VS Code installer download attempt $attempt/$max_attempts failed from $url; retrying..." >&2
+      fi
+      sleep 2
+    done
+  done
+  return 1
 }
 
 if [[ ! -f "$CODEX_CACHE" ]]; then
@@ -58,9 +97,12 @@ if ! verify_vscode_cache; then
     fi
   fi
   echo "Fetching VS Code installer $VSCODE_VERSION (100MB, one-time) ..."
-  echo "  URL: $VSCODE_URL"
-  curl --fail --location --continue-at - --retry 5 --retry-delay 2 \
-    --output "$VSCODE_CACHE.part" "$VSCODE_URL"
+  if ! download_vscode_installer; then
+    local_size=0
+    [[ -f "$VSCODE_CACHE.part" ]] && local_size=$(stat -c%s "$VSCODE_CACHE.part")
+    echo "ERROR: VS Code installer download incomplete: got $local_size want $VSCODE_SIZE" >&2
+    exit 2
+  fi
   local_size=$(stat -c%s "$VSCODE_CACHE.part")
   if [[ "$local_size" != "$VSCODE_SIZE" ]]; then
     echo "ERROR: VS Code installer size mismatch: got $local_size want $VSCODE_SIZE" >&2

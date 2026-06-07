@@ -88,9 +88,17 @@ verify:
 	if !strings.Contains(out, `model_provider = "modelserver"`) {
 		t.Errorf("codex config wrong: %s", out)
 	}
-	out, _, _ = c.Pwsh(`& "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --version`)
-	if !strings.HasPrefix(strings.TrimSpace(out), "1.") {
-		t.Errorf("vs code missing: %s", out)
+	out, _, _ = c.Pwsh(`Get-Content "$env:LOCALAPPDATA\Programs\agentserver-vscode\install-mode.json"`)
+	if !strings.Contains(out, "codex_desktop") {
+		t.Errorf("install mode wrong: %s", out)
+	}
+	out, _, _ = c.Pwsh(`winget list Codex -s msstore`)
+	if !strings.Contains(strings.ToLower(out), "codex") {
+		t.Errorf("Codex Desktop not listed by winget: %s", out)
+	}
+	out, _, _ = c.Pwsh(`(Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\codex\shell\open\command') -or (Test-Path 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\codex\shell\open\command')`)
+	if strings.TrimSpace(out) != "True" {
+		t.Errorf("codex URL scheme missing: %s", out)
 	}
 	out, _, _ = c.Pwsh(`Test-Path "$env:USERPROFILE\Desktop\星池指挥官.lnk"`)
 	if strings.TrimSpace(out) != "True" {

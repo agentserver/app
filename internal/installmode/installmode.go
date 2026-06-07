@@ -55,3 +55,24 @@ func SyncStore(store *state.Store, path string) error {
 		return nil
 	})
 }
+
+func SyncStoreIfPresent(store *state.Store, path string) error {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("stat install mode: %w", err)
+	}
+	return SyncStore(store, path)
+}
+
+func PathForExecutable(exe string) string {
+	return filepath.Join(filepath.Dir(exe), "install-mode.json")
+}
+
+func PathFromExecutable() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	return PathForExecutable(exe), nil
+}

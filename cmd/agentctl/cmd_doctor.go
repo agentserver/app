@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/agentserver/agentserver-pkg/internal/branding"
+	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
@@ -16,12 +17,25 @@ func runDoctor() {
 		fmt.Fprintln(os.Stderr, "paths:", err)
 		os.Exit(1)
 	}
-	s, err := state.NewStore(p.StateFile).Load()
+	modePath, err := installmode.PathFromExecutable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "install mode path:", err)
+		os.Exit(1)
+	}
+	s, err := loadDoctorState(p, modePath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "load state:", err)
 		os.Exit(1)
 	}
 	renderDoctor(os.Stdout, s)
+}
+
+func loadDoctorState(p paths.Paths, installModePath string) (*state.State, error) {
+	store := state.NewStore(p.StateFile)
+	if err := installmode.SyncStoreIfPresent(store, installModePath); err != nil {
+		return nil, err
+	}
+	return store.Load()
 }
 
 func renderDoctor(w io.Writer, s *state.State) {

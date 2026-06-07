@@ -137,3 +137,34 @@ func TestSyncStoreUsesInstallModeFile(t *testing.T) {
 		t.Fatalf("FrontendMode = %q", got.FrontendMode)
 	}
 }
+
+func TestSyncStoreIfPresentPreservesExistingModeWhenFileMissing(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeMinimalVSCode
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SyncStoreIfPresent(store, filepath.Join(dir, "missing", "install-mode.json")); err != nil {
+		t.Fatalf("SyncStoreIfPresent: %v", err)
+	}
+
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FrontendMode != state.FrontendModeMinimalVSCode {
+		t.Fatalf("FrontendMode = %q, want %q", got.FrontendMode, state.FrontendModeMinimalVSCode)
+	}
+}
+
+func TestPathForExecutable(t *testing.T) {
+	got := PathForExecutable(filepath.Join("C:", "Program Files", "agentserver-vscode", "launcher.exe"))
+	want := filepath.Join("C:", "Program Files", "agentserver-vscode", "install-mode.json")
+	if got != want {
+		t.Fatalf("PathForExecutable() = %q, want %q", got, want)
+	}
+}

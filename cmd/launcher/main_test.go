@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
@@ -135,8 +136,8 @@ func TestSyncInstallModeIfPresentPreservesExistingModeWhenFileMissing(t *testing
 		t.Fatal(err)
 	}
 
-	if err := syncInstallModeIfPresent(store, filepath.Join(dir, "missing", "install-mode.json")); err != nil {
-		t.Fatalf("syncInstallModeIfPresent: %v", err)
+	if err := installmode.SyncStoreIfPresent(store, filepath.Join(dir, "missing", "install-mode.json")); err != nil {
+		t.Fatalf("SyncStoreIfPresent: %v", err)
 	}
 
 	got, err := store.Load()

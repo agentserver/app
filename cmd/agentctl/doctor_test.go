@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver-pkg/internal/installmode"
+	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
 
@@ -37,5 +40,22 @@ func TestRenderDoctor(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
+	}
+}
+
+func TestLoadDoctorStateSyncsInstallModeFile(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{StateFile: filepath.Join(dir, "state.json")}
+	modePath := filepath.Join(dir, "app", "install-mode.json")
+	if err := installmode.Write(modePath, state.FrontendModeMinimalVSCode); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadDoctorState(p, modePath)
+	if err != nil {
+		t.Fatalf("loadDoctorState: %v", err)
+	}
+	if got.FrontendMode != state.FrontendModeMinimalVSCode {
+		t.Fatalf("FrontendMode = %q, want %q", got.FrontendMode, state.FrontendModeMinimalVSCode)
 	}
 }

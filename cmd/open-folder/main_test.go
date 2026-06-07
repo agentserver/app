@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/state"
 )
 
 func TestOpenFolderMigratesVSCodeSettingsBeforeLaunch(t *testing.T) {
@@ -70,5 +72,22 @@ func TestOpenFolderCodexDesktopUsesFolderDeepLink(t *testing.T) {
 	}
 	if !strings.Contains(opened, "Project+Folder") {
 		t.Fatalf("path not encoded: %q", opened)
+	}
+}
+
+func TestLoadOpenFolderStateSyncsInstallModeFile(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{StateFile: filepath.Join(dir, "state.json")}
+	modePath := filepath.Join(dir, "app", "install-mode.json")
+	if err := installmode.Write(modePath, state.FrontendModeMinimalVSCode); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := loadOpenFolderState(p, modePath)
+	if err != nil {
+		t.Fatalf("loadOpenFolderState: %v", err)
+	}
+	if got.FrontendMode != state.FrontendModeMinimalVSCode {
+		t.Fatalf("FrontendMode = %q, want %q", got.FrontendMode, state.FrontendModeMinimalVSCode)
 	}
 }
