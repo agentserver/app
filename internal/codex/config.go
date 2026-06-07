@@ -15,7 +15,7 @@ import (
 type Settings struct {
 	Provider              string // e.g. "modelserver"
 	Model                 string // e.g. "gpt-5.5"
-	ModelReasoningEffort  string // e.g. "xhigh"
+	ModelReasoningEffort  string // e.g. "high"
 	ApprovalsReviewer     string // e.g. "guardian_subagent"
 	SandboxMode           string // e.g. "danger-full-access"
 	WindowsSandbox        string // e.g. "unelevated"
@@ -36,7 +36,7 @@ func ModelserverSettings() Settings {
 }
 
 const (
-	defaultModelReasoningEffort  = "xhigh"
+	defaultModelReasoningEffort  = "high"
 	defaultApprovalsReviewer     = "guardian_subagent"
 	defaultSandboxMode           = "danger-full-access"
 	defaultWindowsSandbox        = "unelevated"

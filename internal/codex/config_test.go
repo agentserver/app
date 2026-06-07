@@ -23,7 +23,7 @@ func TestUpdateConfig_Empty(t *testing.T) {
 	for _, want := range []string{
 		`model_provider = "modelserver"`,
 		`model = "gpt-5.5"`,
-		`model_reasoning_effort = "xhigh"`,
+		`model_reasoning_effort = "high"`,
 		`approvals_reviewer = "guardian_subagent"`,
 		`sandbox_mode = "danger-full-access"`,
 		`developer_instructions = "请始终使用简体中文与用户交流；除非用户明确要求其他语言。"`,
