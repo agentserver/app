@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
+	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 )
 
@@ -202,3 +203,65 @@ type frontendInstallErrorOrchestrator struct{ noopOrchestrator }
 func (frontendInstallErrorOrchestrator) EnsureFrontend(context.Context, chan<- ProgressEvent) error {
 	return errors.New("winget missing")
 }
+
+func TestServerConsoleStateEndpoint(t *testing.T) {
+	cc := &fakeConsoleController{
+		state: console.State{
+			FrontendMode:    "codex_desktop",
+			SubscriptionURL: "https://code.cs.ac.cn/projects/proj-1/subscription",
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/console/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["subscription_url"] == "" {
+		t.Fatalf("body=%+v", body)
+	}
+}
+
+func TestServerConsoleOpenFrontendEndpoint(t *testing.T) {
+	cc := &fakeConsoleController{}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/api/console/open-frontend", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if !cc.openedFrontend {
+		t.Fatal("open frontend not called")
+	}
+}
+
+type fakeConsoleController struct {
+	state          console.State
+	openedFrontend bool
+}
+
+func (f *fakeConsoleController) State(context.Context) (console.State, error) {
+	return f.state, nil
+}
+func (f *fakeConsoleController) Refresh(context.Context) (console.State, error) {
+	return f.state, nil
+}
+func (f *fakeConsoleController) OpenFrontend(context.Context) error {
+	f.openedFrontend = true
+	return nil
+}
+func (f *fakeConsoleController) OpenSubscription(context.Context) error { return nil }
+func (f *fakeConsoleController) Quit(context.Context) error             { return nil }

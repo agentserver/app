@@ -18,7 +18,11 @@ var assetsFS embed.FS
 // LoginAgentserver in orchestrator_real.go), not the server, so there's
 // no openBrowser parameter here.
 func NewServer(o Orchestrator) http.Handler {
-	s := &server{o: o, sse: newSSEHub()}
+	return NewServerWithConsole(o, noopConsoleController{})
+}
+
+func NewServerWithConsole(o Orchestrator, c ConsoleController) http.Handler {
+	s := &server{o: o, c: c, sse: newSSEHub()}
 	mux := http.NewServeMux()
 	// Static
 	staticFS, _ := fs.Sub(assetsFS, "assets/dist")
@@ -39,6 +43,12 @@ func NewServer(o Orchestrator) http.Handler {
 	mux.HandleFunc("/api/launch", s.handleLaunch)
 	mux.HandleFunc("/api/launch-vscode", s.handleLaunch)
 
+	mux.HandleFunc("/api/console/state", s.handleConsoleState)
+	mux.HandleFunc("/api/console/refresh", s.handleConsoleRefresh)
+	mux.HandleFunc("/api/console/open-frontend", s.handleConsoleOpenFrontend)
+	mux.HandleFunc("/api/console/open-subscription", s.handleConsoleOpenSubscription)
+	mux.HandleFunc("/api/console/quit", s.handleConsoleQuit)
+
 	// SSE
 	mux.HandleFunc("/api/events", s.sse.handle)
 	return mux
@@ -46,6 +56,7 @@ func NewServer(o Orchestrator) http.Handler {
 
 type server struct {
 	o   Orchestrator
+	c   ConsoleController
 	sse *sseHub
 }
 
@@ -150,6 +161,48 @@ func (s *server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"state": "launching"})
+}
+
+func (s *server) handleConsoleState(w http.ResponseWriter, r *http.Request) {
+	st, err := s.c.State(r.Context())
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, st)
+}
+
+func (s *server) handleConsoleRefresh(w http.ResponseWriter, r *http.Request) {
+	st, err := s.c.Refresh(r.Context())
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, st)
+}
+
+func (s *server) handleConsoleOpenFrontend(w http.ResponseWriter, r *http.Request) {
+	if err := s.c.OpenFrontend(r.Context()); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"state": "opened"})
+}
+
+func (s *server) handleConsoleOpenSubscription(w http.ResponseWriter, r *http.Request) {
+	if err := s.c.OpenSubscription(r.Context()); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"state": "opened"})
+}
+
+func (s *server) handleConsoleQuit(w http.ResponseWriter, r *http.Request) {
+	if err := s.c.Quit(r.Context()); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"state": "quitting"})
 }
 
 // ----------- SSE hub -----------
