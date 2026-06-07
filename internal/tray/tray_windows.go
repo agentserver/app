@@ -29,10 +29,6 @@ const (
 	nimModify     = 0x00000001
 	nimDelete     = 0x00000002
 	nimSetVersion = 0x00000004
-	nifMessage    = 0x00000001
-	nifIcon       = 0x00000002
-	nifTip        = 0x00000004
-	nifInfo       = 0x00000010
 
 	notifyIconVersion4 = 4
 	niifInfo           = 0x00000001
@@ -275,7 +271,7 @@ func loadTrayIcon(iconPath string) (windows.Handle, bool) {
 
 func (a *windowsApp) addIcon() error {
 	a.mu.Lock()
-	nid := a.notifyDataLocked(nifMessage | nifIcon | nifTip)
+	nid := a.notifyDataLocked(addIconNotifyFlags())
 	a.mu.Unlock()
 	if err := shellNotify(nimAdd, &nid); err != nil {
 		return err
@@ -287,7 +283,7 @@ func (a *windowsApp) addIcon() error {
 
 func (a *windowsApp) modifyIcon() error {
 	a.mu.Lock()
-	nid := a.notifyDataLocked(nifIcon | nifTip)
+	nid := a.notifyDataLocked(tooltipNotifyFlags())
 	a.mu.Unlock()
 	return shellNotify(nimModify, &nid)
 }

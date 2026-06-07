@@ -224,7 +224,6 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	trayCtx, stopTray := context.WithCancel(ctx)
-	defer stopTray()
 	trayApp := tray.New(preferredIconPath(in.InstallDir))
 	trayActions := tray.Actions{
 		OpenDashboard: func() {
@@ -248,9 +247,10 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 			})
 		},
 	}
-	go func() {
-		if err := trayApp.Run(trayCtx, trayActions); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("launcher: tray run: %v", err)
+	trayDone := runTrayApp(trayCtx, trayApp, trayActions)
+	defer func() {
+		if !stopTrayAndWait(stopTray, trayDone, trayShutdownTimeout) {
+			log.Printf("launcher: tray cleanup did not finish within %s", trayShutdownTimeout)
 		}
 	}()
 	go runTrayStatusLoop(trayCtx, trayApp, ctrl, console.ReminderEngine{
@@ -273,6 +273,34 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		return nil
 	}
 	return err
+}
+
+const trayShutdownTimeout = 2 * time.Second
+
+func runTrayApp(ctx context.Context, app tray.App, actions tray.Actions) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := app.Run(ctx, actions); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("launcher: tray run: %v", err)
+		}
+	}()
+	return done
+}
+
+func stopTrayAndWait(cancel context.CancelFunc, done <-chan struct{}, timeout time.Duration) bool {
+	cancel()
+	if done == nil {
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func runTrayStatusLoop(ctx context.Context, app tray.App, ctrl trayConsoleController, reminders console.ReminderEngine) {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
@@ -271,6 +272,35 @@ func (f *fakeTrayApp) Update(st tray.State) {
 func (f *fakeTrayApp) Notify(title, message string) error {
 	f.notifications = append(f.notifications, fakeTrayNotification{title: title, message: message})
 	return nil
+}
+
+func TestStopTrayAndWaitCancelsAndObservesDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(done)
+	}()
+
+	if ok := stopTrayAndWait(cancel, done, time.Second); !ok {
+		t.Fatal("tray shutdown should complete")
+	}
+}
+
+func TestStopTrayAndWaitTimesOut(t *testing.T) {
+	cancelCalled := false
+	done := make(chan struct{})
+
+	ok := stopTrayAndWait(func() {
+		cancelCalled = true
+	}, done, time.Nanosecond)
+
+	if ok {
+		t.Fatal("tray shutdown should time out")
+	}
+	if !cancelCalled {
+		t.Fatal("cancel was not called")
+	}
 }
 
 func TestRemoveConsolePortFileIfMatchesKeepsNewerInstance(t *testing.T) {
