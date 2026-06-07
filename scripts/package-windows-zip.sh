@@ -9,7 +9,8 @@
 #   agentserver-vscode.vsix
 #   vscode-installer.exe (bundled to avoid Microsoft CDN download during install)
 #   codex.exe  (246MB, bundled to avoid GitHub download from CN)
-#   icon.ico, install.ps1, ensure-vscode.ps1, vscode-manifest.json
+#   icon.ico, install.ps1, ensure-vscode.ps1, ensure-codex-desktop.ps1
+#   write-install-mode.ps1, vscode-manifest.json
 #   LICENSE.zh.txt, README.txt
 #
 # codex.exe is cached in dist/cache/ across builds so re-packaging doesn't
@@ -111,6 +112,8 @@ for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
          packaging/windows/ensure-vscode.ps1 \
+         packaging/windows/ensure-codex-desktop.ps1 \
+         packaging/windows/write-install-mode.ps1 \
          packaging/windows/vscode-manifest.json \
          packaging/windows/icon.ico \
          packaging/windows/LICENSE.zh.txt \
@@ -151,6 +154,8 @@ cp extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \
 # Resources
 cp packaging/windows/install.ps1      "$STAGE/"
 cp packaging/windows/ensure-vscode.ps1 "$STAGE/"
+cp packaging/windows/ensure-codex-desktop.ps1 "$STAGE/"
+cp packaging/windows/write-install-mode.ps1 "$STAGE/"
 cp packaging/windows/vscode-manifest.json "$STAGE/"
 cp packaging/windows/icon.ico         "$STAGE/"
 cp packaging/windows/LICENSE.zh.txt   "$STAGE/"
@@ -165,7 +170,9 @@ cat > "$STAGE/README.txt" <<'EOF'
     powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1)
 
 2) Wait for "Install complete." The installer automatically installs
-   VS Code if it is not already installed.
+   Codex Desktop with winget. To install the simplified VS Code interface
+   instead, run:
+     powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -MinimalVSCode
 
 3) Double-click the "星池指挥官" shortcut on your desktop.
    The first launch opens a configuration wizard in your browser.

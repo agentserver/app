@@ -35,6 +35,7 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "minimalvscode"; Description: "极简风界面（安装简化 VS Code）"; GroupDescription: "界面模式"; Flags: unchecked
 
 [Files]
 ; Cross-built Windows binaries
@@ -59,6 +60,8 @@ Source: "LICENSE.zh.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Portable installer helpers reused by the Inno setup.
 Source: "install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-vscode.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "ensure-codex-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "write-install-mode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vscode-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -70,10 +73,25 @@ Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
 
 [Run]
 Filename: "powershell"; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\write-install-mode.ps1"" -Mode codex_desktop -Path ""{app}\install-mode.json"""; \
+    Flags: runhidden waituntilterminated; Check: ShouldInstallCodexDesktop
+Filename: "powershell"; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\ensure-codex-desktop.ps1"""; \
+    Flags: runhidden waituntilterminated; Check: ShouldInstallCodexDesktop
+Filename: "powershell"; \
+    Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\write-install-mode.ps1"" -Mode minimal_vscode -Path ""{app}\install-mode.json"""; \
+    Flags: runhidden waituntilterminated; Tasks: minimalvscode
+Filename: "powershell"; \
     Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\ensure-vscode.ps1"" -ManifestPath ""{app}\vscode-manifest.json"""; \
-    Flags: runhidden waituntilterminated
+    Flags: runhidden waituntilterminated; Tasks: minimalvscode
 Filename: "{app}\{#MyAppExeName}"; \
     Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function ShouldInstallCodexDesktop(): Boolean;
+begin
+  Result := not WizardIsTaskSelected('minimalvscode');
+end;
 
 [UninstallRun]
 ; Best-effort cleanup; ignored if exit non-zero

@@ -84,6 +84,8 @@ for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
          packaging/windows/ensure-vscode.ps1 \
+         packaging/windows/ensure-codex-desktop.ps1 \
+         packaging/windows/write-install-mode.ps1 \
          packaging/windows/vscode-manifest.json \
          packaging/windows/ChineseSimplified.isl \
          packaging/windows/icon.ico \

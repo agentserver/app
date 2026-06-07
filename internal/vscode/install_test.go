@@ -79,10 +79,15 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			name: "install.ps1",
 			path: "../../packaging/windows/install.ps1",
 			want: []string{
+				"[switch]$MinimalVSCode",
 				"ensure-vscode.ps1",
+				"ensure-codex-desktop.ps1",
+				"write-install-mode.ps1",
 				"vscode-manifest.json",
 				"uninstall.exe",
 				"Ensuring VS Code is installed",
+				"codex_desktop",
+				"minimal_vscode",
 				"$AppDisplayName = '星池指挥官'",
 				"LegacyDesktopLnk",
 				"Desktop\\$AppDisplayName.lnk",
@@ -117,6 +122,8 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"VSCODE_CACHE",
 				"vscode-installer.exe",
 				"packaging/windows/ensure-vscode.ps1",
+				"packaging/windows/ensure-codex-desktop.ps1",
+				"packaging/windows/write-install-mode.ps1",
 				"packaging/windows/vscode-manifest.json",
 				"dist/windows/uninstall.exe",
 				"dist/windows/token-refresher.exe",
@@ -139,9 +146,15 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"DestName: \"vscode-installer.exe\"",
 				"MessagesFile: \"ChineseSimplified.isl\"",
 				"ensure-vscode.ps1",
+				"minimalvscode",
+				"ensure-codex-desktop.ps1",
+				"write-install-mode.ps1",
 				"vscode-manifest.json",
 				"powershell",
 				"ensure-vscode.ps1",
+				"ShouldInstallCodexDesktop",
+				"codex_desktop",
+				"minimal_vscode",
 			},
 		},
 		{
@@ -153,6 +166,8 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"codex-x86_64-pc-windows-msvc.exe",
 				"VSCodeUserSetup-x64-$VSCODE_VERSION.exe",
 				"packaging/windows/vscode-manifest.json",
+				"packaging/windows/ensure-codex-desktop.ps1",
+				"packaging/windows/write-install-mode.ps1",
 				"packaging/windows/ChineseSimplified.isl",
 				"dist/windows/uninstall.exe",
 				"dist/windows/token-refresher.exe",
@@ -281,6 +296,8 @@ func TestWindowsPowerShellScriptsUseUTF8BOM(t *testing.T) {
 	for _, path := range []string{
 		"../../packaging/windows/install.ps1",
 		"../../packaging/windows/ensure-vscode.ps1",
+		"../../packaging/windows/ensure-codex-desktop.ps1",
+		"../../packaging/windows/write-install-mode.ps1",
 		"../../packaging/windows/factory-reset.ps1",
 	} {
 		t.Run(path, func(t *testing.T) {
@@ -292,6 +309,28 @@ func TestWindowsPowerShellScriptsUseUTF8BOM(t *testing.T) {
 				t.Fatalf("%s must be UTF-8 with BOM so Windows PowerShell 5.1 decodes Chinese progress text correctly", path)
 			}
 		})
+	}
+}
+
+func TestEnsureCodexDesktopScriptUsesWingetMsstore(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-codex-desktop.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"winget",
+		"install",
+		"Codex",
+		"-s",
+		"msstore",
+		"--accept-source-agreements",
+		"--accept-package-agreements",
+		"Test-CodexDesktopInstalled",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-codex-desktop.ps1 missing %q", want)
+		}
 	}
 }
 

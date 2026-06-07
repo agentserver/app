@@ -11,7 +11,8 @@
 
 param(
     [switch]$Silent,
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$MinimalVSCode
 )
 
 $ErrorActionPreference = 'Stop'
@@ -155,6 +156,8 @@ $required = @(
     'token-refresher.exe',
     'agentserver-vscode.vsix',
     'ensure-vscode.ps1',
+    'ensure-codex-desktop.ps1',
+    'write-install-mode.ps1',
     'vscode-manifest.json',
     'icon.ico'
 )
@@ -187,27 +190,34 @@ try {
     $ShellIconPath = $IconPath
 }
 
-# Bundled codex.exe — copy into the expected per-user bin dir so
-# ConfigureVSCode finds it and skips the 246MB GitHub download.
-$codexSrc = Join-Path $srcDir 'codex.exe'
-$codexBinDir = Join-Path $env:LOCALAPPDATA "agentserver-vscode\bin"
-$codexDst = Join-Path $codexBinDir 'codex.exe'
-if (Test-Path $codexSrc) {
-    if (-not (Test-Path $codexBinDir)) {
-        New-Item -ItemType Directory -Force -Path $codexBinDir | Out-Null
+if ($MinimalVSCode) {
+    # Bundled codex.exe — copy into the expected per-user bin dir so
+    # ConfigureVSCode finds it and skips the 246MB GitHub download.
+    $codexSrc = Join-Path $srcDir 'codex.exe'
+    $codexBinDir = Join-Path $env:LOCALAPPDATA "agentserver-vscode\bin"
+    $codexDst = Join-Path $codexBinDir 'codex.exe'
+    if (Test-Path $codexSrc) {
+        if (-not (Test-Path $codexBinDir)) {
+            New-Item -ItemType Directory -Force -Path $codexBinDir | Out-Null
+        }
+        Write-Step "Staging bundled codex.exe to $codexDst ..."
+        Copy-Item $codexSrc $codexDst -Force
+        $sz = (Get-Item $codexDst).Length
+        Write-Step ("codex.exe copied ({0:N0} bytes, {1:N1} MB)" -f $sz, ($sz / 1MB))
+    } else {
+        Write-Host "Note: codex.exe NOT bundled in this zip; first launch will fetch from GitHub."
     }
-    Write-Step "Staging bundled codex.exe to $codexDst ..."
-    Copy-Item $codexSrc $codexDst -Force
-    $sz = (Get-Item $codexDst).Length
-    Write-Step ("codex.exe copied ({0:N0} bytes, {1:N1} MB)" -f $sz, ($sz / 1MB))
-} else {
-    Write-Host "Note: codex.exe NOT bundled in this zip; first launch will fetch from GitHub."
-}
 
-# VS Code is installed by the installer so onboarding can simply detect it
-# and continue. The Go onboarding path still keeps a fallback installer.
-Write-Step "Ensuring VS Code is installed..."
-& (Join-Path $srcDir 'ensure-vscode.ps1') -ManifestPath (Join-Path $srcDir 'vscode-manifest.json')
+    Write-Step "Writing install mode minimal_vscode..."
+    & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'minimal_vscode' -Path (Join-Path $InstallDir 'install-mode.json')
+    Write-Step "Ensuring VS Code is installed..."
+    & (Join-Path $InstallDir 'ensure-vscode.ps1') -ManifestPath (Join-Path $InstallDir 'vscode-manifest.json')
+} else {
+    Write-Step "Writing install mode codex_desktop..."
+    & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'codex_desktop' -Path (Join-Path $InstallDir 'install-mode.json')
+    Write-Step "Ensuring Codex Desktop is installed..."
+    & (Join-Path $InstallDir 'ensure-codex-desktop.ps1')
+}
 
 # Desktop shortcut
 Write-Step "Creating desktop shortcut..."
@@ -216,7 +226,7 @@ $shortcut = $wsh.CreateShortcut($DesktopLnk)
 $shortcut.TargetPath       = Join-Path $InstallDir 'launcher.exe'
 $shortcut.IconLocation     = $ShellIconPath + ',0'
 $shortcut.WorkingDirectory = $env:USERPROFILE
-$shortcut.Description      = '星池指挥官 (VS Code + codex 一键启动)'
+$shortcut.Description      = '星池指挥官一键启动'
 $shortcut.Save()
 if (Test-Path $LegacyDesktopLnk) { Remove-Item $LegacyDesktopLnk -Force -ErrorAction SilentlyContinue }
 
