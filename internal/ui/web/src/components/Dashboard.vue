@@ -1,13 +1,21 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import * as api from '../api';
 import QuotaCard from './QuotaCard.vue';
 
 const state = ref<api.ConsoleState | null>(null);
-const error = ref('');
+const statusError = ref('');
+const frontendError = ref('');
+const subscriptionError = ref('');
 const refreshing = ref(false);
 const opening = ref(false);
 const openingSubscription = ref(false);
+
+const visibleErrors = computed(() => [
+  { key: 'status', message: statusError.value },
+  { key: 'frontend', message: frontendError.value },
+  { key: 'subscription', message: subscriptionError.value },
+].filter(error => error.message));
 
 function errorMessage(e: unknown) {
   return e instanceof Error ? e.message : String(e);
@@ -16,9 +24,9 @@ function errorMessage(e: unknown) {
 async function load() {
   try {
     state.value = await api.getConsoleState();
-    error.value = '';
+    statusError.value = '';
   } catch (e) {
-    error.value = errorMessage(e);
+    statusError.value = errorMessage(e);
   }
 }
 
@@ -27,9 +35,9 @@ async function refresh() {
   refreshing.value = true;
   try {
     state.value = await api.refreshConsoleState();
-    error.value = '';
+    statusError.value = '';
   } catch (e) {
-    error.value = errorMessage(e);
+    statusError.value = errorMessage(e);
   } finally {
     refreshing.value = false;
   }
@@ -40,9 +48,9 @@ async function openFrontend() {
   opening.value = true;
   try {
     await api.openConsoleFrontend();
-    error.value = '';
+    frontendError.value = '';
   } catch (e) {
-    error.value = errorMessage(e);
+    frontendError.value = errorMessage(e);
   } finally {
     opening.value = false;
   }
@@ -53,9 +61,9 @@ async function openSubscription() {
   openingSubscription.value = true;
   try {
     await api.openConsoleSubscription();
-    error.value = '';
+    subscriptionError.value = '';
   } catch (e) {
-    error.value = errorMessage(e);
+    subscriptionError.value = errorMessage(e);
   } finally {
     openingSubscription.value = false;
   }
@@ -79,7 +87,14 @@ onMounted(load);
       </div>
     </header>
 
-    <el-alert v-if="error" type="error" :title="error" :closable="false" show-icon />
+    <el-alert
+      v-for="error in visibleErrors"
+      :key="error.key"
+      type="error"
+      :title="error.message"
+      :closable="false"
+      show-icon
+    />
     <el-alert v-if="state?.quota_error" type="warning" :title="state.quota_error" :closable="false" show-icon />
 
     <section class="quota-grid">

@@ -3,8 +3,8 @@ import { flushPromises, mount } from '@vue/test-utils';
 import Dashboard from '../components/Dashboard.vue';
 import * as api from '../api';
 
-function mockConsoleState() {
-  vi.spyOn(api, 'getConsoleState').mockResolvedValue({
+function consoleState(): api.ConsoleState {
+  return {
     frontend_mode: 'codex_desktop',
     frontend_name: 'Codex Desktop',
     onboarding_status: 'complete',
@@ -16,7 +16,21 @@ function mockConsoleState() {
       { window: '7d', percentage: 22, remaining_percentage: 78 },
     ],
     last_refreshed_at: '2026-06-07T12:00:00Z',
+  };
+}
+
+function mockConsoleState() {
+  vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
+  return { promise, resolve, reject };
 }
 
 describe('Dashboard', () => {
@@ -41,6 +55,29 @@ describe('Dashboard', () => {
     const openButton = w.findAll('button').find(b => b.text().includes('打开 Codex Desktop'));
     expect(openButton).toBeDefined();
     await openButton!.trigger('click');
+    await flushPromises();
+
+    expect(w.text()).toContain('open failed');
+  });
+
+  it('keeps frontend errors visible when an overlapping refresh succeeds later', async () => {
+    mockConsoleState();
+    const refresh = deferred<api.ConsoleState>();
+    vi.spyOn(api, 'refreshConsoleState').mockReturnValue(refresh.promise);
+    vi.spyOn(api, 'openConsoleFrontend').mockRejectedValue(new Error('open failed'));
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    const refreshButton = w.findAll('button').find(b => b.text().includes('刷新状态'));
+    const openButton = w.findAll('button').find(b => b.text().includes('打开 Codex Desktop'));
+    expect(refreshButton).toBeDefined();
+    expect(openButton).toBeDefined();
+    await refreshButton!.trigger('click');
+    await openButton!.trigger('click');
+    await flushPromises();
+    expect(w.text()).toContain('open failed');
+
+    refresh.resolve(consoleState());
     await flushPromises();
 
     expect(w.text()).toContain('open failed');

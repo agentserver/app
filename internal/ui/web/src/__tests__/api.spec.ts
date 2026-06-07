@@ -90,4 +90,31 @@ describe('api', () => {
     await api.openConsoleFrontend();
     expect(fetchSpy).toHaveBeenCalledWith('/api/console/open-frontend', expect.objectContaining({ method: 'POST' }));
   });
+
+  it('refreshConsoleState POSTs to console refresh endpoint', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        frontend_mode: 'codex_desktop',
+        frontend_name: 'Codex Desktop',
+        onboarding_status: 'complete',
+        modelserver: {},
+        agentserver: {},
+        quotas: [],
+      }),
+    } as Response);
+    await api.refreshConsoleState();
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/refresh', expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('openConsoleSubscription POSTs to console subscription endpoint', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ state: 'opened' }),
+    } as Response);
+    await api.openConsoleSubscription();
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/open-subscription', expect.objectContaining({ method: 'POST' }));
+  });
 });
