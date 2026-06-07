@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/download"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
@@ -190,6 +192,53 @@ func runTestConfigure() {
 	fmt.Println("configure complete")
 }
 
+func runTestInstallCodexDesktop() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	p, err := paths.Default()
+	if err != nil {
+		die(err)
+	}
+	det, err := codexdesktop.EnsureInstalled(ctx, codexdesktop.Options{})
+	if err != nil {
+		die(err)
+	}
+	store := state.NewStore(p.StateFile)
+	_ = store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		s.CodexDesktop.Installed = true
+		s.CodexDesktop.Version = det.Version
+		s.CodexDesktop.InstalledByUs = true
+		s.Onboarding.AddCompleted("codex_desktop_installed")
+		return nil
+	})
+	fmt.Printf("Codex Desktop installed (version %s)\n", det.Version)
+}
+
+func runTestConfigureCodexDesktop() {
+	p, err := paths.Default()
+	if err != nil {
+		die(err)
+	}
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+		die(err)
+	}
+	sec := secrets.New(p.SecretsFile)
+	if err := sec.Set("modelserver_api_key", "ms-dummy-test-key"); err != nil {
+		die(err)
+	}
+	if err := env.PersistUserEnv("OPENAI_API_KEY", "ms-dummy-test-key"); err != nil {
+		die(err)
+	}
+	store := state.NewStore(p.StateFile)
+	_ = store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		s.Onboarding.AddCompleted("codex_desktop_configured")
+		return nil
+	})
+	fmt.Printf("wrote codex config: %s\n", p.CodexConfigFile)
+}
+
 // runTestOpenFolder mirrors what cmd/open-folder does, but as a test entry.
 func runTestOpenFolder(args []string) {
 	if len(args) != 1 {
@@ -227,11 +276,15 @@ func runTestMarkComplete() {
 	}
 	store := state.NewStore(p.StateFile)
 	if err := store.Update(func(s *state.State) error {
-		for _, st := range []string{
-			"modelserver_login", "agentserver_login",
-			"vscode_installed", "vscode_configured", "shortcuts_created",
-		} {
-			s.Onboarding.AddCompleted(st)
+		mode := state.NormalizeFrontendMode(s.FrontendMode)
+		if mode == state.FrontendModeMinimalVSCode {
+			for _, st := range []string{"modelserver_login", "agentserver_login", "vscode_installed", "vscode_configured", "shortcuts_created"} {
+				s.Onboarding.AddCompleted(st)
+			}
+		} else {
+			for _, st := range []string{"modelserver_login", "agentserver_login", "codex_desktop_installed", "codex_desktop_configured", "shortcuts_created"} {
+				s.Onboarding.AddCompleted(st)
+			}
 		}
 		s.Onboarding.Status = state.StatusComplete
 		return nil

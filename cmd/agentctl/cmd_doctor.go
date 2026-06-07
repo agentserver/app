@@ -29,6 +29,9 @@ func renderDoctor(w io.Writer, s *state.State) {
 	fmt.Fprintf(w, "  schema_version: %d\n", s.SchemaVersion)
 	fmt.Fprintf(w, "  install_id: %s\n", s.InstallID)
 	fmt.Fprintf(w, "  onboarding: %s\n", s.Onboarding.Status)
+	mode := state.NormalizeFrontendMode(s.FrontendMode)
+	fmt.Fprintf(w, "  frontend: %s\n", mode)
+	fmt.Fprintf(w, "  codex_desktop: installed=%t version=%s\n", s.CodexDesktop.Installed, s.CodexDesktop.Version)
 	fmt.Fprintf(w, "  steps: %d/5 %v\n", len(s.Onboarding.CompletedSteps), s.Onboarding.CompletedSteps)
 	fmt.Fprintf(w, "  modelserver: project=%s key=…%s\n",
 		s.Modelserver.ProjectID, s.Modelserver.APIKeySuffix)

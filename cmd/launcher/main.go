@@ -20,6 +20,8 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/browser"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
+	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/launchprep"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
@@ -45,18 +47,20 @@ func run() error {
 	if err := os.MkdirAll(p.InstallRoot, 0o755); err != nil {
 		return err
 	}
+	exe, _ := os.Executable()
+	installDir := osDir(exe)
 	store := state.NewStore(p.StateFile)
+	if err := installmode.SyncStore(store, joinExe(installDir, "install-mode.json")); err != nil {
+		return err
+	}
 	s, err := store.Load()
 	if err != nil {
 		return err
 	}
 
-	if s.Onboarding.Status == state.StatusComplete && s.VSCode.Path != "" {
-		// Just exec VS Code with our user-data-dir (empty workspace).
-		exe, _ := os.Executable()
-		installDir := osDir(exe)
-		return launchCompletedInstall(context.Background(), s.VSCode.Path, p, secrets.New(p.SecretsFile),
-			joinExe(installDir, "token-refresher.exe"), joinExe(installDir, "agentserver-vscode.vsix"))
+	if s.Onboarding.Status == state.StatusComplete {
+		return launchCompletedFrontend(context.Background(), s, p, secrets.New(p.SecretsFile),
+			joinExe(installDir, "token-refresher.exe"), joinExe(installDir, "agentserver-vscode.vsix"), nil)
 	}
 
 	// Otherwise: serve onboarding UI.
@@ -153,6 +157,26 @@ func launchCompletedInstall(ctx context.Context, codeExe string, p paths.Paths, 
 		return err
 	}
 	return execVSCode(codeExe, p, "", sec, tokenRefresherExe)
+}
+
+func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string, codexOpen codexdesktop.Opener) error {
+	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeMinimalVSCode {
+		if s.VSCode.Path == "" {
+			return fmt.Errorf("VS Code path unknown; rerun onboarding")
+		}
+		return launchCompletedInstall(ctx, s.VSCode.Path, p, sec, tokenRefresherExe, embeddedVSIXPath)
+	}
+	return launchCompletedCodexDesktop(ctx, p, sec, tokenRefresherExe, codexOpen)
+}
+
+func launchCompletedCodexDesktop(ctx context.Context, p paths.Paths, sec secrets.Store, tokenRefresherExe string, opener codexdesktop.Opener) error {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+		return err
+	}
+	if tokenRefresherExe != "" {
+		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
+	}
+	return codexdesktop.Launch(ctx, "", opener)
 }
 
 func execVSCode(codeExe string, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string) error {

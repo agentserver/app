@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/agentserver/agentserver-pkg/internal/paths"
@@ -50,5 +51,24 @@ func TestOpenFolderMigratesVSCodeSettingsBeforeLaunch(t *testing.T) {
 	}
 	if settings["custom.key"] != "keep me" {
 		t.Fatalf("custom.key=%v, want keep me", settings["custom.key"])
+	}
+}
+
+func TestOpenFolderCodexDesktopUsesFolderDeepLink(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{CodexConfigFile: filepath.Join(dir, ".codex", "config.toml")}
+	var opened string
+	err := openFolderCodexDesktop(context.Background(), p, `C:\Project Folder`, nil, "", func(url string) error {
+		opened = url
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("openFolderCodexDesktop: %v", err)
+	}
+	if !strings.HasPrefix(opened, "codex://threads/new?path=") {
+		t.Fatalf("opened=%q", opened)
+	}
+	if !strings.Contains(opened, "Project+Folder") {
+		t.Fatalf("path not encoded: %q", opened)
 	}
 }

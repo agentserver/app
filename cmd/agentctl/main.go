@@ -21,10 +21,14 @@ func main() {
 		runLogs()
 	case "test-install-vscode":
 		runTestInstallVSCode()
+	case "test-install-codex-desktop":
+		runTestInstallCodexDesktop()
 	case "test-download-codex":
 		runTestDownloadCodex()
 	case "test-configure":
 		runTestConfigure()
+	case "test-configure-codex-desktop":
+		runTestConfigureCodexDesktop()
 	case "test-open-folder":
 		runTestOpenFolder(os.Args[2:])
 	case "test-mark-complete":
@@ -47,9 +51,13 @@ USAGE:
 
 P13.4 verification subcommands (skip the OAuth steps, exercise everything else):
   agentctl test-install-vscode   download + silently install VS Code 1.96.0
+  agentctl test-install-codex-desktop
+                                 install Codex Desktop with winget and persist state
   agentctl test-download-codex   download codex.exe to %LOCALAPPDATA%\agentserver-vscode\bin\
   agentctl test-configure        write settings.json + config.toml + setx + install extensions
                                  (assumes VS Code already detected; uses dummy API key)
+  agentctl test-configure-codex-desktop
+                                 write Codex config + dummy OPENAI_API_KEY for Codex Desktop
   agentctl test-open-folder <path>
                                  launch VS Code with our user-data-dir + that folder
   agentctl test-mark-complete    write onboarding.status = complete so launcher takes the

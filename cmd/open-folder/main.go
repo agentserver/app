@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/launchprep"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -32,15 +34,22 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if s.VSCode.Path == "" {
-		log.Fatalf("VS Code path unknown - has onboarding run?")
-	}
 	tokenRefresherExe := ""
 	embeddedVSIXPath := ""
 	if exe, err := os.Executable(); err == nil {
 		installDir := filepath.Dir(exe)
 		tokenRefresherExe = filepath.Join(installDir, "token-refresher.exe")
 		embeddedVSIXPath = filepath.Join(installDir, "agentserver-vscode.vsix")
+	}
+	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeCodexDesktop {
+		if err := openFolderCodexDesktop(context.Background(), p, folder, secrets.New(p.SecretsFile), tokenRefresherExe, nil); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("opened %s with Codex Desktop\n", folder)
+		return
+	}
+	if s.VSCode.Path == "" {
+		log.Fatalf("VS Code path unknown - has onboarding run?")
 	}
 	if err := openFolder(context.Background(), s.VSCode.Path, p, folder, secrets.New(p.SecretsFile), tokenRefresherExe, embeddedVSIXPath); err != nil {
 		log.Fatal(err)
@@ -69,4 +78,14 @@ func openFolder(ctx context.Context, codeExe string, p paths.Paths, folder strin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Start()
+}
+
+func openFolderCodexDesktop(ctx context.Context, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string, opener codexdesktop.Opener) error {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+		return err
+	}
+	if tokenRefresherExe != "" {
+		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
+	}
+	return codexdesktop.Launch(ctx, folder, opener)
 }

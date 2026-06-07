@@ -16,9 +16,11 @@ func TestRenderDoctor(t *testing.T) {
 			CompletedSteps: []string{"modelserver_login", "agentserver_login",
 				"vscode_installed", "vscode_configured", "shortcuts_created"},
 		},
-		Modelserver: state.ModelserverState{ProjectID: "p1", APIKeySuffix: "wxyz"},
-		Agentserver: state.AgentserverState{WorkspaceID: "ws-1"},
-		VSCode:      state.VSCodeState{Path: `C:\Code.exe`, Version: "1.96.0"},
+		FrontendMode: state.FrontendModeCodexDesktop,
+		CodexDesktop: state.CodexDesktopState{Installed: true, Version: "1.0.0"},
+		Modelserver:  state.ModelserverState{ProjectID: "p1", APIKeySuffix: "wxyz"},
+		Agentserver:  state.AgentserverState{WorkspaceID: "ws-1"},
+		VSCode:       state.VSCodeState{Path: `C:\Code.exe`, Version: "1.96.0"},
 	}
 	var buf bytes.Buffer
 	renderDoctor(&buf, s)
@@ -26,6 +28,8 @@ func TestRenderDoctor(t *testing.T) {
 	for _, want := range []string{
 		"星池指挥官 doctor",
 		"onboarding: complete",
+		"frontend: codex_desktop",
+		"codex_desktop: installed=true",
 		"modelserver: project=p1",
 		"vscode: 1.96.0",
 		"steps: 5/5",

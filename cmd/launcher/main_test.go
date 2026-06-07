@@ -98,3 +98,28 @@ func TestLaunchCompletedInstallMigratesVSCodeSettingsBeforeLaunch(t *testing.T) 
 		t.Fatalf("custom.key=%v, want keep me", settings["custom.key"])
 	}
 }
+
+func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		CodexConfigFile: filepath.Join(dir, ".codex", "config.toml"),
+	}
+	var opened string
+	err := launchCompletedCodexDesktop(context.Background(), p, nil, "", func(url string) error {
+		opened = url
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("launchCompletedCodexDesktop: %v", err)
+	}
+	if opened != "codex://threads/new" {
+		t.Fatalf("opened=%q", opened)
+	}
+	b, err := os.ReadFile(p.CodexConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `model_provider = "modelserver"`) {
+		t.Fatalf("config missing modelserver provider:\n%s", b)
+	}
+}
