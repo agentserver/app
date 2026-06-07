@@ -6,7 +6,8 @@
 #      (or: powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1)
 #
 # Installs to %LOCALAPPDATA%\Programs\agentserver-vscode, creates desktop
-# shortcut + folder context menu, ensures VS Code is installed, then exits.
+# shortcut + folder context menu, and installs the selected frontend.
+# Default frontend is Codex Desktop; use -MinimalVSCode for simplified VS Code.
 # Launch the shortcut to onboard.
 
 param(

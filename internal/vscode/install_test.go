@@ -116,6 +116,16 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			},
 		},
 		{
+			name: "write-install-mode.ps1",
+			path: "../../packaging/windows/write-install-mode.ps1",
+			want: []string{
+				"ConvertTo-Json",
+				"frontend_mode",
+				"UTF8Encoding $false",
+				"WriteAllText",
+			},
+		},
+		{
 			name: "package-windows-zip.sh",
 			path: "../../scripts/package-windows-zip.sh",
 			want: []string{
@@ -223,6 +233,48 @@ func TestWindowsInnoInstallerUsesPerUserDesktopShortcut(t *testing.T) {
 	}
 }
 
+func TestWindowsInnoInstallerFrontendRunEntriesAreMutuallyExclusive(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, tc := range []struct {
+		name      string
+		params    string
+		qualifier string
+	}{
+		{
+			name:      "codex desktop mode writer",
+			params:    `-NoProfile -ExecutionPolicy Bypass -File ""{app}\write-install-mode.ps1"" -Mode codex_desktop -Path ""{app}\install-mode.json""`,
+			qualifier: "Check: ShouldInstallCodexDesktop",
+		},
+		{
+			name:      "codex desktop installer",
+			params:    `-NoProfile -ExecutionPolicy Bypass -File ""{app}\ensure-codex-desktop.ps1""`,
+			qualifier: "Check: ShouldInstallCodexDesktop",
+		},
+		{
+			name:      "minimal vscode mode writer",
+			params:    `-NoProfile -ExecutionPolicy Bypass -File ""{app}\write-install-mode.ps1"" -Mode minimal_vscode -Path ""{app}\install-mode.json""`,
+			qualifier: "Tasks: minimalvscode",
+		},
+		{
+			name:      "minimal vscode installer",
+			params:    `-NoProfile -ExecutionPolicy Bypass -File ""{app}\ensure-vscode.ps1"" -ManifestPath ""{app}\vscode-manifest.json""`,
+			qualifier: "Tasks: minimalvscode",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := "Parameters: \"" + tc.params + "\"; \\\n" +
+				"    Flags: runhidden waituntilterminated; " + tc.qualifier
+			if !strings.Contains(s, want) {
+				t.Fatalf("installer.iss missing guarded run entry:\n%s", want)
+			}
+		})
+	}
+}
+
 func TestMakefileBuildsWindowsHelperExecutables(t *testing.T) {
 	body, err := os.ReadFile("../../Makefile")
 	if err != nil {
@@ -326,6 +378,7 @@ func TestEnsureCodexDesktopScriptUsesWingetMsstore(t *testing.T) {
 		"msstore",
 		"--accept-source-agreements",
 		"--accept-package-agreements",
+		"--disable-interactivity",
 		"Test-CodexDesktopInstalled",
 	} {
 		if !strings.Contains(s, want) {

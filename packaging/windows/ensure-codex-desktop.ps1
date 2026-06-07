@@ -53,7 +53,8 @@ function Invoke-CodexDesktopWingetInstall {
         '-s',
         'msstore',
         '--accept-source-agreements',
-        '--accept-package-agreements'
+        '--accept-package-agreements',
+        '--disable-interactivity'
     )
     Write-Step "Running winget install Codex -s msstore..."
     & $winget @args

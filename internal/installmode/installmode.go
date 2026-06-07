@@ -1,6 +1,7 @@
 package installmode
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ func Read(path string) (state.FrontendMode, error) {
 	if err != nil {
 		return state.FrontendModeCodexDesktop, fmt.Errorf("read install mode: %w", err)
 	}
+	b = bytes.TrimPrefix(b, []byte{0xef, 0xbb, 0xbf})
 	var f fileShape
 	if err := json.Unmarshal(b, &f); err != nil {
 		return state.FrontendModeCodexDesktop, nil

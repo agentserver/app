@@ -47,6 +47,21 @@ func TestReadMalformedDefaultsToCodexDesktop(t *testing.T) {
 	}
 }
 
+func TestReadUTF8BOMPrefixedJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "install-mode.json")
+	body := append([]byte{0xef, 0xbb, 0xbf}, []byte(`{"frontend_mode":"minimal_vscode"}`)...)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Read(path)
+	if err != nil {
+		t.Fatalf("Read BOM-prefixed JSON: %v", err)
+	}
+	if got != state.FrontendModeMinimalVSCode {
+		t.Fatalf("mode = %q", got)
+	}
+}
+
 func TestWriteAndReadMinimalVSCode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "install-mode.json")
 	if err := Write(path, state.FrontendModeMinimalVSCode); err != nil {

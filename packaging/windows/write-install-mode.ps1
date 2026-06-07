@@ -17,5 +17,6 @@ $json = @{
     frontend_mode = $Mode
 } | ConvertTo-Json -Depth 2
 
-Set-Content -Path $Path -Value $json -Encoding UTF8
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($Path, $json + [Environment]::NewLine, $utf8NoBom)
 Write-Host "Wrote frontend mode: $Mode"
