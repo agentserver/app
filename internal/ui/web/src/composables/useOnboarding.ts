@@ -1,5 +1,5 @@
 import { ref, computed, type Ref, type ComputedRef } from 'vue';
-import { STEPS, type StepDef } from '../stepConfig';
+import { stepsForMode, completedMapForMode, normalizeMode, type StepDef, type FrontendMode } from '../stepConfig';
 import * as api from '../api';
 
 export type StepStatus = 'pending' | 'active' | 'in_progress' | 'success' | 'error';
@@ -21,22 +21,13 @@ export interface StepInstance {
   runtime: StepRuntime;
 }
 
-// Map server-side completed_steps tokens to step ids. The server uses
-// "vscode_installed" / "vscode_configured" / "shortcuts_created" but our
-// step ids are "vscode_install" / "vscode_configure" / "finalize".
-const COMPLETED_MAP: Record<string, string> = {
-  modelserver_login: 'modelserver_login',
-  agentserver_login: 'agentserver_login',
-  vscode_installed: 'vscode_install',
-  vscode_configured: 'vscode_configure',
-  shortcuts_created: 'finalize',
-};
-
 export interface OnboardingHandle {
   steps: Ref<StepInstance[]>;
   current: ComputedRef<StepInstance | undefined>;
   isComplete: ComputedRef<boolean>;
   connectionError: Ref<string | null>;
+  frontendMode: Ref<FrontendMode>;
+  frontendName: Ref<string>;
 
   init(): Promise<void>;
   refreshState(): Promise<void>;
@@ -50,8 +41,10 @@ export interface OnboardingHandle {
 }
 
 export function useOnboarding(): OnboardingHandle {
+  const frontendMode = ref<FrontendMode>('codex_desktop');
+  const frontendName = ref('Codex Desktop');
   const steps: Ref<StepInstance[]> = ref(
-    STEPS.map(s => ({ ...s, runtime: { status: 'pending' as StepStatus } })),
+    stepsForMode(frontendMode.value).map(s => ({ ...s, runtime: { status: 'pending' as StepStatus } })),
   );
   const connectionError = ref<string | null>(null);
   const completed = ref<Set<string>>(new Set());
@@ -67,10 +60,23 @@ export function useOnboarding(): OnboardingHandle {
     return steps.value.find(s => s.id === id);
   }
 
+  function setFrontend(modeInput?: string | null, nameInput?: string) {
+    const nextMode = normalizeMode(modeInput);
+    const nextDefs = stepsForMode(nextMode);
+    const currentIds = steps.value.map(s => s.id).join(',');
+    const nextIds = nextDefs.map(s => s.id).join(',');
+    frontendMode.value = nextMode;
+    frontendName.value = nameInput || (nextMode === 'minimal_vscode' ? '极简界面' : 'Codex Desktop');
+    if (currentIds !== nextIds) {
+      steps.value = nextDefs.map(s => ({ ...s, runtime: { status: 'pending' as StepStatus } }));
+    }
+  }
+
   function syncFromServer() {
     const completedIds = new Set<string>();
+    const completedMap = completedMapForMode(frontendMode.value);
     for (const token of Array.from(completed.value)) {
-      const id = COMPLETED_MAP[token];
+      const id = completedMap[token];
       if (id) completedIds.add(id);
     }
     // When onboarding complete, force all to success
@@ -97,6 +103,7 @@ export function useOnboarding(): OnboardingHandle {
     try {
       const s = await api.getState();
       connectionError.value = null;
+      setFrontend(s.frontend_mode, s.frontend_name);
       completed.value = new Set(s.completed_steps ?? []);
       onboardingStatus.value = s.onboarding_status;
       syncFromServer();
@@ -152,7 +159,7 @@ export function useOnboarding(): OnboardingHandle {
   }
 
   return {
-    steps, current, isComplete, connectionError,
+    steps, current, isComplete, connectionError, frontendMode, frontendName,
     init, refreshState,
     markStepInProgress, markStepSuccess, markStepError, updateProgress, setOauthUrl,
     shouldAutoAdvance,

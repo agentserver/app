@@ -33,6 +33,7 @@ describe('useOnboarding', () => {
   it('when onboarding_status=complete, all steps success and current=null', async () => {
     vi.spyOn(api, 'getState').mockResolvedValue({
       schema_version: 1, install_id: 'x',
+      frontend_mode: 'minimal_vscode',
       onboarding_status: 'complete',
       completed_steps: ['modelserver_login', 'agentserver_login', 'vscode_installed', 'vscode_configured', 'shortcuts_created'],
     });
@@ -83,6 +84,7 @@ describe('useOnboarding', () => {
   it('updateProgress sets stage and percent', async () => {
     vi.spyOn(api, 'getState').mockResolvedValue({
       schema_version: 1, install_id: 'x',
+      frontend_mode: 'minimal_vscode',
       onboarding_status: 'pending', completed_steps: ['modelserver_login', 'agentserver_login'],
     });
     const o = useOnboarding();
@@ -96,6 +98,7 @@ describe('useOnboarding', () => {
   it('shouldAutoAdvance returns true for non-OAuth step after prev success', async () => {
     vi.spyOn(api, 'getState').mockResolvedValue({
       schema_version: 1, install_id: 'x',
+      frontend_mode: 'minimal_vscode',
       onboarding_status: 'pending',
       completed_steps: ['modelserver_login', 'agentserver_login'],
     });
@@ -119,6 +122,7 @@ describe('useOnboarding', () => {
   it('shouldAutoAdvance returns false for finalize', async () => {
     vi.spyOn(api, 'getState').mockResolvedValue({
       schema_version: 1, install_id: 'x',
+      frontend_mode: 'minimal_vscode',
       onboarding_status: 'pending',
       completed_steps: ['modelserver_login', 'agentserver_login', 'vscode_installed', 'vscode_configured'],
     });
@@ -126,6 +130,28 @@ describe('useOnboarding', () => {
     await o.init();
     expect(o.current.value?.id).toBe('finalize');
     expect(o.shouldAutoAdvance(o.current.value!)).toBe(false);
+  });
+
+  it('initializes Codex Desktop steps from server mode', async () => {
+    vi.spyOn(api, 'getState').mockResolvedValue({
+      schema_version: 1,
+      install_id: 'x',
+      frontend_mode: 'codex_desktop',
+      frontend_name: 'Codex Desktop',
+      onboarding_status: 'pending',
+      completed_steps: ['modelserver_login', 'agentserver_login'],
+    });
+    const o = useOnboarding();
+    await o.init();
+    expect(o.steps.value.map(s => s.id)).toEqual([
+      'modelserver_login',
+      'agentserver_login',
+      'codex_desktop_install',
+      'codex_desktop_configure',
+      'finalize',
+    ]);
+    expect(o.current.value?.id).toBe('codex_desktop_install');
+    expect(o.frontendName.value).toBe('Codex Desktop');
   });
 
   it('refreshState merges new completed_steps without resetting runtime', async () => {

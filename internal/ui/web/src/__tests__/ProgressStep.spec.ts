@@ -37,7 +37,7 @@ describe('ProgressStep', () => {
   });
 
   it('does not mark the step failed before the SSE stream closes', async () => {
-    vi.spyOn(api, 'startVSCodeInstall').mockResolvedValue({ stream_id: 's1' });
+    vi.spyOn(api, 'startFrontendInstall').mockResolvedValue({ stream_id: 's1' });
     const onboarding = makeOnboarding();
 
     mount(ProgressStep, {
@@ -52,7 +52,7 @@ describe('ProgressStep', () => {
   });
 
   it('renders concrete backend error events instead of a generic launcher-log message', async () => {
-    vi.spyOn(api, 'startVSCodeInstall').mockResolvedValue({ stream_id: 's1' });
+    vi.spyOn(api, 'startFrontendInstall').mockResolvedValue({ stream_id: 's1' });
     const onboarding = makeOnboarding();
 
     mount(ProgressStep, {
@@ -95,6 +95,8 @@ function makeOnboarding(): OnboardingHandle {
     current: computed(() => undefined),
     isComplete: computed(() => false),
     connectionError: ref(null),
+    frontendMode: ref('codex_desktop'),
+    frontendName: ref('Codex Desktop'),
     init: vi.fn(),
     refreshState: vi.fn(),
     markStepInProgress: vi.fn(),

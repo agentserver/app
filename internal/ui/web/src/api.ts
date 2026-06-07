@@ -4,6 +4,8 @@
 export interface ServerState {
   schema_version: number;
   install_id: string;
+  frontend_mode?: 'codex_desktop' | 'minimal_vscode';
+  frontend_name?: string;
   onboarding_status: 'pending' | 'in_progress' | 'complete';
   completed_steps: string[] | null;
   last_error?: string;
@@ -11,6 +13,8 @@ export interface ServerState {
   agentserver_workspace_id?: string;
   vscode_path?: string;
   vscode_version?: string;
+  codex_desktop_installed?: boolean;
+  codex_desktop_version?: string;
 }
 
 export interface StartStepResponse {
@@ -68,17 +72,21 @@ export const startStep = (stepId: string) =>
 export const pollStepStatus = (stepId: string) =>
   request<StepStatusResponse>(`/api/step/${stepId}/status`);
 
-export const startVSCodeInstall = () =>
-  request<StreamHandle>('/api/step/vscode_install', { method: 'POST' });
+export const startFrontendInstall = () =>
+  request<StreamHandle>('/api/step/frontend_install', { method: 'POST' });
 
-export const configureVSCode = () =>
-  request<{ state: 'success' }>('/api/step/vscode_configure', { method: 'POST' });
+export const configureFrontend = () =>
+  request<{ state: 'success' }>('/api/step/frontend_configure', { method: 'POST' });
 
 export const finalize = () =>
   request<{ state: 'complete' }>('/api/finalize', { method: 'POST' });
 
-export const launchVSCode = () =>
-  request<{ state: 'launching' }>('/api/launch-vscode', { method: 'POST' });
+export const launchFrontend = () =>
+  request<{ state: 'launching' }>('/api/launch', { method: 'POST' });
+
+export const startVSCodeInstall = startFrontendInstall;
+export const configureVSCode = configureFrontend;
+export const launchVSCode = launchFrontend;
 
 export const abort = () =>
   request<{ state: 'aborted' }>('/api/abort', { method: 'POST' });

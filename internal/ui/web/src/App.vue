@@ -15,23 +15,23 @@ onMounted(async () => {
   await onboarding.init();
 });
 
-async function launchVSCode() {
+async function launchFrontend() {
   launching.value = true;
   try {
-    await api.launchVSCode();
+    await api.launchFrontend();
     // launcher will shut down its HTTP server ~500ms after responding.
     // Subsequent fetchState calls will fail; UI freezes in launching state.
   } catch (e) {
     launching.value = false;
     // Surface error somehow; for now use a connectionError-style banner
-    onboarding.connectionError.value = '启动 VS Code 失败: ' + (e instanceof Error ? e.message : String(e));
+    onboarding.connectionError.value = '启动失败: ' + (e instanceof Error ? e.message : String(e));
   }
 }
 </script>
 
 <template>
   <div class="container">
-    <h1>agentserver-vscode 配置向导</h1>
+    <h1>星池指挥官配置向导</h1>
 
     <el-alert
       v-if="onboarding.connectionError.value"
@@ -45,7 +45,8 @@ async function launchVSCode() {
     <SuccessBanner
       v-if="onboarding.isComplete.value"
       :launching="launching"
-      @launch="launchVSCode"
+      :frontend-name="onboarding.frontendName.value"
+      @launch="launchFrontend"
     />
 
     <StepCard

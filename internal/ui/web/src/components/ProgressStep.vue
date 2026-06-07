@@ -17,22 +17,22 @@ async function start() {
   props.onboarding.markStepInProgress(props.step.id, '准备中…');
   streamError.value = undefined;
   try {
-    const handle = await api.startVSCodeInstall();
+    const handle = await api.startFrontendInstall();
     sse.value = useSSE(handle.stream_id);
     // Watch incoming events; on stream end, refresh state to learn outcome
     watch(() => sse.value?.latest.value, (ev: ProgressEvent | undefined) => {
       if (ev) {
         renderEvent(ev);
         if (ev.stage === 'error') {
-          streamError.value = ev.msg || 'VS Code 安装失败';
+          streamError.value = ev.msg || '安装失败';
         }
       }
     });
     watch(() => sse.value?.done.value, async (d) => {
       if (d) {
         // Stream closed — refresh state and infer success/error from
-        // completed_steps. The backend marks vscode_installed only on
-        // success, so if it's NOT in completed_steps, treat as error.
+        // completed_steps. The backend marks the mode-specific install token
+        // only on success, so if it's NOT in completed_steps, treat as error.
         await props.onboarding.refreshState();
         const completed = props.onboarding.steps.value.find(s => s.id === props.step.id);
         if (completed?.runtime.status === 'success') {

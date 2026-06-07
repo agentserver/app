@@ -12,8 +12,8 @@ const props = defineProps<{
 async function run() {
   props.onboarding.markStepInProgress(props.step.id, '处理中…');
   try {
-    if (props.step.id === 'vscode_configure') {
-      await api.configureVSCode();
+    if (props.step.id === 'vscode_configure' || props.step.id === 'codex_desktop_configure') {
+      await api.configureFrontend();
     } else if (props.step.id === 'finalize') {
       await api.finalize();
     } else {

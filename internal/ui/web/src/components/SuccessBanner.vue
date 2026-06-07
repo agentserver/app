@@ -1,6 +1,7 @@
 <script setup lang="ts">
 withDefaults(defineProps<{
   launching?: boolean;
+  frontendName: string;
 }>(), { launching: false });
 
 const emit = defineEmits<{
@@ -20,14 +21,14 @@ const emit = defineEmits<{
     </template>
     <template #default>
       <p class="msg">
-        agentserver-vscode 配置已就绪。可双击桌面快捷方式启动, 或者:
+        配置已就绪。可双击桌面快捷方式启动，或者：
       </p>
       <div v-if="!launching" class="actions">
-        <el-button type="primary" @click="emit('launch')">立即打开 VS Code</el-button>
+        <el-button type="primary" @click="emit('launch')">打开 {{ frontendName }}</el-button>
       </div>
       <div v-else class="launching">
         <el-icon class="is-loading"><Loading /></el-icon>
-        <span>VS Code 启动中, 此窗口即将关闭…</span>
+        <span>{{ frontendName }} 启动中，此窗口即将关闭…</span>
       </div>
     </template>
   </el-alert>
