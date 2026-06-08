@@ -37,7 +37,7 @@ cross-windows: ui-build
 	@for cmd in $(CMDS); do \
 		echo "==> cross-building $$cmd (windows/amd64)"; \
 		ldflags="$(LDFLAGS)"; \
-		case "$$cmd" in launcher|open-folder) ldflags="$(LDFLAGS) -H=windowsgui" ;; esac; \
+		case "$$cmd" in launcher|onboarding-server|open-folder|token-refresher) ldflags="$(LDFLAGS) -H=windowsgui" ;; esac; \
 		GOOS=$(GOOS_WIN) GOARCH=$(GOARCH) \
 		  $(GO) build $(GOFLAGS) -ldflags="$$ldflags" \
 		  -o $(DIST)/windows/$$cmd.exe ./cmd/$$cmd ; \

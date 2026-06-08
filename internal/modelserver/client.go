@@ -46,6 +46,28 @@ func (c *Client) SubscriptionUsage(ctx context.Context, token, projectID string)
 	return wrap.Data, nil
 }
 
+func (c *Client) ProxyUsage(ctx context.Context, token string) ([]SubscriptionUsageWindow, error) {
+	var wrap struct {
+		CreditUsage []struct {
+			Window     string  `json:"window"`
+			Percentage float64 `json:"percentage"`
+			WindowEnd  string  `json:"window_end"`
+		} `json:"credit_usage"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/v1/usage", token, nil, &wrap); err != nil {
+		return nil, err
+	}
+	out := make([]SubscriptionUsageWindow, 0, len(wrap.CreditUsage))
+	for _, w := range wrap.CreditUsage {
+		out = append(out, SubscriptionUsageWindow{
+			Window:     w.Window,
+			Percentage: w.Percentage,
+			ResetsAt:   w.WindowEnd,
+		})
+	}
+	return out, nil
+}
+
 func (c *Client) CreateProject(ctx context.Context, token, name string) (Project, error) {
 	var wrap struct {
 		Data Project `json:"data"`

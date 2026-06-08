@@ -26,7 +26,7 @@
     "@vscode/test-electron": "^2.3.9",
     "@vscode/vsce": "^2.24.0",
     "glob": "^13.0.6",
-    "mocha": "^10.2.0",
+    "mocha": "^11.7.6",
     "typescript": "^5.3.3"
   },
   "contributes": {
@@ -97,5 +97,9 @@
         }
       ]
     }
+  },
+  "overrides": {
+    "serialize-javascript": "7.0.5",
+    "diff": "9.0.0"
   }
 }

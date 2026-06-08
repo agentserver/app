@@ -2,6 +2,7 @@ package modelserver
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -95,6 +96,16 @@ func TestPickOrCreateProject_FoundDefault(t *testing.T) {
 	}
 }
 
+func TestProjectIDFromTokenReadsHydraExtClaim(t *testing.T) {
+	token := jwtWithClaims(t, map[string]any{
+		"ext": map[string]any{"project_id": "proj-ext"},
+	})
+	got, ok := ProjectIDFromToken(token)
+	if !ok || got != "proj-ext" {
+		t.Fatalf("ProjectIDFromToken=%q,%v want proj-ext,true", got, ok)
+	}
+}
+
 func TestSubscriptionUsage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/projects/p1/subscription/usage" {
@@ -129,4 +140,42 @@ func TestSubscriptionUsage(t *testing.T) {
 	if got[0].ResetsAt != "2026-06-07T12:34:56Z" {
 		t.Fatalf("resets_at=%q", got[0].ResetsAt)
 	}
+}
+
+func TestProxyUsage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/usage" {
+			t.Fatalf("got %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer AT" {
+			t.Fatalf("auth %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"credit_usage":[{"window":"5h","percentage":58.2,"window_end":"2026-06-08T17:00:00Z"},{"window":"7d","percentage":22.0}]}`))
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.URL).ProxyUsage(context.Background(), "AT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %+v", got)
+	}
+	if got[0].Window != "5h" || got[0].Percentage != 58.2 || got[0].ResetsAt != "2026-06-08T17:00:00Z" {
+		t.Fatalf("got[0]=%+v", got[0])
+	}
+	if got[1].Window != "7d" || got[1].Percentage != 22.0 {
+		t.Fatalf("got[1]=%+v", got[1])
+	}
+}
+
+func jwtWithClaims(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }

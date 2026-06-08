@@ -155,6 +155,7 @@ $required = @(
     'open-folder.exe',
     'uninstall.exe',
     'token-refresher.exe',
+    'driver-agent.exe',
     'agentserver-vscode.vsix',
     'ensure-vscode.ps1',
     'ensure-codex-desktop.ps1',

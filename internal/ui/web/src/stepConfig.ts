@@ -9,19 +9,19 @@ export interface StepDef {
 }
 
 const CODEX_DESKTOP_STEPS: ReadonlyArray<StepDef> = [
-  { id: 'modelserver_login',       label: '登录 modelserver',   kind: 'oauth',    autoStart: false },
-  { id: 'agentserver_login',       label: '登录 agentserver',   kind: 'oauth',    autoStart: false },
-  { id: 'codex_desktop_install',   label: '安装 Codex Desktop', kind: 'progress', autoStart: true  },
-  { id: 'codex_desktop_configure', label: '配置 Codex Desktop', kind: 'action',   autoStart: true  },
-  { id: 'finalize',                label: '完成配置',           kind: 'action',   autoStart: false },
+  { id: 'modelserver_login',       label: '连接大模型',                    kind: 'oauth',    autoStart: false },
+  { id: 'agentserver_login',       label: '连接星池工作区',                kind: 'oauth',    autoStart: false },
+  { id: 'codex_desktop_install',   label: '安装 Codex Desktop 智能助手',   kind: 'progress', autoStart: true  },
+  { id: 'codex_desktop_configure', label: '准备 Codex Desktop 智能助手',   kind: 'action',   autoStart: true  },
+  { id: 'finalize',                label: '完成',                          kind: 'action',   autoStart: false },
 ];
 
 const MINIMAL_VSCODE_STEPS: ReadonlyArray<StepDef> = [
-  { id: 'modelserver_login', label: '登录 modelserver', kind: 'oauth',    autoStart: false },
-  { id: 'agentserver_login', label: '登录 agentserver', kind: 'oauth',    autoStart: false },
-  { id: 'vscode_install',    label: '安装极简界面',     kind: 'progress', autoStart: true  },
-  { id: 'vscode_configure',  label: '准备极简界面',     kind: 'action',   autoStart: true  },
-  { id: 'finalize',          label: '完成配置',         kind: 'action',   autoStart: false },
+  { id: 'modelserver_login', label: '连接大模型',       kind: 'oauth',    autoStart: false },
+  { id: 'agentserver_login', label: '连接星池工作区',   kind: 'oauth',    autoStart: false },
+  { id: 'vscode_install',    label: '安装极简工作台',   kind: 'progress', autoStart: true  },
+  { id: 'vscode_configure',  label: '准备极简工作台',   kind: 'action',   autoStart: true  },
+  { id: 'finalize',          label: '完成',             kind: 'action',   autoStart: false },
 ];
 
 export function normalizeMode(mode?: string | null): FrontendMode {

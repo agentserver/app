@@ -48,37 +48,39 @@ type Orchestrator interface {
 
 // SanitizedState is the read view sent to the browser — never contains secrets.
 type SanitizedState struct {
-	SchemaVersion          int      `json:"schema_version"`
-	InstallID              string   `json:"install_id"`
-	OnboardingStatus       string   `json:"onboarding_status"`
-	CompletedSteps         []string `json:"completed_steps"`
-	LastError              string   `json:"last_error,omitempty"`
-	FrontendMode           string   `json:"frontend_mode"`
-	FrontendName           string   `json:"frontend_name"`
-	ModelserverProjectID   string   `json:"modelserver_project_id,omitempty"`
-	AgentserverWorkspaceID string   `json:"agentserver_workspace_id,omitempty"`
-	VSCodePath             string   `json:"vscode_path,omitempty"`
-	VSCodeVersion          string   `json:"vscode_version,omitempty"`
-	CodexDesktopInstalled  bool     `json:"codex_desktop_installed,omitempty"`
-	CodexDesktopVersion    string   `json:"codex_desktop_version,omitempty"`
+	SchemaVersion            int      `json:"schema_version"`
+	InstallID                string   `json:"install_id"`
+	OnboardingStatus         string   `json:"onboarding_status"`
+	CompletedSteps           []string `json:"completed_steps"`
+	LastError                string   `json:"last_error,omitempty"`
+	FrontendMode             string   `json:"frontend_mode"`
+	FrontendName             string   `json:"frontend_name"`
+	ModelserverProjectID     string   `json:"modelserver_project_id,omitempty"`
+	AgentserverWorkspaceID   string   `json:"agentserver_workspace_id,omitempty"`
+	AgentserverWorkspaceName string   `json:"agentserver_workspace_name,omitempty"`
+	VSCodePath               string   `json:"vscode_path,omitempty"`
+	VSCodeVersion            string   `json:"vscode_version,omitempty"`
+	CodexDesktopInstalled    bool     `json:"codex_desktop_installed,omitempty"`
+	CodexDesktopVersion      string   `json:"codex_desktop_version,omitempty"`
 }
 
 func SanitizeState(s *state.State) SanitizedState {
 	mode := state.NormalizeFrontendMode(s.FrontendMode)
 	return SanitizedState{
-		SchemaVersion:          s.SchemaVersion,
-		InstallID:              s.InstallID,
-		OnboardingStatus:       string(s.Onboarding.Status),
-		CompletedSteps:         append([]string(nil), s.Onboarding.CompletedSteps...),
-		LastError:              s.Onboarding.LastError,
-		FrontendMode:           string(mode),
-		FrontendName:           frontendName(mode),
-		ModelserverProjectID:   s.Modelserver.ProjectID,
-		AgentserverWorkspaceID: s.Agentserver.WorkspaceID,
-		VSCodePath:             s.VSCode.Path,
-		VSCodeVersion:          s.VSCode.Version,
-		CodexDesktopInstalled:  s.CodexDesktop.Installed,
-		CodexDesktopVersion:    s.CodexDesktop.Version,
+		SchemaVersion:            s.SchemaVersion,
+		InstallID:                s.InstallID,
+		OnboardingStatus:         string(s.Onboarding.Status),
+		CompletedSteps:           append([]string(nil), s.Onboarding.CompletedSteps...),
+		LastError:                s.Onboarding.LastError,
+		FrontendMode:             string(mode),
+		FrontendName:             frontendName(mode),
+		ModelserverProjectID:     s.Modelserver.ProjectID,
+		AgentserverWorkspaceID:   s.Agentserver.WorkspaceID,
+		AgentserverWorkspaceName: s.Agentserver.WorkspaceName,
+		VSCodePath:               s.VSCode.Path,
+		VSCodeVersion:            s.VSCode.Version,
+		CodexDesktopInstalled:    s.CodexDesktop.Installed,
+		CodexDesktopVersion:      s.CodexDesktop.Version,
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"runtime"
+
+	"github.com/agentserver/agentserver-pkg/internal/process"
 )
 
 type Options struct {
@@ -55,6 +57,7 @@ func runWinget(ctx context.Context, args []string) (string, error) {
 		return "", err
 	}
 	cmd := exec.CommandContext(ctx, "winget", args...)
+	process.HideWindow(cmd)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

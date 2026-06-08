@@ -48,6 +48,7 @@ func NewServerWithConsole(o Orchestrator, c ConsoleController) http.Handler {
 	mux.HandleFunc("/api/console/refresh", s.handleConsoleRefresh)
 	mux.HandleFunc("/api/console/open-frontend", s.handleConsoleOpenFrontend)
 	mux.HandleFunc("/api/console/open-subscription", s.handleConsoleOpenSubscription)
+	mux.HandleFunc("/api/console/logout-modelserver", s.handleConsoleLogoutModelserver)
 	mux.HandleFunc("/api/console/quit", s.handleConsoleQuit)
 
 	// SSE
@@ -222,6 +223,17 @@ func (s *server) handleConsoleOpenSubscription(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, 200, map[string]string{"state": "opened"})
+}
+
+func (s *server) handleConsoleLogoutModelserver(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if err := s.c.LogoutModelserver(r.Context()); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"state": "logged_out"})
 }
 
 func (s *server) handleConsoleQuit(w http.ResponseWriter, r *http.Request) {

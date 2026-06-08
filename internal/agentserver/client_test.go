@@ -78,3 +78,38 @@ func TestCreateWorkspaceAPIKey(t *testing.T) {
 		t.Errorf("got %+v", k)
 	}
 }
+
+func TestRegisterAgentUsesOAuthToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/agent/register" {
+			t.Fatalf("got %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer oauth-token" {
+			t.Fatalf("Authorization=%q", r.Header.Get("Authorization"))
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["name"] != "星池指挥官" || body["type"] != "custom" {
+			t.Fatalf("body=%+v", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{
+			"sandbox_id":   "sb-1",
+			"tunnel_token": "tunnel-token",
+			"proxy_token":  "sandbox-proxy-token",
+			"workspace_id": "ws-1",
+			"short_id":     "abc123",
+		})
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.URL).RegisterAgent(context.Background(), "oauth-token", "星池指挥官", "custom")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProxyToken != "sandbox-proxy-token" || got.WorkspaceID != "ws-1" {
+		t.Fatalf("got %+v", got)
+	}
+}

@@ -90,3 +90,38 @@ base_url = "https://old/v1"
 		t.Errorf("expected backup")
 	}
 }
+
+func TestUpdateMCPServerAddsDriverAndKeepsModelConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := UpdateConfig(path, Settings{
+		Provider: "modelserver",
+		Model:    "gpt-5.5",
+		BaseURL:  "https://code.ai.cs.ac.cn/v1",
+		EnvKey:   "OPENAI_API_KEY",
+		WireAPI:  "responses",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := UpdateMCPServer(path, "driver", MCPServer{
+		Command: `C:\Users\61414\AppData\Local\Programs\agentserver-vscode\driver-agent.exe`,
+		Args:    []string{"serve-mcp", "--config", `C:\Users\61414\.config\multi-agent\driver.yaml`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b, _ := os.ReadFile(path)
+	s := string(b)
+	for _, want := range []string{
+		`model_provider = "modelserver"`,
+		`[model_providers.modelserver]`,
+		`[mcp_servers.driver]`,
+		`command = "C:\\Users\\61414\\AppData\\Local\\Programs\\agentserver-vscode\\driver-agent.exe"`,
+		`args = ["serve-mcp", "--config", "C:\\Users\\61414\\.config\\multi-agent\\driver.yaml"]`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in:\n%s", want, s)
+		}
+	}
+}

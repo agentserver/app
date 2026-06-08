@@ -25,6 +25,13 @@ type Settings struct {
 	WireAPI               string // e.g. "responses"
 }
 
+type MCPServer struct {
+	Command string
+	Args    []string
+	Env     map[string]string
+	Cwd     string
+}
+
 func ModelserverSettings() Settings {
 	return Settings{
 		Provider: "modelserver",
@@ -91,6 +98,52 @@ func UpdateConfig(path string, s Settings) error {
 		"wire_api": s.WireAPI,
 	}
 	root["model_providers"] = providers
+
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
+		return fmt.Errorf("marshal config.toml: %w", err)
+	}
+	return os.WriteFile(path, buf.Bytes(), 0o644)
+}
+
+func UpdateMCPServer(path, name string, server MCPServer) error {
+	if name == "" {
+		return errors.New("MCP server name required")
+	}
+	if server.Command == "" {
+		return errors.New("MCP server command required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir codex dir: %w", err)
+	}
+
+	root := map[string]any{}
+	if b, err := os.ReadFile(path); err == nil {
+		if _, err := toml.Decode(string(b), &root); err != nil {
+			return fmt.Errorf("parse existing config.toml: %w", err)
+		}
+		backup := fmt.Sprintf("%s.bak.%d", path, time.Now().Unix())
+		_ = os.WriteFile(backup, b, 0o644)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read config.toml: %w", err)
+	}
+
+	servers, _ := root["mcp_servers"].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+	}
+	entry := map[string]any{
+		"command": server.Command,
+		"args":    append([]string(nil), server.Args...),
+	}
+	if len(server.Env) > 0 {
+		entry["env"] = server.Env
+	}
+	if server.Cwd != "" {
+		entry["cwd"] = server.Cwd
+	}
+	servers[name] = entry
+	root["mcp_servers"] = servers
 
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(root); err != nil {

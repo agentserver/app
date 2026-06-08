@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
+	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tray"
 )
@@ -128,6 +131,61 @@ func TestCompletedStateOrchestratorLoadsDashboardState(t *testing.T) {
 	if len(got.CompletedSteps) != 3 {
 		t.Fatalf("CompletedSteps=%+v", got.CompletedSteps)
 	}
+}
+
+func TestCompletedConsoleOrchestratorStartsModelserverLogin(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login", "agentserver_login", "shortcuts_created"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	port := freeTCPPort(t)
+	opened := make(chan string, 1)
+	orch := newCompletedConsoleOrchestrator(completedOrchestratorInput{
+		State:   store,
+		Secrets: secrets.New(filepath.Join(dir, "secrets.json")),
+		MSOAuth: oauth.AuthCodeConfig{
+			Endpoint:     "https://codeapi.example",
+			AuthPath:     "/oauth2/auth",
+			TokenPath:    "/oauth2/token",
+			ClientID:     "client-x",
+			CallbackPath: "/oauth/modelserver/callback",
+			Ports:        []int{port},
+			LoginTimeout: time.Second,
+		},
+		OpenBrowser: func(url string) { opened <- url },
+	})
+	defer orch.Abort(context.Background())
+
+	url, err := orch.LoginModelserver(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(url, "https://codeapi.example/oauth2/auth?") {
+		t.Fatalf("oauth url=%q", url)
+	}
+	select {
+	case got := <-opened:
+		if got != url {
+			t.Fatalf("opened=%q, want %q", got, url)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("OpenBrowser was not called")
+	}
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 func TestTrayStateFromConsoleFormatsQuotaRows(t *testing.T) {
@@ -430,10 +488,14 @@ func TestLaunchCompletedInstallMigratesVSCodeSettingsBeforeLaunch(t *testing.T) 
 func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 	dir := t.TempDir()
 	p := paths.Paths{
-		CodexConfigFile: filepath.Join(dir, ".codex", "config.toml"),
+		CodexConfigFile:                   filepath.Join(dir, ".codex", "config.toml"),
+		CodexDesktopGlobalStateFile:       filepath.Join(dir, ".codex", ".codex-global-state.json"),
+		CodexDesktopComputerUseConfigFile: filepath.Join(dir, ".codex", "computer-use", "config.json"),
 	}
 	var opened string
 	err := launchCompletedCodexDesktop(context.Background(), p, nil, "", func(url string) error {
+		assertJSONField(t, p.CodexDesktopGlobalStateFile, "localeOverride", "zh-CN")
+		assertJSONField(t, p.CodexDesktopComputerUseConfigFile, "locale", "zh-CN")
 		opened = url
 		return nil
 	})
@@ -449,6 +511,21 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `model_provider = "modelserver"`) {
 		t.Fatalf("config missing modelserver provider:\n%s", b)
+	}
+}
+
+func assertJSONField(t *testing.T, path, key, want string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		t.Fatalf("parse %s: %v\n%s", path, err, b)
+	}
+	if got := root[key]; got != want {
+		t.Fatalf("%s[%q]=%v, want %q", path, key, got, want)
 	}
 }
 

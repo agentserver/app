@@ -16,6 +16,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/download"
 	"github.com/agentserver/agentserver-pkg/internal/env"
+	"github.com/agentserver/agentserver-pkg/internal/loom"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -38,18 +39,25 @@ func codexDownloadURL() string {
 }
 
 type Deps struct {
-	State             *state.Store
-	Secrets           secrets.Store
-	MS                *modelserver.Client
-	AS                *agentserver.Client
-	MSOAuth           oauth.AuthCodeConfig // PKCE (modelserver path)
-	ASOAuth           oauth.Config         // device code (agentserver path)
-	CodexConfigPath   string
-	VSCodeUserDataDir string
-	VSCodeExtDir      string
-	EmbeddedVSIXPath  string
-	CodexAbsPath      string
-	BundledCodexPath  string
+	State                             *state.Store
+	Secrets                           secrets.Store
+	MS                                *modelserver.Client
+	AS                                *agentserver.Client
+	MSOAuth                           oauth.AuthCodeConfig // PKCE (modelserver path)
+	ASOAuth                           oauth.Config         // device code (agentserver path)
+	CodexConfigPath                   string
+	CodexDesktopGlobalStatePath       string
+	CodexDesktopComputerUseConfigPath string
+	VSCodeUserDataDir                 string
+	VSCodeExtDir                      string
+	EmbeddedVSIXPath                  string
+	CodexAbsPath                      string
+	BundledCodexPath                  string
+	LoomDriverPath                    string
+	LoomConfigPath                    string
+	// CodexDesktopCodexPath is the codex CLI used by loom's internal planner.
+	// Minimal VS Code mode uses CodexAbsPath when this is empty.
+	CodexDesktopCodexPath string
 	// CodexDownloadURL overrides the default GitHub Releases URL when set.
 	CodexDownloadURL string
 
@@ -64,6 +72,11 @@ type Deps struct {
 	// The launcher uses this to gracefully close its HTTP server so the
 	// process can exit cleanly. Optional in tests.
 	Shutdown func()
+
+	// StartCompletedConsole starts the persistent post-onboarding console.
+	// The launcher wires this to launch launcher.exe after state is complete,
+	// so tray and dashboard behavior use the same path as a later double-click.
+	StartCompletedConsole func(context.Context) error
 
 	// Used by Finalize (set by launcher; see P9.3)
 	LauncherExePath       string
@@ -174,20 +187,12 @@ func (r *realOrchestrator) PollModelserverLogin(ctx context.Context) (modelserve
 			r.cleanupMS()
 			return modelserver.APIKey{}, err
 		}
-		project, err := r.d.MS.PickOrCreateProject(ctx, tok.AccessToken, "default")
-		if err != nil {
-			r.cleanupMS()
-			return modelserver.APIKey{}, fmt.Errorf("resolve modelserver project: %w", err)
-		}
-		if project.ID == "" {
-			r.cleanupMS()
-			return modelserver.APIKey{}, fmt.Errorf("resolve modelserver project: empty project id")
-		}
+		projectID, _ := modelserver.ProjectIDFromToken(tok.AccessToken)
 		if r.d.TokenRefresherExePath != "" {
 			_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 		}
 		if err := r.d.State.Update(func(s *state.State) error {
-			s.Modelserver.ProjectID = project.ID
+			s.Modelserver.ProjectID = projectID
 			s.Modelserver.APIKeySuffix = key.KeySuffix
 			s.Onboarding.AddCompleted("modelserver_login")
 			return nil
@@ -249,29 +254,55 @@ func (r *realOrchestrator) PollAgentserverLogin(ctx context.Context) (agentserve
 	}
 	r.asToken = tok
 
-	// Use the device-code access_token directly as the agentserver credential.
-	// Resolve and persist the workspace ID separately, but keep the OAuth
-	// token as the secret used by downstream loom components.
-	key := agentserver.WorkspaceAPIKey{
-		Secret:    tok.AccessToken,
-		KeySuffix: lastN(tok.AccessToken, 4),
+	if r.d.AS == nil {
+		return agentserver.WorkspaceAPIKey{}, fmt.Errorf("agentserver client required")
 	}
-	if err := r.d.Secrets.Set("agentserver_ws_api_key", key.Secret); err != nil {
-		return agentserver.WorkspaceAPIKey{}, err
-	}
-	current, err := r.d.State.Load()
+	reg, err := r.d.AS.RegisterAgent(ctx, tok.AccessToken, "星池指挥官", "custom")
 	if err != nil {
-		return agentserver.WorkspaceAPIKey{}, err
+		return agentserver.WorkspaceAPIKey{}, fmt.Errorf("register agentserver agent: %w", err)
 	}
-	workspace, err := agentserver.ResolveWorkspaceID(ctx, r.d.AS, tok.AccessToken, current.Agentserver.WorkspaceID)
-	if err != nil {
-		return agentserver.WorkspaceAPIKey{}, fmt.Errorf("resolve agentserver workspace: %w", err)
+	if reg.ProxyToken == "" {
+		return agentserver.WorkspaceAPIKey{}, fmt.Errorf("register agentserver agent: missing sandbox proxy token")
+	}
+	if reg.SandboxID == "" || reg.TunnelToken == "" || reg.ShortID == "" {
+		return agentserver.WorkspaceAPIKey{}, fmt.Errorf("register agentserver agent: incomplete registration")
+	}
+
+	workspace := agentserver.Workspace{ID: reg.WorkspaceID}
+	if ws, ok := agentserver.WorkspaceFromToken(tok.AccessToken); ok {
+		if workspace.ID == "" {
+			workspace.ID = ws.ID
+		}
+		if workspace.Name == "" {
+			workspace.Name = ws.Name
+		}
+	}
+	if identity, err := r.d.AS.Whoami(ctx, reg.ProxyToken); err == nil && identity.Workspace.ID != "" {
+		workspace = identity.Workspace
 	}
 	if workspace.ID == "" {
 		return agentserver.WorkspaceAPIKey{}, fmt.Errorf("resolve agentserver workspace: empty workspace id")
 	}
+
+	key := agentserver.WorkspaceAPIKey{
+		Secret:      reg.ProxyToken,
+		KeySuffix:   lastN(reg.ProxyToken, 4),
+		WorkspaceID: workspace.ID,
+		Name:        "星池指挥官",
+	}
+	if err := r.d.Secrets.Set("agentserver_ws_api_key", key.Secret); err != nil {
+		return agentserver.WorkspaceAPIKey{}, err
+	}
+	if reg.TunnelToken != "" {
+		if err := r.d.Secrets.Set("agentserver_tunnel_token", reg.TunnelToken); err != nil {
+			return agentserver.WorkspaceAPIKey{}, err
+		}
+	}
 	if err := r.d.State.Update(func(s *state.State) error {
+		s.Agentserver.SandboxID = reg.SandboxID
+		s.Agentserver.ShortID = reg.ShortID
 		s.Agentserver.WorkspaceID = workspace.ID
+		s.Agentserver.WorkspaceName = workspace.Name
 		s.Agentserver.WorkspaceAPIKeySuffix = key.KeySuffix
 		s.Onboarding.AddCompleted("agentserver_login")
 		return nil
@@ -403,6 +434,75 @@ func (r *realOrchestrator) configureSharedCodex(ctx context.Context) error {
 	if r.d.TokenRefresherExePath != "" {
 		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 	}
+	if err := r.configureLoomDriver(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *realOrchestrator) configureLoomDriver() error {
+	if r.d.LoomDriverPath == "" || r.d.LoomConfigPath == "" {
+		return nil
+	}
+	if _, err := os.Stat(r.d.LoomDriverPath); err != nil {
+		return fmt.Errorf("configure loom driver: missing driver-agent.exe at %s: %w", r.d.LoomDriverPath, err)
+	}
+	st, err := r.d.State.Load()
+	if err != nil {
+		return err
+	}
+	if r.d.Secrets == nil {
+		return fmt.Errorf("configure loom driver: secrets store required")
+	}
+	proxyToken, err := r.d.Secrets.Get("agentserver_ws_api_key")
+	if err != nil {
+		return fmt.Errorf("configure loom driver: agentserver registration missing proxy token: %w", err)
+	}
+	tunnelToken, err := r.d.Secrets.Get("agentserver_tunnel_token")
+	if err != nil {
+		return fmt.Errorf("configure loom driver: agentserver registration missing tunnel token: %w", err)
+	}
+	serverURL := st.Agentserver.BaseURL
+	if serverURL == "" {
+		serverURL = "https://agent.cs.ac.cn"
+	}
+	codexBin := r.d.CodexDesktopCodexPath
+	if codexBin == "" {
+		codexBin = r.d.CodexAbsPath
+	}
+	if codexBin == "" {
+		codexBin = "codex"
+	}
+	serverName := "driver-" + lastN(st.InstallID, 8)
+	if st.Agentserver.ShortID != "" {
+		serverName = "driver-" + st.Agentserver.ShortID
+	}
+	if err := loom.WriteDriverConfig(r.d.LoomConfigPath, loom.DriverConfig{
+		ServerURL:   serverURL,
+		ServerName:  serverName,
+		SandboxID:   st.Agentserver.SandboxID,
+		TunnelToken: tunnelToken,
+		ProxyToken:  proxyToken,
+		WorkspaceID: st.Agentserver.WorkspaceID,
+		ShortID:     st.Agentserver.ShortID,
+		DisplayName: "星池指挥官",
+		Description: "星池指挥官本地协作驱动。",
+		CodexBin:    codexBin,
+		CodexWorkDir: func() string {
+			if home, err := os.UserHomeDir(); err == nil {
+				return home
+			}
+			return ""
+		}(),
+	}); err != nil {
+		return fmt.Errorf("configure loom driver: %w", err)
+	}
+	if err := codex.UpdateMCPServer(r.d.CodexConfigPath, "driver", codex.MCPServer{
+		Command: r.d.LoomDriverPath,
+		Args:    []string{"serve-mcp", "--config", r.d.LoomConfigPath},
+	}); err != nil {
+		return fmt.Errorf("configure codex mcp driver: %w", err)
+	}
 	return nil
 }
 
@@ -410,10 +510,31 @@ func (r *realOrchestrator) ConfigureCodexDesktop(ctx context.Context) error {
 	if err := r.configureSharedCodex(ctx); err != nil {
 		return err
 	}
+	if err := r.configureCodexDesktopLocale(); err != nil {
+		return err
+	}
 	return r.d.State.Update(func(s *state.State) error {
 		s.Onboarding.AddCompleted("codex_desktop_configured")
 		return nil
 	})
+}
+
+func (r *realOrchestrator) configureCodexDesktopLocale() error {
+	globalPath := r.d.CodexDesktopGlobalStatePath
+	computerUsePath := r.d.CodexDesktopComputerUseConfigPath
+	if globalPath == "" || computerUsePath == "" {
+		if r.d.CodexConfigPath == "" {
+			return nil
+		}
+		codexDir := filepath.Dir(r.d.CodexConfigPath)
+		if globalPath == "" {
+			globalPath = codexdesktop.LocaleGlobalStatePath(codexDir)
+		}
+		if computerUsePath == "" {
+			computerUsePath = codexdesktop.LocaleComputerUsePath(codexDir)
+		}
+	}
+	return codexdesktop.ConfigureLocale(globalPath, computerUsePath, codexdesktop.DefaultLocale)
 }
 
 func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
@@ -552,11 +673,22 @@ func (r *realOrchestrator) Finalize(ctx context.Context) error {
 			return err
 		}
 	}
-	return r.d.State.Update(func(s *state.State) error {
+	if err := r.d.State.Update(func(s *state.State) error {
 		s.Onboarding.AddCompleted("shortcuts_created")
 		s.Onboarding.Status = state.StatusComplete
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	if r.d.StartCompletedConsole != nil {
+		if err := r.d.StartCompletedConsole(ctx); err != nil {
+			return err
+		}
+	}
+	if r.d.Shutdown != nil {
+		r.d.Shutdown()
+	}
+	return nil
 }
 func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 	s, err := r.d.State.Load()
@@ -565,6 +697,9 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 	}
 	mode := state.NormalizeFrontendMode(s.FrontendMode)
 	if mode == state.FrontendModeCodexDesktop {
+		if err := r.configureCodexDesktopLocale(); err != nil {
+			return err
+		}
 		open := r.d.CodexDesktopOpen
 		if open == nil {
 			open = func(u string) error { return codexdesktop.Launch(ctx, "", nil) }

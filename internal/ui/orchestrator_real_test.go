@@ -331,6 +331,40 @@ func TestFinalize_NoDepsJustMarksComplete(t *testing.T) {
 	}
 }
 
+func TestFinalizeStartsCompletedConsoleAndShutsDown(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	var started bool
+	var shutdown bool
+	r := &realOrchestrator{d: Deps{
+		State: store,
+		StartCompletedConsole: func(context.Context) error {
+			started = true
+			s, err := store.Load()
+			if err != nil {
+				return err
+			}
+			if s.Onboarding.Status != state.StatusComplete {
+				t.Fatalf("completed console started before state was complete: %q", s.Onboarding.Status)
+			}
+			return nil
+		},
+		Shutdown: func() {
+			shutdown = true
+		},
+	}}
+
+	if err := r.Finalize(context.Background()); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if !started {
+		t.Fatal("completed console was not started")
+	}
+	if !shutdown {
+		t.Fatal("onboarding server was not asked to shut down")
+	}
+}
+
 // Used by the SSE handler indirectly; keep imports referenced.
 var _ = httptest.NewServer
 var _ = http.StatusOK
@@ -406,7 +440,8 @@ func TestLoginModelserver_StartsListenerOpensBrowser(t *testing.T) {
 func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 	port := freeUIPort(t)
 
-	// Fake modelserver: serves Hydra /oauth2/token and project resolution.
+	// Fake modelserver: serves Hydra /oauth2/token only. Project lookup is
+	// postponed until modelserver exposes OAuth-token project context.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -419,13 +454,7 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 		w.Write([]byte(`{"access_token":"fake-at","token_type":"Bearer","refresh_token":"fake-rt","expires_in":3600}`))
 	})
 	mux.HandleFunc("/api/v1/projects", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("/api/v1/projects got method %s", r.Method)
-		}
-		if got := r.Header.Get("Authorization"); got != "Bearer fake-at" {
-			t.Errorf("/api/v1/projects auth %q", got)
-		}
-		w.Write([]byte(`{"data":[{"id":"proj-1","name":"default"}]}`))
+		t.Fatalf("/api/v1/projects should not be called during modelserver login")
 	})
 	fake := httptest.NewServer(mux)
 	defer fake.Close()
@@ -486,8 +515,8 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 		t.Errorf("access token expiry not stored")
 	}
 	s, _ := store.Load()
-	if s.Modelserver.ProjectID != "proj-1" {
-		t.Errorf("project id = %q, want proj-1", s.Modelserver.ProjectID)
+	if s.Modelserver.ProjectID != "" {
+		t.Errorf("project id = %q, want empty while project lookup is postponed", s.Modelserver.ProjectID)
 	}
 	if s.Modelserver.APIKeySuffix != "e-at" {
 		t.Errorf("key suffix = %q, want last 4 of 'fake-at'", s.Modelserver.APIKeySuffix)
@@ -497,14 +526,16 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 	}
 }
 
-func TestPollModelserverLoginRequiresProjectIDBeforeCompletion(t *testing.T) {
+func TestPollModelserverLoginCompletesWhenProjectLookupUnavailable(t *testing.T) {
 	port := freeUIPort(t)
+	projectLookupCalled := false
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"access_token":"fake-at","refresh_token":"fake-rt","token_type":"Bearer","expires_in":3600}`))
 	})
 	mux.HandleFunc("/api/v1/projects", func(w http.ResponseWriter, r *http.Request) {
+		projectLookupCalled = true
 		http.Error(w, "forbidden", http.StatusForbidden)
 	})
 	fake := httptest.NewServer(mux)
@@ -530,13 +561,75 @@ func TestPollModelserverLoginRequiresProjectIDBeforeCompletion(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/oauth/modelserver/callback?code=x&state=%s", port, r.msSession.State))
 	}()
-	if _, err := r.PollModelserverLogin(context.Background()); err == nil {
-		t.Fatal("expected project resolution error")
+	if _, err := r.PollModelserverLogin(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 	s, _ := store.Load()
-	if s.Onboarding.HasCompleted("modelserver_login") {
-		t.Fatal("modelserver_login should not complete without ProjectID")
+	if s.Modelserver.ProjectID != "" {
+		t.Fatalf("project id=%q, want empty while project lookup is postponed", s.Modelserver.ProjectID)
 	}
+	if !s.Onboarding.HasCompleted("modelserver_login") {
+		t.Fatal("modelserver_login should complete while project lookup is postponed")
+	}
+	if projectLookupCalled {
+		t.Fatal("modelserver login should not call /api/v1/projects while project lookup is postponed")
+	}
+}
+
+func TestPollModelserverLoginUsesProjectIDClaimWhenAdminProjectsRejectsHydraToken(t *testing.T) {
+	port := freeUIPort(t)
+	accessToken := jwtWithMSProject(t, "proj-claim")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":%q,"refresh_token":"fake-rt","token_type":"Bearer","expires_in":3600}`, accessToken)
+	})
+	mux.HandleFunc("/api/v1/projects", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("/api/v1/projects should not be called when token has project_id")
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	r := &realOrchestrator{d: Deps{
+		State:   store,
+		Secrets: secrets.New(filepath.Join(dir, "secrets.json")),
+		MS:      modelserver.New(fake.URL),
+		MSOAuth: oauth.AuthCodeConfig{
+			Endpoint: fake.URL, AuthPath: "/oauth2/auth", TokenPath: "/oauth2/token",
+			ClientID: "client-x", CallbackPath: "/oauth/modelserver/callback",
+			Ports: []int{port}, LoginTimeout: 3 * time.Second,
+		},
+		OpenBrowser: func(string) {},
+	}}
+	if _, err := r.LoginModelserver(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/oauth/modelserver/callback?code=x&state=%s", port, r.msSession.State))
+	}()
+	if _, err := r.PollModelserverLogin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.Load()
+	if s.Modelserver.ProjectID != "proj-claim" {
+		t.Fatalf("project id=%q, want proj-claim", s.Modelserver.ProjectID)
+	}
+	if !s.Onboarding.HasCompleted("modelserver_login") {
+		t.Fatal("modelserver_login should complete when token has project_id")
+	}
+}
+
+func jwtWithMSProject(t *testing.T, projectID string) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload, err := json.Marshal(map[string]string{"project_id": projectID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }
 
 func jwtWithASWorkspace(t *testing.T, workspaceID string) string {
@@ -549,12 +642,28 @@ func jwtWithASWorkspace(t *testing.T, workspaceID string) string {
 	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }
 
-func TestPollAgentserverLoginStoresWorkspaceID(t *testing.T) {
-	accessToken := jwtWithASWorkspace(t, "ws-claim")
+func TestPollAgentserverLoginRegistersAgentAndStoresWorkspaceName(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"access_token":"` + accessToken + `","token_type":"Bearer","expires_in":3600}`))
+		w.Write([]byte(`{"access_token":"oauth-token","token_type":"Bearer","expires_in":3600}`))
+	})
+	mux.HandleFunc("/api/agent/register", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer oauth-token" {
+			t.Fatalf("register Authorization=%q", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"sandbox_id":"sb-1","tunnel_token":"tunnel-token","proxy_token":"sandbox-proxy-token","workspace_id":"ws-claim","short_id":"abc123"}`))
+	})
+	mux.HandleFunc("/api/agent/whoami", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sandbox-proxy-token" {
+			t.Fatalf("whoami Authorization=%q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"workspace_id":"ws-claim","workspace_name":"Readable workspace"}`))
+	})
+	mux.HandleFunc("/api/workspaces", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("/api/workspaces should not be called during agentserver OAuth login")
 	})
 	fake := httptest.NewServer(mux)
 	defer fake.Close()
@@ -576,15 +685,76 @@ func TestPollAgentserverLoginStoresWorkspaceID(t *testing.T) {
 	if key.Secret == "" {
 		t.Fatal("secret missing")
 	}
-	if got, _ := sec.Get("agentserver_ws_api_key"); got != accessToken {
-		t.Fatalf("agentserver_ws_api_key=%q, want access token", got)
+	if key.Secret != "sandbox-proxy-token" {
+		t.Fatalf("secret=%q, want sandbox proxy token", key.Secret)
+	}
+	if got, _ := sec.Get("agentserver_ws_api_key"); got != "sandbox-proxy-token" {
+		t.Fatalf("agentserver_ws_api_key=%q, want sandbox proxy token", got)
+	}
+	if got, _ := sec.Get("agentserver_tunnel_token"); got != "tunnel-token" {
+		t.Fatalf("agentserver_tunnel_token=%q, want tunnel token", got)
 	}
 	s, _ := store.Load()
+	if s.Agentserver.SandboxID != "sb-1" {
+		t.Fatalf("SandboxID=%q, want sb-1", s.Agentserver.SandboxID)
+	}
+	if s.Agentserver.ShortID != "abc123" {
+		t.Fatalf("ShortID=%q, want abc123", s.Agentserver.ShortID)
+	}
 	if s.Agentserver.WorkspaceID != "ws-claim" {
 		t.Fatalf("WorkspaceID=%q, want ws-claim", s.Agentserver.WorkspaceID)
 	}
+	if s.Agentserver.WorkspaceName != "Readable workspace" {
+		t.Fatalf("WorkspaceName=%q, want Readable workspace", s.Agentserver.WorkspaceName)
+	}
 	if !s.Onboarding.HasCompleted("agentserver_login") {
 		t.Fatal("agentserver_login not completed")
+	}
+}
+
+func TestPollAgentserverLoginUsesRegisterWorkspaceWhenWhoamiNameUnavailable(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"oauth-token","token_type":"Bearer","expires_in":3600}`))
+	})
+	mux.HandleFunc("/api/agent/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"sandbox_id":"sb-1","tunnel_token":"tunnel-token","proxy_token":"sandbox-proxy-token","workspace_id":"ws-register","short_id":"abc123"}`))
+	})
+	mux.HandleFunc("/api/agent/whoami", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sandbox-proxy-token" {
+			t.Fatalf("Authorization=%q", r.Header.Get("Authorization"))
+		}
+		http.Error(w, "whoami unavailable", http.StatusBadGateway)
+	})
+	mux.HandleFunc("/api/workspaces", func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("/api/workspaces should not be called during agentserver OAuth login")
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	r := &realOrchestrator{d: Deps{
+		State:   store,
+		Secrets: sec,
+		AS:      agentserver.New(fake.URL),
+		ASOAuth: oauth.Config{Endpoint: fake.URL, TokenPath: "/api/oauth2/token", ClientID: "client-x"},
+	}}
+	r.asChallenge = oauth.DeviceCodeChallenge{DeviceCode: "dev", ExpiresIn: 30, Interval: 1}
+
+	key, err := r.PollAgentserverLogin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Secret != "sandbox-proxy-token" {
+		t.Fatalf("secret=%q", key.Secret)
+	}
+	s, _ := store.Load()
+	if s.Agentserver.WorkspaceID != "ws-register" {
+		t.Fatalf("WorkspaceID=%q, want ws-register", s.Agentserver.WorkspaceID)
 	}
 }
 
@@ -594,8 +764,12 @@ func TestPollAgentserverLoginRequiresWorkspaceID(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"access_token":"opaque-token","token_type":"Bearer","expires_in":3600}`))
 	})
-	mux.HandleFunc("/api/workspaces", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+	mux.HandleFunc("/api/agent/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"sandbox_id":"sb-1","tunnel_token":"tunnel-token","proxy_token":"sandbox-proxy-token","short_id":"abc123"}`))
+	})
+	mux.HandleFunc("/api/agent/whoami", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"user_id":"user-1"}`))
 	})
 	fake := httptest.NewServer(mux)
 	defer fake.Close()
@@ -615,6 +789,41 @@ func TestPollAgentserverLoginRequiresWorkspaceID(t *testing.T) {
 	s, _ := store.Load()
 	if s.Onboarding.HasCompleted("agentserver_login") {
 		t.Fatal("agentserver_login should not complete without WorkspaceID")
+	}
+}
+
+func TestPollAgentserverLoginRequiresCompleteAgentRegistration(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"opaque-token","token_type":"Bearer","expires_in":3600}`))
+	})
+	mux.HandleFunc("/api/agent/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"proxy_token":"sandbox-proxy-token","workspace_id":"ws-1"}`))
+	})
+	mux.HandleFunc("/api/agent/whoami", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"workspace_id":"ws-1","workspace_name":"Readable workspace"}`))
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	r := &realOrchestrator{d: Deps{
+		State:   store,
+		Secrets: secrets.New(filepath.Join(dir, "secrets.json")),
+		AS:      agentserver.New(fake.URL),
+		ASOAuth: oauth.Config{Endpoint: fake.URL, TokenPath: "/api/oauth2/token", ClientID: "client-x"},
+	}}
+	r.asChallenge = oauth.DeviceCodeChallenge{DeviceCode: "dev", ExpiresIn: 30, Interval: 1}
+
+	if _, err := r.PollAgentserverLogin(context.Background()); err == nil {
+		t.Fatal("expected incomplete registration error")
+	}
+	s, _ := store.Load()
+	if s.Onboarding.HasCompleted("agentserver_login") {
+		t.Fatal("agentserver_login should not complete without complete registration")
 	}
 }
 
@@ -894,6 +1103,152 @@ func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
 	}
 }
 
+func TestConfigureCodexDesktopWritesUILocale(t *testing.T) {
+	dir := t.TempDir()
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	if err := sec.Set("modelserver_api_key", "desktop-token"); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	globalPath := filepath.Join(dir, ".codex", ".codex-global-state.json")
+	computerUsePath := filepath.Join(dir, ".codex", "computer-use", "config.json")
+	r := &realOrchestrator{d: Deps{
+		State:                             store,
+		Secrets:                           sec,
+		CodexConfigPath:                   filepath.Join(dir, ".codex", "config.toml"),
+		CodexDesktopGlobalStatePath:       globalPath,
+		CodexDesktopComputerUseConfigPath: computerUsePath,
+	}}
+
+	if err := r.ConfigureFrontend(context.Background()); err != nil {
+		t.Fatalf("ConfigureFrontend: %v", err)
+	}
+
+	assertJSONField(t, globalPath, "localeOverride", "zh-CN")
+	assertJSONField(t, computerUsePath, "locale", "zh-CN")
+}
+
+func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "")
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	for key, value := range map[string]string{
+		"modelserver_api_key":      "desktop-token",
+		"agentserver_ws_api_key":   "sandbox-proxy-token",
+		"agentserver_tunnel_token": "tunnel-token",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		s.Agentserver.SandboxID = "sb-1"
+		s.Agentserver.WorkspaceID = "ws-1"
+		s.Agentserver.WorkspaceName = "Readable workspace"
+		s.Agentserver.ShortID = "abc123"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driverExe := filepath.Join(dir, "install", "driver-agent.exe")
+	if err := os.MkdirAll(filepath.Dir(driverExe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(driverExe, []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	loomConfig := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
+	r := &realOrchestrator{d: Deps{
+		State:                 store,
+		Secrets:               sec,
+		CodexConfigPath:       filepath.Join(dir, ".codex", "config.toml"),
+		LoomDriverPath:        driverExe,
+		LoomConfigPath:        loomConfig,
+		CodexDesktopCodexPath: filepath.Join(dir, "codex.exe"),
+	}}
+
+	if err := r.ConfigureFrontend(context.Background()); err != nil {
+		t.Fatalf("ConfigureFrontend: %v", err)
+	}
+
+	loomBytes, err := os.ReadFile(loomConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loomText := string(loomBytes)
+	for _, want := range []string{
+		`url: "https://agent.cs.ac.cn"`,
+		`sandbox_id: "sb-1"`,
+		`tunnel_token: "tunnel-token"`,
+		`proxy_token: "sandbox-proxy-token"`,
+		`workspace_id: "ws-1"`,
+		`short_id: "abc123"`,
+		`kind: "codex"`,
+		`bin: "` + filepath.ToSlash(filepath.Join(dir, "codex.exe")) + `"`,
+	} {
+		if !strings.Contains(loomText, want) {
+			t.Fatalf("driver.yaml missing %q:\n%s", want, loomText)
+		}
+	}
+
+	codexBytes, err := os.ReadFile(filepath.Join(dir, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexText := string(codexBytes)
+	for _, want := range []string{
+		`[mcp_servers.driver]`,
+		`command = "` + strings.ReplaceAll(driverExe, `\`, `\\`) + `"`,
+		`args = ["serve-mcp", "--config", "` + strings.ReplaceAll(loomConfig, `\`, `\\`) + `"]`,
+	} {
+		if !strings.Contains(codexText, want) {
+			t.Fatalf("config.toml missing %q:\n%s", want, codexText)
+		}
+	}
+}
+
+func TestConfigureCodexDesktopRequiresAgentserverRegistrationForLoom(t *testing.T) {
+	dir := t.TempDir()
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	if err := sec.Set("modelserver_api_key", "desktop-token"); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driverExe := filepath.Join(dir, "driver-agent.exe")
+	if err := os.WriteFile(driverExe, []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := &realOrchestrator{d: Deps{
+		State:           store,
+		Secrets:         sec,
+		CodexConfigPath: filepath.Join(dir, ".codex", "config.toml"),
+		LoomDriverPath:  driverExe,
+		LoomConfigPath:  filepath.Join(dir, ".config", "multi-agent", "driver.yaml"),
+	}}
+
+	err := r.ConfigureFrontend(context.Background())
+	if err == nil {
+		t.Fatal("expected missing agentserver registration error")
+	}
+	if !strings.Contains(err.Error(), "agentserver registration") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestLaunchAndShutdownCodexDesktopUsesDeepLink(t *testing.T) {
 	dir := t.TempDir()
 	store := state.NewStore(filepath.Join(dir, "state.json"))
@@ -916,6 +1271,48 @@ func TestLaunchAndShutdownCodexDesktopUsesDeepLink(t *testing.T) {
 	}
 	if opened != "codex://threads/new" {
 		t.Fatalf("opened=%q", opened)
+	}
+}
+
+func TestLaunchAndShutdownCodexDesktopWritesUILocaleBeforeOpen(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	globalPath := filepath.Join(dir, ".codex", ".codex-global-state.json")
+	computerUsePath := filepath.Join(dir, ".codex", "computer-use", "config.json")
+	r := &realOrchestrator{d: Deps{
+		State:                             store,
+		CodexDesktopGlobalStatePath:       globalPath,
+		CodexDesktopComputerUseConfigPath: computerUsePath,
+		CodexDesktopOpen: func(url string) error {
+			assertJSONField(t, globalPath, "localeOverride", "zh-CN")
+			assertJSONField(t, computerUsePath, "locale", "zh-CN")
+			return nil
+		},
+	}}
+
+	if err := r.LaunchAndShutdown(context.Background()); err != nil {
+		t.Fatalf("LaunchAndShutdown: %v", err)
+	}
+}
+
+func assertJSONField(t *testing.T, path, key, want string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		t.Fatalf("parse %s: %v\n%s", path, err, b)
+	}
+	if got := root[key]; got != want {
+		t.Fatalf("%s[%q]=%v, want %q", path, key, got, want)
 	}
 }
 

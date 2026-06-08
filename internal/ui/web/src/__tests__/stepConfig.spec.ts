@@ -12,6 +12,16 @@ describe('stepConfig', () => {
     ]);
   });
 
+  it('uses user-facing labels for Codex Desktop setup', () => {
+    expect(stepsForMode(undefined).map(s => s.label)).toEqual([
+      '连接大模型',
+      '连接星池工作区',
+      '安装 Codex Desktop 智能助手',
+      '准备 Codex Desktop 智能助手',
+      '完成',
+    ]);
+  });
+
   it('uses minimal VS Code steps when selected', () => {
     expect(stepsForMode('minimal_vscode').map(s => s.id)).toEqual([
       'modelserver_login',
@@ -19,6 +29,16 @@ describe('stepConfig', () => {
       'vscode_install',
       'vscode_configure',
       'finalize',
+    ]);
+  });
+
+  it('uses user-facing labels for minimal workbench setup', () => {
+    expect(stepsForMode('minimal_vscode').map(s => s.label)).toEqual([
+      '连接大模型',
+      '连接星池工作区',
+      '安装极简工作台',
+      '准备极简工作台',
+      '完成',
     ]);
   });
 

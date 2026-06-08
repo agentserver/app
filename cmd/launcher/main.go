@@ -29,6 +29,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/process"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
@@ -191,6 +192,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		State:                 in.State,
 		Secrets:               sec,
 		MS:                    modelserver.New("https://codeapi.cs.ac.cn"),
+		MSProxy:               modelserver.New("https://code.ai.cs.ac.cn"),
 		AS:                    agentserver.New("https://agent.cs.ac.cn"),
 		ModelserverWebBaseURL: "https://code.cs.ac.cn",
 		OpenURL:               openBrowser,
@@ -208,7 +210,13 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 			go srv.Shutdown(context.Background())
 		},
 	})
-	srv.Handler = ui.NewServerWithConsole(newCompletedStateOrchestrator(in.State), ctrl)
+	srv.Handler = ui.NewServerWithConsole(newCompletedConsoleOrchestrator(completedOrchestratorInput{
+		State:                 in.State,
+		Secrets:               sec,
+		MSOAuth:               modelserver.OAuthConfig(),
+		OpenBrowser:           func(url string) { _ = openBrowser(url) },
+		TokenRefresherExePath: joinExe(in.InstallDir, "token-refresher.exe"),
+	}), ctrl)
 
 	port := ln.Addr().(*net.TCPAddr).Port
 	info := console.InstanceInfo{Port: port, PID: os.Getpid()}
@@ -358,6 +366,25 @@ type completedStateOrchestrator struct {
 	store *state.Store
 }
 
+type completedOrchestratorInput struct {
+	State                 *state.Store
+	Secrets               secrets.Store
+	MSOAuth               oauth.AuthCodeConfig
+	OpenBrowser           func(string)
+	TokenRefresherExePath string
+}
+
+func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestrator {
+	return ui.NewRealOrchestrator(ui.Deps{
+		State:                 in.State,
+		Secrets:               in.Secrets,
+		MS:                    modelserver.New("https://codeapi.cs.ac.cn"),
+		MSOAuth:               in.MSOAuth,
+		OpenBrowser:           in.OpenBrowser,
+		TokenRefresherExePath: in.TokenRefresherExePath,
+	})
+}
+
 func newCompletedStateOrchestrator(store *state.Store) ui.Orchestrator {
 	return completedStateOrchestrator{
 		Orchestrator: ui.NewNoopOrchestrator(),
@@ -462,21 +489,28 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		// which causes the modelserver client's JSON decoder to fail with
 		// "invalid character '<' looking for beginning of value". This is the
 		// SAME host PKCE uses (msOAuth.Endpoint above).
-		MS:                    modelserver.New("https://codeapi.cs.ac.cn"),
-		AS:                    agentserver.New("https://agent.cs.ac.cn"),
-		MSOAuth:               msOAuth,
-		ASOAuth:               asOAuth,
-		OpenBrowser:           func(url string) { _ = browser.Open(url) },
-		CodexConfigPath:       p.CodexConfigFile,
-		VSCodeUserDataDir:     p.VSCodeUserDataDir,
-		VSCodeExtDir:          p.VSCodeExtDir,
-		EmbeddedVSIXPath:      joinExe(installDir, "agentserver-vscode.vsix"),
-		CodexAbsPath:          p.CodexExePath,
-		BundledCodexPath:      joinExe(installDir, "codex.exe"),
-		LauncherExePath:       joinExe(installDir, "launcher.exe"),
-		OpenFolderExePath:     joinExe(installDir, "open-folder.exe"),
-		TokenRefresherExePath: joinExe(installDir, "token-refresher.exe"),
-		IconPath:              preferredIconPath(installDir),
+		MS:                                modelserver.New("https://codeapi.cs.ac.cn"),
+		AS:                                agentserver.New("https://agent.cs.ac.cn"),
+		MSOAuth:                           msOAuth,
+		ASOAuth:                           asOAuth,
+		OpenBrowser:                       func(url string) { _ = browser.Open(url) },
+		CodexConfigPath:                   p.CodexConfigFile,
+		CodexDesktopGlobalStatePath:       p.CodexDesktopGlobalStateFile,
+		CodexDesktopComputerUseConfigPath: p.CodexDesktopComputerUseConfigFile,
+		VSCodeUserDataDir:                 p.VSCodeUserDataDir,
+		VSCodeExtDir:                      p.VSCodeExtDir,
+		EmbeddedVSIXPath:                  joinExe(installDir, "agentserver-vscode.vsix"),
+		CodexAbsPath:                      p.CodexExePath,
+		BundledCodexPath:                  joinExe(installDir, "codex.exe"),
+		LoomDriverPath:                    joinExe(installDir, "driver-agent.exe"),
+		LoomConfigPath:                    filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml"),
+		LauncherExePath:                   joinExe(installDir, "launcher.exe"),
+		OpenFolderExePath:                 joinExe(installDir, "open-folder.exe"),
+		TokenRefresherExePath:             joinExe(installDir, "token-refresher.exe"),
+		IconPath:                          preferredIconPath(installDir),
+		StartCompletedConsole: func(ctx context.Context) error {
+			return startCompletedConsole(ctx, joinExe(installDir, "launcher.exe"))
+		},
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -520,6 +554,20 @@ func launchCompletedInstall(ctx context.Context, codeExe string, p paths.Paths, 
 	return execVSCode(codeExe, p, "", sec, tokenRefresherExe)
 }
 
+func startCompletedConsole(ctx context.Context, launcherExe string) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	cmd := exec.Command(launcherExe)
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	process.HideWindow(cmd)
+	return cmd.Start()
+}
+
 func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string, codexOpen codexdesktop.Opener) error {
 	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeMinimalVSCode {
 		if s.VSCode.Path == "" {
@@ -532,6 +580,13 @@ func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths,
 
 func launchCompletedCodexDesktop(ctx context.Context, p paths.Paths, sec secrets.Store, tokenRefresherExe string, opener codexdesktop.Opener) error {
 	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+		return err
+	}
+	if err := codexdesktop.ConfigureLocale(
+		p.CodexDesktopGlobalStateFile,
+		p.CodexDesktopComputerUseConfigFile,
+		codexdesktop.DefaultLocale,
+	); err != nil {
 		return err
 	}
 	if tokenRefresherExe != "" {

@@ -76,6 +76,25 @@ func TestOpenFolderCodexDesktopUsesFolderDeepLink(t *testing.T) {
 	}
 }
 
+func TestOpenFolderCodexDesktopWritesUILocaleBeforeLaunch(t *testing.T) {
+	dir := t.TempDir()
+	globalPath := filepath.Join(dir, ".codex", ".codex-global-state.json")
+	computerUsePath := filepath.Join(dir, ".codex", "computer-use", "config.json")
+	p := paths.Paths{
+		CodexConfigFile:                   filepath.Join(dir, ".codex", "config.toml"),
+		CodexDesktopGlobalStateFile:       globalPath,
+		CodexDesktopComputerUseConfigFile: computerUsePath,
+	}
+	err := openFolderCodexDesktop(context.Background(), p, `C:\Project Folder`, nil, "", func(url string) error {
+		assertJSONField(t, globalPath, "localeOverride", "zh-CN")
+		assertJSONField(t, computerUsePath, "locale", "zh-CN")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("openFolderCodexDesktop: %v", err)
+	}
+}
+
 func TestLoadOpenFolderStateSyncsInstallModeFile(t *testing.T) {
 	dir := t.TempDir()
 	p := paths.Paths{StateFile: filepath.Join(dir, "state.json")}
@@ -148,6 +167,21 @@ func TestEnsureConsoleDoesNotStartWhenHealthy(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("start calls=%d", calls)
+	}
+}
+
+func assertJSONField(t *testing.T, path, key, want string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(b, &root); err != nil {
+		t.Fatalf("parse %s: %v\n%s", path, err, b)
+	}
+	if got := root[key]; got != want {
+		t.Fatalf("%s[%q]=%v, want %q", path, key, got, want)
 	}
 }
 

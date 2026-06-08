@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"time"
 )
+
+var ErrInvalidGrant = errors.New("oauth: invalid_grant")
 
 // AuthCodeConfig is OAuth 2.0 authorization_code with PKCE (RFC 7636).
 // Used by the modelserver login path. Separate from Config (device code)
@@ -122,6 +125,9 @@ func FinishPKCE(ctx context.Context, cfg AuthCodeConfig, sess *PKCESession, code
 	if resp.StatusCode != http.StatusOK {
 		var te tokenErr
 		if err := json.NewDecoder(resp.Body).Decode(&te); err == nil && te.Code != "" {
+			if te.Code == "invalid_grant" {
+				return Token{}, fmt.Errorf("token exchange: %w: %s", ErrInvalidGrant, te.Desc)
+			}
 			return Token{}, fmt.Errorf("token exchange: %s: %s", te.Code, te.Desc)
 		}
 		return Token{}, fmt.Errorf("token exchange: status %d", resp.StatusCode)
@@ -158,6 +164,9 @@ func RefreshToken(ctx context.Context, cfg AuthCodeConfig, refreshToken string) 
 	if resp.StatusCode != http.StatusOK {
 		var te tokenErr
 		if err := json.NewDecoder(resp.Body).Decode(&te); err == nil && te.Code != "" {
+			if te.Code == "invalid_grant" {
+				return Token{}, fmt.Errorf("token refresh: %w: %s", ErrInvalidGrant, te.Desc)
+			}
 			return Token{}, fmt.Errorf("token refresh: %s: %s", te.Code, te.Desc)
 		}
 		return Token{}, fmt.Errorf("token refresh: status %d", resp.StatusCode)

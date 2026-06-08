@@ -57,6 +57,23 @@ func (c *Client) GetOrCreateDefaultWorkspace(ctx context.Context, token, name st
 	return c.CreateWorkspace(ctx, token, name)
 }
 
+func (c *Client) Whoami(ctx context.Context, token string) (Identity, error) {
+	var raw map[string]any
+	if err := c.do(ctx, http.MethodGet, "/api/agent/whoami", token, nil, &raw); err != nil {
+		return Identity{}, err
+	}
+	return identityFromWhoami(raw), nil
+}
+
+func (c *Client) RegisterAgent(ctx context.Context, oauthToken, name, typ string) (AgentRegistration, error) {
+	var out AgentRegistration
+	if err := c.do(ctx, http.MethodPost, "/api/agent/register", oauthToken,
+		map[string]string{"name": name, "type": typ}, &out); err != nil {
+		return AgentRegistration{}, err
+	}
+	return out, nil
+}
+
 func (c *Client) CreateWorkspaceAPIKey(ctx context.Context, token, workspaceID, name string) (WorkspaceAPIKey, error) {
 	var wrap struct {
 		Data WorkspaceAPIKey `json:"data"`
@@ -102,4 +119,50 @@ func (c *Client) do(ctx context.Context, method, path, token string,
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func identityFromWhoami(raw map[string]any) Identity {
+	userID := stringFromAny(raw["user_id"])
+	if userID == "" {
+		userID = stringFromAny(raw["sub"])
+	}
+	ws := workspaceFromWhoami(raw, 0)
+	return Identity{UserID: userID, Workspace: ws}
+}
+
+func workspaceFromWhoami(raw map[string]any, depth int) Workspace {
+	if raw == nil || depth > 3 {
+		return Workspace{}
+	}
+	ws := Workspace{
+		ID:   firstString(raw["workspace_id"], raw["workspaceID"], raw["id"]),
+		Name: firstString(raw["workspace_name"], raw["workspaceName"], raw["name"]),
+	}
+	if ws.ID != "" {
+		return ws
+	}
+	for _, key := range []string{"workspace", "current_workspace", "currentWorkspace", "data"} {
+		if nested, ok := raw[key].(map[string]any); ok {
+			if got := workspaceFromWhoami(nested, depth+1); got.ID != "" {
+				return got
+			}
+		}
+	}
+	return Workspace{}
+}
+
+func firstString(values ...any) string {
+	for _, v := range values {
+		if s := stringFromAny(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func stringFromAny(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }

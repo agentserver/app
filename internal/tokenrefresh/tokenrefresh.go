@@ -10,6 +10,7 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
+	"github.com/agentserver/agentserver-pkg/internal/process"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 )
 
@@ -17,6 +18,9 @@ const (
 	AccessTokenKey          = "modelserver_api_key"
 	RefreshTokenKey         = "modelserver_refresh_token"
 	AccessTokenExpiresAtKey = "modelserver_access_token_expires_at"
+	ReauthRequiredKey       = "modelserver_reauth_required"
+	RefreshErrorKey         = "modelserver_refresh_error"
+	RefreshErrorAtKey       = "modelserver_refresh_error_at"
 
 	OpenAIAPIKeyEnv = "OPENAI_API_KEY"
 )
@@ -69,10 +73,14 @@ func RefreshOnce(ctx context.Context, opts Options) (time.Time, error) {
 	}
 	rt, err := opts.Secrets.Get(RefreshTokenKey)
 	if err != nil {
+		_ = MarkReauthRequired(opts.Secrets, ErrNoRefreshToken, opts.Now())
 		return time.Time{}, ErrNoRefreshToken
 	}
 	tok, err := opts.Refresh(ctx, opts.OAuth, rt)
 	if err != nil {
+		if ReauthRequired(err) {
+			_ = MarkReauthRequired(opts.Secrets, err, opts.Now())
+		}
 		return time.Time{}, err
 	}
 	expiresAt, err := StoreToken(opts.Secrets, tok, opts.Now(), rt)
@@ -86,6 +94,41 @@ func RefreshOnce(ctx context.Context, opts Options) (time.Time, error) {
 		return time.Time{}, err
 	}
 	return expiresAt, nil
+}
+
+func ReauthRequired(err error) bool {
+	return errors.Is(err, ErrNoRefreshToken) || errors.Is(err, oauth.ErrInvalidGrant)
+}
+
+func MarkReauthRequired(sec secrets.Store, err error, now time.Time) error {
+	if sec == nil {
+		return ErrNoSecrets
+	}
+	if err := sec.Set(ReauthRequiredKey, "true"); err != nil {
+		return err
+	}
+	if err != nil {
+		if setErr := sec.Set(RefreshErrorKey, err.Error()); setErr != nil {
+			return setErr
+		}
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return sec.Set(RefreshErrorAtKey, now.UTC().Format(time.RFC3339))
+}
+
+func ClearReauthRequired(sec secrets.Store) error {
+	if sec == nil {
+		return ErrNoSecrets
+	}
+	var errs []error
+	for _, key := range []string{ReauthRequiredKey, RefreshErrorKey, RefreshErrorAtKey} {
+		if err := sec.Delete(key); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func StoreToken(sec secrets.Store, tok oauth.Token, now time.Time, previousRefreshToken string) (time.Time, error) {
@@ -112,6 +155,9 @@ func StoreToken(sec secrets.Store, tok oauth.Token, now time.Time, previousRefre
 		}
 	}
 	if err := sec.Set(AccessTokenExpiresAtKey, expiresAt.Format(time.RFC3339)); err != nil {
+		return time.Time{}, err
+	}
+	if err := ClearReauthRequired(sec); err != nil {
 		return time.Time{}, err
 	}
 	return expiresAt, nil
@@ -158,6 +204,7 @@ func StartDaemon(exePath string) error {
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	process.HideWindow(cmd)
 	return cmd.Start()
 }
 

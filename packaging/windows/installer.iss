@@ -45,6 +45,7 @@ Source: "..\..\dist\windows\agentctl.exe";          DestDir: "{app}"; Flags: ign
 Source: "..\..\dist\windows\open-folder.exe";       DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\uninstall.exe";         DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\token-refresher.exe";   DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist\windows\driver-agent.exe";      DestDir: "{app}"; Flags: ignoreversion
 ; Bundled offline payloads
 Source: "..\..\dist\cache\rust-v0.136.0\codex-x86_64-pc-windows-msvc.exe"; \
     DestDir: "{app}"; DestName: "codex.exe"; Flags: ignoreversion
@@ -221,7 +222,7 @@ begin
   ScriptBody :=
     '$ErrorActionPreference = ''Stop''' + #13#10 +
     '$installDir = ' + PowerShellQuote(ExpandConstant('{app}')) + #13#10 +
-    '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''codex.exe'')' + #13#10 +
+    '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''codex.exe'')' + #13#10 +
     '$filter = {' + #13#10 +
     '  $_.ExecutablePath -and ($names -contains $_.Name) -and $_.ExecutablePath -like ($installDir + ''*'')' + #13#10 +
     '}' + #13#10 +

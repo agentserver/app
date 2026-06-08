@@ -117,4 +117,14 @@ describe('api', () => {
     await api.openConsoleSubscription();
     expect(fetchSpy).toHaveBeenCalledWith('/api/console/open-subscription', expect.objectContaining({ method: 'POST' }));
   });
+
+  it('logoutConsoleModelserver POSTs to console logout endpoint', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ state: 'logged_out' }),
+    } as Response);
+    await api.logoutConsoleModelserver();
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/logout-modelserver', expect.objectContaining({ method: 'POST' }));
+  });
 });

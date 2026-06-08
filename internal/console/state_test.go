@@ -13,6 +13,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
+	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 )
 
 func TestControllerStateAggregatesQuotaAndWorkspace(t *testing.T) {
@@ -20,6 +21,8 @@ func TestControllerStateAggregatesQuotaAndWorkspace(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/projects":
 			w.Write([]byte(`{"data":[{"id":"proj-1","name":"Default project"}]}`))
+		case "/v1/usage":
+			w.Write([]byte(`{"credit_usage":[{"window":"5h","percentage":58.2},{"window":"7d","percentage":22}]}`))
 		case "/api/v1/projects/proj-1/subscription/usage":
 			w.Write([]byte(`{"data":[{"window":"5h","percentage":58.2},{"window":"7d","percentage":22}]}`))
 		default:
@@ -28,10 +31,13 @@ func TestControllerStateAggregatesQuotaAndWorkspace(t *testing.T) {
 	}))
 	defer ms.Close()
 	as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/workspaces" {
+		if r.URL.Path != "/api/agent/whoami" {
 			t.Fatalf("agentserver unexpected path %s", r.URL.Path)
 		}
-		w.Write([]byte(`{"data":[{"id":"ws-1","name":"Default workspace"}]}`))
+		if r.Header.Get("Authorization") != "Bearer sandbox-proxy-token" {
+			t.Fatalf("agentserver Authorization=%q", r.Header.Get("Authorization"))
+		}
+		w.Write([]byte(`{"workspace_id":"ws-1","workspace_name":"Default workspace"}`))
 	}))
 	defer as.Close()
 
@@ -54,7 +60,7 @@ func TestControllerStateAggregatesQuotaAndWorkspace(t *testing.T) {
 	if err := sec.Set("modelserver_api_key", "ms-token"); err != nil {
 		t.Fatal(err)
 	}
-	if err := sec.Set("agentserver_ws_api_key", "as-token"); err != nil {
+	if err := sec.Set("agentserver_ws_api_key", "sandbox-proxy-token"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,6 +84,167 @@ func TestControllerStateAggregatesQuotaAndWorkspace(t *testing.T) {
 	}
 	if len(got.Quotas) != 2 || got.Quotas[0].RemainingPercentage != 41.8 {
 		t.Fatalf("quotas=%+v", got.Quotas)
+	}
+}
+
+func TestControllerStateUsesProxyUsageForOAuthTokenQuota(t *testing.T) {
+	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects":
+			http.Error(w, `{"error":{"code":"unauthorized","message":"invalid or expired token"}}`, http.StatusUnauthorized)
+		case "/api/v1/projects/proj-1/subscription/usage":
+			http.Error(w, `{"error":{"code":"unauthorized","message":"invalid or expired token"}}`, http.StatusUnauthorized)
+		case "/v1/usage":
+			w.Write([]byte(`{"credit_usage":[{"window":"5h","percentage":58.2,"window_end":"2026-06-08T17:00:00Z"},{"window":"7d","percentage":22,"window_end":"2026-06-15T12:00:00Z"}]}`))
+		default:
+			t.Fatalf("modelserver unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ms.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Modelserver.ProjectID = "proj-1"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	if err := sec.Set("modelserver_api_key", "oauth-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewController(Deps{
+		State: store, Secrets: sec, MS: modelserver.New(ms.URL),
+	}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.QuotaError != "" {
+		t.Fatalf("QuotaError=%q", got.QuotaError)
+	}
+	if len(got.Quotas) != 2 || got.Quotas[0].RemainingPercentage != 41.8 || got.Quotas[0].ResetsAt != "2026-06-08T17:00:00Z" {
+		t.Fatalf("quotas=%+v", got.Quotas)
+	}
+}
+
+func TestControllerStateUsesProxyUsageWhenProjectIDPostponed(t *testing.T) {
+	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects":
+			t.Fatalf("/api/v1/projects should not be called without a project id")
+		case "/v1/usage":
+			w.Write([]byte(`{"credit_usage":[{"window":"5h","percentage":80,"window_end":"2026-06-08T17:00:00Z"},{"window":"7d","percentage":50}]}`))
+		default:
+			t.Fatalf("modelserver unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer ms.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	if err := sec.Set("modelserver_api_key", "oauth-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewController(Deps{
+		State: store, Secrets: sec, MS: modelserver.New(ms.URL),
+	}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Modelserver.ProjectID != "" {
+		t.Fatalf("project/subscription should stay empty: %+v url=%q", got.Modelserver, got.SubscriptionURL)
+	}
+	if got.SubscriptionURL != "https://code.cs.ac.cn/projects" {
+		t.Fatalf("SubscriptionURL=%q", got.SubscriptionURL)
+	}
+	if len(got.Quotas) != 2 || got.Quotas[0].Percentage != 80 || got.Quotas[0].RemainingPercentage != 20 {
+		t.Fatalf("quotas=%+v", got.Quotas)
+	}
+}
+
+func TestControllerStateUsesSeparateProxyClientForUsage(t *testing.T) {
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/projects":
+			http.Error(w, `{"error":{"code":"unauthorized","message":"invalid or expired token"}}`, http.StatusUnauthorized)
+		case "/v1/usage":
+			t.Fatalf("proxy usage must not be requested from admin API host")
+		default:
+			t.Fatalf("modelserver admin unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer admin.Close()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage" {
+			t.Fatalf("modelserver proxy unexpected path %s", r.URL.Path)
+		}
+		w.Write([]byte(`{"credit_usage":[{"window":"5h","percentage":40,"window_end":"2026-06-08T17:00:00Z"},{"window":"7d","percentage":10}]}`))
+	}))
+	defer proxy.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	if err := sec.Set("modelserver_api_key", "oauth-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewController(Deps{
+		State: store, Secrets: sec,
+		MS:      modelserver.New(admin.URL),
+		MSProxy: modelserver.New(proxy.URL),
+	}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.QuotaError != "" {
+		t.Fatalf("QuotaError=%q", got.QuotaError)
+	}
+	if len(got.Quotas) != 2 || got.Quotas[0].Percentage != 40 || got.Quotas[0].ResetsAt != "2026-06-08T17:00:00Z" {
+		t.Fatalf("quotas=%+v", got.Quotas)
+	}
+}
+
+func TestControllerStateProvidesProjectsURLWhenProjectIDMissing(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewController(Deps{
+		State:                 store,
+		Secrets:               newTestSecrets(),
+		ModelserverWebBaseURL: "https://code.cs.ac.cn/",
+	}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Modelserver.ProjectID != "" {
+		t.Fatalf("ProjectID=%q, want empty", got.Modelserver.ProjectID)
+	}
+	if got.SubscriptionURL != "https://code.cs.ac.cn/projects" {
+		t.Fatalf("SubscriptionURL=%q", got.SubscriptionURL)
 	}
 }
 
@@ -114,6 +281,131 @@ func TestControllerStateKeepsLaunchUsableWhenQuotaFails(t *testing.T) {
 	}
 	if got.QuotaError == "" {
 		t.Fatalf("expected quota error, got %+v", got)
+	}
+}
+
+func TestControllerStateMarksModelserverReconnectWhenRefreshTokenMissing(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "expired-access-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewController(Deps{State: store, Secrets: sec}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Modelserver.ReconnectRequired {
+		t.Fatalf("modelserver reconnect should be required: %+v", got.Modelserver)
+	}
+	if got.Modelserver.AuthMessage != "大模型连接已失效，请重新连接。" {
+		t.Fatalf("AuthMessage=%q", got.Modelserver.AuthMessage)
+	}
+}
+
+func TestControllerStateMarksModelserverReconnectWhenRefreshFailed(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	for key, value := range map[string]string{
+		tokenrefresh.AccessTokenKey:    "expired-access-token",
+		tokenrefresh.RefreshTokenKey:   "expired-refresh-token",
+		tokenrefresh.ReauthRequiredKey: "true",
+		tokenrefresh.RefreshErrorKey:   "token refresh: invalid_grant: refresh token expired",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := NewController(Deps{State: store, Secrets: sec}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Modelserver.ReconnectRequired {
+		t.Fatalf("modelserver reconnect should be required: %+v", got.Modelserver)
+	}
+	if got.Modelserver.AuthMessage != "大模型连接已失效，请重新连接。" {
+		t.Fatalf("AuthMessage=%q", got.Modelserver.AuthMessage)
+	}
+}
+
+func TestControllerLogoutModelserverClearsLocalLogin(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login", "agentserver_login"}
+		s.Modelserver.ProjectID = "proj-1"
+		s.Modelserver.APIKeySuffix = "tail"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	for key, value := range map[string]string{
+		tokenrefresh.AccessTokenKey:          "access-token",
+		tokenrefresh.RefreshTokenKey:         "refresh-token",
+		tokenrefresh.AccessTokenExpiresAtKey: "2026-06-08T12:00:00Z",
+		tokenrefresh.ReauthRequiredKey:       "false",
+		tokenrefresh.RefreshErrorKey:         "old refresh error",
+		tokenrefresh.RefreshErrorAtKey:       "2026-06-08T12:01:00Z",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	c := NewController(Deps{State: store, Secrets: sec})
+	if err := c.LogoutModelserver(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, key := range []string{
+		tokenrefresh.AccessTokenKey,
+		tokenrefresh.RefreshTokenKey,
+		tokenrefresh.AccessTokenExpiresAtKey,
+		tokenrefresh.RefreshErrorKey,
+		tokenrefresh.RefreshErrorAtKey,
+	} {
+		if got, err := sec.Get(key); err == nil {
+			t.Fatalf("%s still stored as %q", key, got)
+		}
+	}
+	if got, err := sec.Get(tokenrefresh.ReauthRequiredKey); err != nil || got != "true" {
+		t.Fatalf("reauth required=%q err=%v", got, err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Onboarding.HasCompleted("modelserver_login") {
+		t.Fatal("modelserver_login completion should remain so console can show reconnect")
+	}
+	if loaded.Modelserver.ProjectID != "" || loaded.Modelserver.APIKeySuffix != "" {
+		t.Fatalf("modelserver state should be cleared after logout: %+v", loaded.Modelserver)
+	}
+	got, err := c.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Modelserver.ReconnectRequired {
+		t.Fatalf("modelserver reconnect should be required after logout: %+v", got.Modelserver)
 	}
 }
 
@@ -199,16 +491,24 @@ func TestControllerActionsInvokeCallbacks(t *testing.T) {
 	}
 }
 
-func TestControllerOpenSubscriptionRequiresURL(t *testing.T) {
+func TestControllerOpenSubscriptionFallsBackToProjectsWhenProjectIDMissing(t *testing.T) {
 	dir := t.TempDir()
+	var openedURL string
 	c := NewController(Deps{
-		State:   state.NewStore(filepath.Join(dir, "state.json")),
-		Secrets: newTestSecrets(),
+		State:                 state.NewStore(filepath.Join(dir, "state.json")),
+		Secrets:               newTestSecrets(),
+		ModelserverWebBaseURL: "https://code.cs.ac.cn/",
+		OpenURL: func(url string) error {
+			openedURL = url
+			return nil
+		},
 	})
 
-	err := c.OpenSubscription(context.Background())
-	if err == nil || err.Error() != "console: subscription URL unavailable" {
-		t.Fatalf("OpenSubscription err=%v", err)
+	if err := c.OpenSubscription(context.Background()); err != nil {
+		t.Fatalf("OpenSubscription: %v", err)
+	}
+	if openedURL != "https://code.cs.ac.cn/projects" {
+		t.Fatalf("openedURL=%q", openedURL)
 	}
 }
 

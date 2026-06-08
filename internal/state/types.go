@@ -81,7 +81,10 @@ type ModelserverState struct {
 type AgentserverState struct {
 	BaseURL               string `json:"base_url"`
 	UserID                string `json:"user_id,omitempty"`
+	SandboxID             string `json:"sandbox_id,omitempty"`
+	ShortID               string `json:"short_id,omitempty"`
 	WorkspaceID           string `json:"workspace_id,omitempty"`
+	WorkspaceName         string `json:"workspace_name,omitempty"`
 	WorkspaceAPIKeySuffix string `json:"workspace_api_key_suffix,omitempty"`
 }
 

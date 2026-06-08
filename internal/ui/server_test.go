@@ -285,6 +285,30 @@ func TestServerConsoleOpenFrontendEndpoint(t *testing.T) {
 	}
 }
 
+func TestServerConsoleLogoutModelserverEndpoint(t *testing.T) {
+	cc := &fakeConsoleController{}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/api/console/logout-modelserver", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["state"] != "logged_out" {
+		t.Fatalf("body=%+v", body)
+	}
+	if !cc.loggedOutModelserver {
+		t.Fatal("logout modelserver not called")
+	}
+}
+
 func TestServerConsoleActionEndpointsRequirePost(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -310,6 +334,13 @@ func TestServerConsoleActionEndpointsRequirePost(t *testing.T) {
 			path: "/api/console/open-subscription",
 			called: func(cc *fakeConsoleController) bool {
 				return cc.openedSubscription
+			},
+		},
+		{
+			name: "logout modelserver",
+			path: "/api/console/logout-modelserver",
+			called: func(cc *fakeConsoleController) bool {
+				return cc.loggedOutModelserver
 			},
 		},
 		{
@@ -346,12 +377,13 @@ func TestServerConsoleActionEndpointsRequirePost(t *testing.T) {
 }
 
 type fakeConsoleController struct {
-	state              console.State
-	healthy            bool
-	refreshed          bool
-	openedFrontend     bool
-	openedSubscription bool
-	quit               bool
+	state                console.State
+	healthy              bool
+	refreshed            bool
+	openedFrontend       bool
+	openedSubscription   bool
+	loggedOutModelserver bool
+	quit                 bool
 }
 
 func (f *fakeConsoleController) State(context.Context) (console.State, error) {
@@ -370,6 +402,10 @@ func (f *fakeConsoleController) OpenFrontend(context.Context) error {
 }
 func (f *fakeConsoleController) OpenSubscription(context.Context) error {
 	f.openedSubscription = true
+	return nil
+}
+func (f *fakeConsoleController) LogoutModelserver(context.Context) error {
+	f.loggedOutModelserver = true
 	return nil
 }
 func (f *fakeConsoleController) Quit(context.Context) error {

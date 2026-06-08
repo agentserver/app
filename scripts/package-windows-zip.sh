@@ -152,6 +152,7 @@ echo "vscode installer: $vscode_size bytes (cached)"
 for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          dist/windows/agentctl.exe dist/windows/open-folder.exe \
          dist/windows/uninstall.exe dist/windows/token-refresher.exe \
+         dist/windows/driver-agent.exe \
          extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \
          internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
@@ -184,6 +185,7 @@ cp dist/windows/agentctl.exe          "$STAGE/"
 cp dist/windows/open-folder.exe       "$STAGE/"
 cp dist/windows/uninstall.exe         "$STAGE/"
 cp dist/windows/token-refresher.exe   "$STAGE/"
+cp dist/windows/driver-agent.exe      "$STAGE/"
 
 # Bundled codex.exe (avoids GitHub round-trip during install)
 cp "$CODEX_CACHE" "$STAGE/codex.exe"

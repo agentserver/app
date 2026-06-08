@@ -137,6 +137,13 @@ func openFolderCodexDesktop(ctx context.Context, p paths.Paths, folder string, s
 	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
 		return err
 	}
+	if err := codexdesktop.ConfigureLocale(
+		p.CodexDesktopGlobalStateFile,
+		p.CodexDesktopComputerUseConfigFile,
+		codexdesktop.DefaultLocale,
+	); err != nil {
+		return err
+	}
 	if tokenRefresherExe != "" {
 		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
 	}

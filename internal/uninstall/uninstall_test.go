@@ -22,6 +22,7 @@ func TestRunRemovesProjectStateSecretsAndOpenAIEnv(t *testing.T) {
 		"modelserver_refresh_token",
 		"modelserver_access_token_expires_at",
 		"agentserver_ws_api_key",
+		"agentserver_tunnel_token",
 	} {
 		if err := sec.Set(key, "value"); err != nil {
 			t.Fatal(err)

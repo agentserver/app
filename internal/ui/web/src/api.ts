@@ -11,6 +11,7 @@ export interface ServerState {
   last_error?: string;
   modelserver_project_id?: string;
   agentserver_workspace_id?: string;
+  agentserver_workspace_name?: string;
   vscode_path?: string;
   vscode_version?: string;
   codex_desktop_installed?: boolean;
@@ -43,7 +44,12 @@ export interface ConsoleState {
   frontend_mode: 'codex_desktop' | 'minimal_vscode';
   frontend_name: string;
   onboarding_status: string;
-  modelserver: { project_id?: string; project_name?: string };
+  modelserver: {
+    project_id?: string;
+    project_name?: string;
+    reconnect_required?: boolean;
+    auth_message?: string;
+  };
   agentserver: { workspace_id?: string; workspace_name?: string };
   quotas: ConsoleQuota[];
   quota_error?: string;
@@ -113,6 +119,9 @@ export const openConsoleFrontend = () =>
 
 export const openConsoleSubscription = () =>
   request<{ state: 'opened' }>('/api/console/open-subscription', { method: 'POST' });
+
+export const logoutConsoleModelserver = () =>
+  request<{ state: 'logged_out' }>('/api/console/logout-modelserver', { method: 'POST' });
 
 export const startVSCodeInstall = startFrontendInstall;
 export const configureVSCode = configureFrontend;

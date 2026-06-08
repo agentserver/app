@@ -57,6 +57,7 @@ func Run(opts Options) error {
 		tokenrefresh.RefreshTokenKey,
 		tokenrefresh.AccessTokenExpiresAtKey,
 		"agentserver_ws_api_key",
+		"agentserver_tunnel_token",
 	} {
 		if err := opts.Secrets.Delete(key); err != nil {
 			errs = append(errs, fmt.Errorf("delete secret %s: %w", key, err))

@@ -46,6 +46,18 @@ describe('Dashboard', () => {
     expect(w.text()).toContain('剩余约 42%');
   });
 
+  it('does not expose raw workspace id when workspace name is missing', async () => {
+    const state = consoleState();
+    state.agentserver = { workspace_id: 'ws-1234567890abcdef' };
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(state);
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(w.text()).toContain('工作空间 90abcdef');
+    expect(w.text()).not.toContain('ws-1234567890abcdef');
+  });
+
   it('displays an error when opening the frontend fails', async () => {
     mockConsoleState();
     vi.spyOn(api, 'openConsoleFrontend').mockRejectedValue(new Error('open failed'));
@@ -95,6 +107,54 @@ describe('Dashboard', () => {
     await flushPromises();
 
     expect(w.text()).toContain('subscription failed');
+  });
+
+  it('logs out modelserver after confirmation and refreshes state', async () => {
+    mockConsoleState();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const logoutSpy = vi.spyOn(api, 'logoutConsoleModelserver').mockResolvedValue({ state: 'logged_out' });
+    const refreshed = consoleState();
+    refreshed.modelserver = { reconnect_required: true, auth_message: '大模型连接已失效，请重新连接。' };
+    refreshed.subscription_url = 'https://code.cs.ac.cn/projects';
+    const refreshSpy = vi.spyOn(api, 'refreshConsoleState').mockResolvedValue(refreshed);
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    const logoutButton = w.findAll('button').find(b => b.text().includes('退出大模型登录'));
+    expect(logoutButton).toBeDefined();
+    await logoutButton!.trigger('click');
+    await flushPromises();
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('退出大模型登录'));
+    expect(logoutSpy).toHaveBeenCalledTimes(1);
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+    expect(w.text()).toContain('大模型连接已失效，请重新连接。');
+  });
+
+  it('reconnects modelserver when the token can no longer be refreshed', async () => {
+    const expired = consoleState();
+    expired.modelserver.reconnect_required = true;
+    expired.modelserver.auth_message = '大模型连接已失效，请重新连接。';
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(expired);
+    const startSpy = vi.spyOn(api, 'startStep').mockResolvedValue({
+      state: 'started',
+      oauth_url: 'https://codeapi.example/oauth2/auth',
+    });
+    const pollSpy = vi.spyOn(api, 'pollStepStatus').mockResolvedValue({ state: 'success' });
+    const refreshSpy = vi.spyOn(api, 'refreshConsoleState').mockResolvedValue(consoleState());
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(w.text()).toContain('大模型连接已失效，请重新连接。');
+    const reconnectButton = w.findAll('button').find(b => b.text().includes('重新连接大模型'));
+    expect(reconnectButton).toBeDefined();
+    await reconnectButton!.trigger('click');
+    await flushPromises();
+
+    expect(startSpy).toHaveBeenCalledWith('modelserver_login');
+    expect(pollSpy).toHaveBeenCalledWith('modelserver_login');
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
   });
 
   it('ignores duplicate refresh clicks while refresh is pending', async () => {

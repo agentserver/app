@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -152,6 +153,9 @@ func TestFinishPKCE_InvalidGrant(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "invalid_grant") {
 		t.Errorf("error = %q, want to contain 'invalid_grant'", err.Error())
+	}
+	if !errors.Is(err, ErrInvalidGrant) {
+		t.Errorf("error = %q, want ErrInvalidGrant", err.Error())
 	}
 }
 

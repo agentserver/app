@@ -9,42 +9,50 @@ import (
 )
 
 func WorkspaceIDFromToken(token string) (string, bool) {
+	ws, ok := WorkspaceFromToken(token)
+	return ws.ID, ok
+}
+
+func WorkspaceFromToken(token string) (Workspace, bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
-		return "", false
+		return Workspace{}, false
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", false
+		return Workspace{}, false
 	}
 	var claims map[string]any
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", false
+		return Workspace{}, false
 	}
-	v, ok := claims["workspace_id"].(string)
-	return v, ok && v != ""
+	ws := Workspace{
+		ID:   stringFromAny(claims["workspace_id"]),
+		Name: stringFromAny(claims["workspace_name"]),
+	}
+	if ext, ok := claims["ext"].(map[string]any); ok {
+		if ws.ID == "" {
+			ws.ID = stringFromAny(ext["workspace_id"])
+		}
+		if ws.Name == "" {
+			ws.Name = stringFromAny(ext["workspace_name"])
+		}
+	}
+	if ws.ID != "" {
+		return ws, true
+	}
+	return Workspace{}, false
 }
 
 func ResolveWorkspaceID(ctx context.Context, c *Client, token, existingID string) (Workspace, error) {
-	if id, ok := WorkspaceIDFromToken(token); ok {
-		return Workspace{ID: id}, nil
-	}
-	if c == nil {
-		return Workspace{}, fmt.Errorf("agentserver: client required")
-	}
-	ws, err := c.ListWorkspaces(ctx, token)
-	if err != nil {
-		return Workspace{}, err
+	_ = ctx
+	_ = c
+
+	if ws, ok := WorkspaceFromToken(token); ok {
+		return ws, nil
 	}
 	if existingID != "" {
-		for _, w := range ws {
-			if w.ID == existingID {
-				return w, nil
-			}
-		}
+		return Workspace{ID: existingID}, nil
 	}
-	if len(ws) == 0 {
-		return Workspace{}, fmt.Errorf("agentserver: no workspaces available")
-	}
-	return ws[0], nil
+	return Workspace{}, fmt.Errorf("agentserver: token missing workspace_id claim")
 }

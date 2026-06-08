@@ -364,7 +364,7 @@ func TestMakefileBuildsWindowsHelperExecutables(t *testing.T) {
 	}
 }
 
-func TestMakefileCrossWindowsBuildsLauncherAndOpenFolderAsGUI(t *testing.T) {
+func TestMakefileCrossWindowsBuildsInteractiveHelpersAsGUI(t *testing.T) {
 	body, err := os.ReadFile("../../Makefile")
 	if err != nil {
 		t.Fatal(err)
@@ -380,11 +380,11 @@ func TestMakefileCrossWindowsBuildsLauncherAndOpenFolderAsGUI(t *testing.T) {
 	}
 	recipe := s[start : start+end]
 	for _, want := range []string{
-		`case "$$cmd" in launcher|open-folder) ldflags="$(LDFLAGS) -H=windowsgui" ;; esac;`,
+		`case "$$cmd" in launcher|onboarding-server|open-folder|token-refresher) ldflags="$(LDFLAGS) -H=windowsgui" ;; esac;`,
 		`-ldflags="$$ldflags"`,
 	} {
 		if !strings.Contains(recipe, want) {
-			t.Fatalf("cross-windows recipe should build launcher.exe and open-folder.exe with Windows GUI subsystem; missing %q in:\n%s", want, recipe)
+			t.Fatalf("cross-windows recipe should build interactive helper executables with Windows GUI subsystem; missing %q in:\n%s", want, recipe)
 		}
 	}
 }
