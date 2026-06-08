@@ -38,3 +38,5 @@ extensions/*/*.vsix
 .DS_Store
 Thumbs.db
 .superpowers/
+docs/ops
+image
