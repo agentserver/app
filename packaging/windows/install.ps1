@@ -156,6 +156,8 @@ $required = @(
     'uninstall.exe',
     'token-refresher.exe',
     'driver-agent.exe',
+    'slave-agent.exe',
+    'codex-desktop-installer.exe',
     'agentserver-vscode.vsix',
     'ensure-vscode.ps1',
     'ensure-codex-desktop.ps1',
@@ -218,7 +220,7 @@ if ($MinimalVSCode) {
     Write-Step "Writing install mode codex_desktop..."
     & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'codex_desktop' -Path (Join-Path $InstallDir 'install-mode.json')
     Write-Step "Ensuring Codex Desktop is installed..."
-    & (Join-Path $InstallDir 'ensure-codex-desktop.ps1')
+    & (Join-Path $InstallDir 'ensure-codex-desktop.ps1') -LocalInstallerPath (Join-Path $srcDir 'codex-desktop-installer.exe')
 }
 
 # Desktop shortcut

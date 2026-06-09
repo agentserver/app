@@ -472,16 +472,17 @@ func (r *realOrchestrator) configureLoomDriver() error {
 		serverName = "driver-" + st.Agentserver.ShortID
 	}
 	if err := loom.WriteDriverConfig(r.d.LoomConfigPath, loom.DriverConfig{
-		ServerURL:   serverURL,
-		ServerName:  serverName,
-		SandboxID:   st.Agentserver.SandboxID,
-		TunnelToken: tunnelToken,
-		ProxyToken:  proxyToken,
-		WorkspaceID: st.Agentserver.WorkspaceID,
-		ShortID:     st.Agentserver.ShortID,
-		DisplayName: "星池指挥官",
-		Description: "星池指挥官本地协作驱动。",
-		CodexBin:    codexBin,
+		ServerURL:     serverURL,
+		ServerName:    serverName,
+		SandboxID:     st.Agentserver.SandboxID,
+		TunnelToken:   tunnelToken,
+		ProxyToken:    proxyToken,
+		WorkspaceID:   st.Agentserver.WorkspaceID,
+		WorkspaceName: st.Agentserver.WorkspaceName,
+		ShortID:       st.Agentserver.ShortID,
+		DisplayName:   "星池指挥官",
+		Description:   "星池指挥官本地协作驱动。",
+		CodexBin:      codexBin,
 		CodexWorkDir: func() string {
 			if home, err := os.UserHomeDir(); err == nil {
 				return home

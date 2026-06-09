@@ -1,4 +1,7 @@
-﻿param()
+﻿param(
+    [string]$LocalInstallerPath = (Join-Path $PSScriptRoot 'codex-desktop-installer.exe'),
+    [int]$InstallTimeoutSeconds = 1800
+)
 
 $ErrorActionPreference = 'Stop'
 
@@ -28,12 +31,42 @@ function Test-CodexDesktopInstalled {
     }
     try {
         $pkg = Get-AppxPackage | Where-Object {
-            $_.Name -like '*Codex*' -or $_.PackageFullName -like '*Codex*'
+            $_.PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0' -or
+            $_.Name -like '*Codex*' -or
+            $_.PackageFullName -like '*Codex*'
         } | Select-Object -First 1
         if ($pkg) { return $true }
     } catch {
     }
     return $false
+}
+
+function Wait-CodexDesktopInstalled([int]$TimeoutSeconds) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-CodexDesktopInstalled) {
+            return $true
+        }
+        Start-Sleep -Seconds 3
+    }
+    return $false
+}
+
+function Invoke-CodexDesktopLocalInstaller {
+    if (-not (Test-Path $LocalInstallerPath)) {
+        return $false
+    }
+    Write-Step "Running bundled Codex Desktop installer..."
+    Write-Step $LocalInstallerPath
+    $p = Start-Process -FilePath $LocalInstallerPath -Wait -PassThru
+    if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0) {
+        throw "Codex Desktop installer failed with exit code $($p.ExitCode)"
+    }
+    Write-Step "Waiting for Codex Desktop to become available..."
+    if (-not (Wait-CodexDesktopInstalled -TimeoutSeconds $InstallTimeoutSeconds)) {
+        throw "Codex Desktop 安装器已退出，但在 $InstallTimeoutSeconds 秒内未检测到 Codex Desktop。"
+    }
+    return $true
 }
 
 function Get-WingetPath {
@@ -69,7 +102,9 @@ if (Test-CodexDesktopInstalled) {
     exit 0
 }
 
-Invoke-CodexDesktopWingetInstall
+if (-not (Invoke-CodexDesktopLocalInstaller)) {
+    Invoke-CodexDesktopWingetInstall
+}
 
 Write-Step "Verifying Codex Desktop installation..."
 if (-not (Test-CodexDesktopInstalled)) {

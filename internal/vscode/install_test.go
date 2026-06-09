@@ -84,6 +84,8 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"ensure-codex-desktop.ps1",
 				"write-install-mode.ps1",
 				"vscode-manifest.json",
+				"codex-desktop-installer.exe",
+				"slave-agent.exe",
 				"uninstall.exe",
 				"Ensuring VS Code is installed",
 				"codex_desktop",
@@ -130,14 +132,22 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			path: "../../scripts/package-windows-zip.sh",
 			want: []string{
 				"VSCODE_CACHE",
+				"LOOM_RELEASE=\"v0.0.3\"",
+				"LOOM_DRIVER_CACHE",
+				"LOOM_SLAVE_CACHE",
 				"vscode-installer.exe",
 				"packaging/windows/ensure-vscode.ps1",
 				"packaging/windows/ensure-codex-desktop.ps1",
 				"packaging/windows/write-install-mode.ps1",
 				"packaging/windows/vscode-manifest.json",
+				"codex-desktop-installer.exe",
+				"slave-agent.exe",
 				"dist/windows/uninstall.exe",
 				"dist/windows/token-refresher.exe",
 				"cp \"$VSCODE_CACHE\"",
+				"cp \"$CODEX_DESKTOP_CACHE\"",
+				"cp \"$LOOM_DRIVER_CACHE\"",
+				"cp \"$LOOM_SLAVE_CACHE\"",
 				"cp packaging/windows/ensure-vscode.ps1",
 				"cp packaging/windows/vscode-manifest.json",
 				"cp dist/windows/uninstall.exe",
@@ -150,10 +160,16 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			want: []string{
 				"uninstall.exe",
 				"token-refresher.exe",
+				"driver-agent.windows-amd64.exe",
+				"DestName: \"driver-agent.exe\"",
+				"slave-agent.windows-amd64.exe",
+				"DestName: \"slave-agent.exe\"",
 				"codex-x86_64-pc-windows-msvc.exe",
 				"DestName: \"codex.exe\"",
 				"VSCodeUserSetup-x64-1.96.0.exe",
 				"DestName: \"vscode-installer.exe\"",
+				"Codex Installer.exe",
+				"DestName: \"codex-desktop-installer.exe\"",
 				"MessagesFile: \"ChineseSimplified.isl\"",
 				"ensure-vscode.ps1",
 				"minimalvscode",
@@ -173,8 +189,15 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			want: []string{
 				"CODEX_CACHE",
 				"VSCODE_CACHE",
+				"CODEX_DESKTOP_CACHE",
+				"LOOM_RELEASE=\"v0.0.3\"",
+				"LOOM_DRIVER_CACHE",
+				"LOOM_SLAVE_CACHE",
 				"codex-x86_64-pc-windows-msvc.exe",
+				"driver-agent.windows-amd64.exe",
+				"slave-agent.windows-amd64.exe",
 				"VSCodeUserSetup-x64-$VSCODE_VERSION.exe",
+				"Codex Installer.exe",
 				"packaging/windows/vscode-manifest.json",
 				"packaging/windows/ensure-codex-desktop.ps1",
 				"packaging/windows/write-install-mode.ps1",
@@ -186,6 +209,9 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"\"${ISCC[@]}\" installer.iss",
 				"\"$VSCODE_CACHE\"",
 				"\"$CODEX_CACHE\"",
+				"\"$CODEX_DESKTOP_CACHE\"",
+				"\"$LOOM_DRIVER_CACHE\"",
+				"\"$LOOM_SLAVE_CACHE\"",
 			},
 		},
 	} {
@@ -211,6 +237,17 @@ func TestWindowsPortableMinimalVSCodeUsesBundledInstaller(t *testing.T) {
 	want := "& (Join-Path $InstallDir 'ensure-vscode.ps1') -ManifestPath (Join-Path $InstallDir 'vscode-manifest.json') -LocalInstallerPath (Join-Path $srcDir 'vscode-installer.exe')"
 	if !strings.Contains(string(body), want) {
 		t.Fatalf("install.ps1 should pass the portable bundled VS Code installer to ensure-vscode.ps1; missing %q", want)
+	}
+}
+
+func TestWindowsPortableCodexDesktopUsesBundledInstaller(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "& (Join-Path $InstallDir 'ensure-codex-desktop.ps1') -LocalInstallerPath (Join-Path $srcDir 'codex-desktop-installer.exe')"
+	if !strings.Contains(string(body), want) {
+		t.Fatalf("install.ps1 should pass the portable bundled Codex Desktop installer to ensure-codex-desktop.ps1; missing %q", want)
 	}
 }
 
@@ -466,13 +503,18 @@ func TestWindowsPowerShellScriptsUseUTF8BOM(t *testing.T) {
 	}
 }
 
-func TestEnsureCodexDesktopScriptUsesWingetMsstore(t *testing.T) {
+func TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/ensure-codex-desktop.ps1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(body)
 	for _, want := range []string{
+		"LocalInstallerPath",
+		"Invoke-CodexDesktopLocalInstaller",
+		"codex-desktop-installer.exe",
+		"Start-Process",
+		"-Wait",
 		"winget",
 		"install",
 		"Codex",

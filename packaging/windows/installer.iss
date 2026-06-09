@@ -45,10 +45,15 @@ Source: "..\..\dist\windows\agentctl.exe";          DestDir: "{app}"; Flags: ign
 Source: "..\..\dist\windows\open-folder.exe";       DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\uninstall.exe";         DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\token-refresher.exe";   DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\dist\windows\driver-agent.exe";      DestDir: "{app}"; Flags: ignoreversion
 ; Bundled offline payloads
+Source: "..\..\dist\cache\loom\v0.0.3\driver-agent.windows-amd64.exe"; \
+    DestDir: "{app}"; DestName: "driver-agent.exe"; Flags: ignoreversion
+Source: "..\..\dist\cache\loom\v0.0.3\slave-agent.windows-amd64.exe"; \
+    DestDir: "{app}"; DestName: "slave-agent.exe"; Flags: ignoreversion
 Source: "..\..\dist\cache\rust-v0.136.0\codex-x86_64-pc-windows-msvc.exe"; \
     DestDir: "{app}"; DestName: "codex.exe"; Flags: ignoreversion
+Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
+    DestDir: "{app}"; DestName: "codex-desktop-installer.exe"; Flags: ignoreversion
 Source: "..\..\dist\cache\vscode\1.96.0\VSCodeUserSetup-x64-1.96.0.exe"; \
     DestDir: "{app}"; DestName: "vscode-installer.exe"; Flags: ignoreversion
 ; Bundled VS Code extension
@@ -222,7 +227,7 @@ begin
   ScriptBody :=
     '$ErrorActionPreference = ''Stop''' + #13#10 +
     '$installDir = ' + PowerShellQuote(ExpandConstant('{app}')) + #13#10 +
-    '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''codex.exe'')' + #13#10 +
+    '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''slave-agent.exe'', ''codex.exe'')' + #13#10 +
     '$filter = {' + #13#10 +
     '  $_.ExecutablePath -and ($names -contains $_.Name) -and $_.ExecutablePath -like ($installDir + ''*'')' + #13#10 +
     '}' + #13#10 +
@@ -266,8 +271,8 @@ begin
   if ShouldInstallCodexDesktop then begin
     RunEstimatedPowerShellStep('codex-mode', '正在准备 Codex Desktop 模式...', 'write-install-mode.ps1',
       '-Mode ' + PowerShellQuote('codex_desktop') + ' -Path ' + PowerShellQuote(ModePath), 10);
-    RunEstimatedPowerShellStep('codex-install', '正在安装 Codex Desktop（通过 Microsoft Store，可能需要几分钟，请勿关闭）...', 'ensure-codex-desktop.ps1',
-      '', 240);
+    RunEstimatedPowerShellStep('codex-install', '正在安装 Codex Desktop（请在弹出的安装器中完成安装，请勿关闭）...', 'ensure-codex-desktop.ps1',
+      '', 900);
   end else begin
     RunEstimatedPowerShellStep('vscode-mode', '正在准备极简风模式...', 'write-install-mode.ps1',
       '-Mode ' + PowerShellQuote('minimal_vscode') + ' -Path ' + PowerShellQuote(ModePath), 10);

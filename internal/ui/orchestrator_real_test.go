@@ -1209,10 +1209,19 @@ func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
 		`short_id: "abc123"`,
 		`kind: "codex"`,
 		`bin: "` + filepath.ToSlash(filepath.Join(dir, "codex.exe")) + `"`,
+		`enabled: true`,
+		`url: "https://loom.nj.cs.ac.cn:10062/"`,
+		`workspace_name: "Readable workspace"`,
+		`agent_id: "driver-abc123"`,
+		`api_key: "sandbox-proxy-token"`,
+		`token_state_path: "` + filepath.ToSlash(filepath.Join(filepath.Dir(loomConfig), "observer.token")) + `"`,
 	} {
 		if !strings.Contains(loomText, want) {
 			t.Fatalf("driver.yaml missing %q:\n%s", want, loomText)
 		}
+	}
+	if strings.Contains(loomText, "telemetry_enabled") {
+		t.Fatalf("driver.yaml contains unsupported observer telemetry field:\n%s", loomText)
 	}
 
 	codexBytes, err := os.ReadFile(filepath.Join(dir, ".codex", "config.toml"))

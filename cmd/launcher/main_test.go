@@ -497,7 +497,7 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 		CodexDesktopComputerUseConfigFile: filepath.Join(dir, ".codex", "computer-use", "config.json"),
 	}
 	var opened string
-	err := launchCompletedCodexDesktop(context.Background(), p, nil, "", func(url string) error {
+	err := launchCompletedCodexDesktop(context.Background(), nil, p, nil, "", "", func(url string) error {
 		assertJSONField(t, p.CodexDesktopGlobalStateFile, "localeOverride", "zh-CN")
 		assertJSONField(t, p.CodexDesktopComputerUseConfigFile, "locale", "zh-CN")
 		opened = url
@@ -521,6 +521,116 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `env_key = "`+codex.LocalProxyAPIKeyEnv+`"`) {
 		t.Fatalf("config missing local proxy env_key:\n%s", b)
+	}
+}
+
+func TestConfigureCompletedLoomDriverUsesDefaultObserver(t *testing.T) {
+	dir := t.TempDir()
+	installDir := filepath.Join(dir, "install")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "driver-agent.exe"), []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	for key, value := range map[string]string{
+		"agentserver_ws_api_key":   "sandbox-proxy-token",
+		"agentserver_tunnel_token": "tunnel-token",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := &state.State{}
+	st.Agentserver.SandboxID = "sb-1"
+	st.Agentserver.WorkspaceID = "ws-1"
+	st.Agentserver.WorkspaceName = "Readable workspace"
+	st.Agentserver.ShortID = "abc123"
+	p := paths.Paths{
+		UserHome:        dir,
+		CodexExePath:    filepath.Join(dir, "bin", "codex.exe"),
+		CodexConfigFile: filepath.Join(dir, ".codex", "config.toml"),
+	}
+
+	if err := configureCompletedLoomDriver(p, st, sec, installDir); err != nil {
+		t.Fatalf("configureCompletedLoomDriver: %v", err)
+	}
+
+	loomPath := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
+	body, err := os.ReadFile(loomPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`enabled: true`,
+		`url: "https://loom.nj.cs.ac.cn:10062/"`,
+		`workspace_id: "ws-1"`,
+		`workspace_name: "Readable workspace"`,
+		`agent_id: "driver-abc123"`,
+		`api_key: "sandbox-proxy-token"`,
+		`token_state_path: "` + filepath.ToSlash(filepath.Join(filepath.Dir(loomPath), "observer.token")) + `"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("driver.yaml missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestConfigureCompletedLoomDriverFallsBackToExistingDriverTokens(t *testing.T) {
+	dir := t.TempDir()
+	installDir := filepath.Join(dir, "install")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "driver-agent.exe"), []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	loomPath := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
+	if err := os.MkdirAll(filepath.Dir(loomPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(loomPath, []byte(`credentials:
+  tunnel_token: "old-tunnel-token"
+  proxy_token: "old-proxy-token"
+
+observer:
+  enabled: false
+  telemetry_enabled: false
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := &state.State{}
+	st.Agentserver.SandboxID = "sb-1"
+	st.Agentserver.WorkspaceID = "ws-1"
+	st.Agentserver.ShortID = "abc123"
+	p := paths.Paths{
+		UserHome:     dir,
+		CodexExePath: filepath.Join(dir, "bin", "codex.exe"),
+	}
+
+	if err := configureCompletedLoomDriver(p, st, secrets.New(filepath.Join(dir, "missing-secrets.json")), installDir); err != nil {
+		t.Fatalf("configureCompletedLoomDriver: %v", err)
+	}
+
+	body, err := os.ReadFile(loomPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`enabled: true`,
+		`url: "https://loom.nj.cs.ac.cn:10062/"`,
+		`tunnel_token: "old-tunnel-token"`,
+		`api_key: "old-proxy-token"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("driver.yaml missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "telemetry_enabled") {
+		t.Fatalf("driver.yaml contains unsupported observer telemetry field:\n%s", text)
 	}
 }
 
