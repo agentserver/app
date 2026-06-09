@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 )
@@ -491,6 +493,95 @@ func TestControllerActionsInvokeCallbacks(t *testing.T) {
 	}
 }
 
+func TestControllerListsAndControlsSlaves(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	runner := &testSlaveRunner{pid: 1111, authURL: "https://agent.cs.ac.cn/device?user_code=ABCD"}
+	manager := slave.NewManager(slave.ManagerDeps{
+		Machines:  slave.NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:  slave.NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:    runner,
+		SlaveExe:  filepath.Join(dir, "slave-agent.exe"),
+		ServerURL: "https://agent.cs.ac.cn",
+		CodexBin:  "codex",
+	})
+	if _, err := manager.Machines.Ensure("PC"); err != nil {
+		t.Fatal(err)
+	}
+	c := NewController(Deps{Slaves: manager})
+
+	created, err := c.CreateSlave(context.Background(), slave.CreateInput{Folder: folder, Name: "worker"})
+	if err != nil {
+		t.Fatalf("CreateSlave: %v", err)
+	}
+	if created.Status != slave.StatusAuthRequired || created.PID != 1111 || created.AuthURL != runner.authURL {
+		t.Fatalf("created slave=%+v", created)
+	}
+
+	machine, slaves, err := c.Slaves(context.Background())
+	if err != nil {
+		t.Fatalf("Slaves: %v", err)
+	}
+	if machine.ComputerName != "PC" {
+		t.Fatalf("machine=%+v", machine)
+	}
+	if len(slaves) != 1 || slaves[0].ID != created.ID {
+		t.Fatalf("slaves=%+v", slaves)
+	}
+
+	paused, err := c.PauseSlave(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("PauseSlave: %v", err)
+	}
+	if paused.Status != slave.StatusPaused || paused.PID != 0 || !runner.stopped[1111] {
+		t.Fatalf("paused=%+v stopped=%+v", paused, runner.stopped)
+	}
+
+	runner.pid = 2222
+	runner.authURL = ""
+	restarted, err := c.RestartSlave(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("RestartSlave: %v", err)
+	}
+	if restarted.Status != slave.StatusStarting || restarted.PID != 2222 {
+		t.Fatalf("restarted=%+v", restarted)
+	}
+
+	if err := c.DeleteSlave(context.Background(), created.ID); err != nil {
+		t.Fatalf("DeleteSlave: %v", err)
+	}
+	_, slaves, err = c.Slaves(context.Background())
+	if err != nil {
+		t.Fatalf("Slaves after delete: %v", err)
+	}
+	if len(slaves) != 0 {
+		t.Fatalf("slaves after delete=%+v", slaves)
+	}
+}
+
+func TestControllerSlaveMethodsRequireManager(t *testing.T) {
+	c := NewController(Deps{})
+	ctx := context.Background()
+	if _, _, err := c.Slaves(ctx); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("Slaves err=%v", err)
+	}
+	if _, err := c.CreateSlave(ctx, slave.CreateInput{}); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("CreateSlave err=%v", err)
+	}
+	if _, err := c.RestartSlave(ctx, "slave-1"); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("RestartSlave err=%v", err)
+	}
+	if _, err := c.PauseSlave(ctx, "slave-1"); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("PauseSlave err=%v", err)
+	}
+	if err := c.DeleteSlave(ctx, "slave-1"); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("DeleteSlave err=%v", err)
+	}
+}
+
 func TestControllerOpenSubscriptionFallsBackToProjectsWhenProjectIDMissing(t *testing.T) {
 	dir := t.TempDir()
 	var openedURL string
@@ -527,6 +618,32 @@ func TestQuotaWindowsRoundsRemainingAndClampsAtZero(t *testing.T) {
 	if got[1].RemainingPercentage != 0 {
 		t.Fatalf("second quota=%+v", got[1])
 	}
+}
+
+type testSlaveRunner struct {
+	pid           int
+	authURL       string
+	startedConfig string
+	stopped       map[int]bool
+}
+
+func (r *testSlaveRunner) Start(context.Context, slave.StartRequest) (slave.StartResult, error) {
+	if r.stopped == nil {
+		r.stopped = map[int]bool{}
+	}
+	return slave.StartResult{PID: r.pid, AuthURL: r.authURL}, nil
+}
+
+func (r *testSlaveRunner) Stop(_ context.Context, pid int) error {
+	if r.stopped == nil {
+		r.stopped = map[int]bool{}
+	}
+	r.stopped[pid] = true
+	return nil
+}
+
+func mkdir(path string) error {
+	return os.MkdirAll(path, 0o755)
 }
 
 type testSecrets struct {

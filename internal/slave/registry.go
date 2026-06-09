@@ -46,6 +46,11 @@ type CreateInput struct {
 	Name   string
 }
 
+var (
+	ErrInvalidCreateInput = errors.New("invalid slave create input")
+	ErrSlaveConflict      = errors.New("slave conflict")
+)
+
 type Registry struct {
 	mu        sync.Mutex
 	path      string
@@ -117,25 +122,25 @@ func (r *Registry) Create(machine Machine, in CreateInput) (Slave, error) {
 	}
 	folderInput := strings.TrimSpace(in.Folder)
 	if folderInput == "" {
-		return Slave{}, fmt.Errorf("folder required")
+		return Slave{}, fmt.Errorf("%w: folder required", ErrInvalidCreateInput)
 	}
 	folder, err := filepath.Abs(folderInput)
 	if err != nil {
-		return Slave{}, fmt.Errorf("folder required")
+		return Slave{}, fmt.Errorf("%w: folder required: %v", ErrInvalidCreateInput, err)
 	}
 	info, err := os.Stat(folder)
 	if err != nil {
-		return Slave{}, fmt.Errorf("folder unavailable: %w", err)
+		return Slave{}, fmt.Errorf("%w: folder unavailable: %w", ErrInvalidCreateInput, err)
 	}
 	if !info.IsDir() {
-		return Slave{}, fmt.Errorf("folder is not a directory: %s", folder)
+		return Slave{}, fmt.Errorf("%w: folder is not a directory: %s", ErrInvalidCreateInput, folder)
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		name = filepath.Base(folder)
 	}
 	if err := validateSlaveName(name); err != nil {
-		return Slave{}, err
+		return Slave{}, fmt.Errorf("%w: %w", ErrInvalidCreateInput, err)
 	}
 	displayName := machine.ComputerName + "-" + name
 	id, err := uuid.NewRandom()
@@ -151,7 +156,7 @@ func (r *Registry) Create(machine Machine, in CreateInput) (Slave, error) {
 	}
 	for _, existing := range all {
 		if existing.DisplayName == displayName {
-			return Slave{}, fmt.Errorf("slave display name already exists: %s", displayName)
+			return Slave{}, fmt.Errorf("%w: slave display name already exists: %s", ErrSlaveConflict, displayName)
 		}
 	}
 	now := time.Now().UTC()

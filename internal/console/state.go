@@ -10,6 +10,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 )
@@ -20,6 +21,7 @@ type Deps struct {
 	MS                    *modelserver.Client
 	MSProxy               *modelserver.Client
 	AS                    *agentserver.Client
+	Slaves                *slave.Manager
 	ModelserverWebBaseURL string
 	OpenFrontend          func(context.Context) error
 	OpenURL               func(string) error
@@ -142,6 +144,41 @@ func (c *Controller) State(ctx context.Context) (State, error) {
 
 func (c *Controller) Refresh(ctx context.Context) (State, error) {
 	return c.State(ctx)
+}
+
+func (c *Controller) Slaves(ctx context.Context) (slave.Machine, []slave.Slave, error) {
+	if c.d.Slaves == nil {
+		return slave.Machine{}, nil, errors.New("console: slave manager unavailable")
+	}
+	return c.d.Slaves.List(ctx)
+}
+
+func (c *Controller) CreateSlave(ctx context.Context, in slave.CreateInput) (slave.Slave, error) {
+	if c.d.Slaves == nil {
+		return slave.Slave{}, errors.New("console: slave manager unavailable")
+	}
+	return c.d.Slaves.CreateAndStart(ctx, in)
+}
+
+func (c *Controller) RestartSlave(ctx context.Context, id string) (slave.Slave, error) {
+	if c.d.Slaves == nil {
+		return slave.Slave{}, errors.New("console: slave manager unavailable")
+	}
+	return c.d.Slaves.Restart(ctx, id)
+}
+
+func (c *Controller) PauseSlave(ctx context.Context, id string) (slave.Slave, error) {
+	if c.d.Slaves == nil {
+		return slave.Slave{}, errors.New("console: slave manager unavailable")
+	}
+	return c.d.Slaves.Pause(ctx, id)
+}
+
+func (c *Controller) DeleteSlave(ctx context.Context, id string) error {
+	if c.d.Slaves == nil {
+		return errors.New("console: slave manager unavailable")
+	}
+	return c.d.Slaves.Delete(ctx, id)
 }
 
 func (c *Controller) Healthy(context.Context) bool {

@@ -4,10 +4,15 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 )
 
 //go:embed all:assets/dist
@@ -50,6 +55,8 @@ func NewServerWithConsole(o Orchestrator, c ConsoleController) http.Handler {
 	mux.HandleFunc("/api/console/open-subscription", s.handleConsoleOpenSubscription)
 	mux.HandleFunc("/api/console/logout-modelserver", s.handleConsoleLogoutModelserver)
 	mux.HandleFunc("/api/console/quit", s.handleConsoleQuit)
+	mux.HandleFunc("/api/console/slaves", s.handleConsoleSlaves)
+	mux.HandleFunc("/api/console/slaves/", s.handleConsoleSlave)
 
 	// SSE
 	mux.HandleFunc("/api/events", s.sse.handle)
@@ -79,6 +86,36 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	w.Header().Set("Allow", method)
 	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	return false
+}
+
+func requireMethods(w http.ResponseWriter, r *http.Request, allow string, methods ...string) bool {
+	for _, method := range methods {
+		if r.Method == method {
+			return true
+		}
+	}
+	w.Header().Set("Allow", allow)
+	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	return false
+}
+
+func writeConsoleErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, os.ErrNotExist) {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeErr(w, http.StatusInternalServerError, err)
+}
+
+func writeConsoleCreateErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, slave.ErrSlaveConflict):
+		writeErr(w, http.StatusConflict, err)
+	case errors.Is(err, slave.ErrInvalidCreateInput):
+		writeErr(w, http.StatusBadRequest, err)
+	default:
+		writeErr(w, http.StatusInternalServerError, err)
+	}
 }
 
 func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +238,82 @@ func (s *server) handleConsoleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, st)
+}
+
+func (s *server) handleConsoleSlaves(w http.ResponseWriter, r *http.Request) {
+	if !requireMethods(w, r, "GET, POST", http.MethodGet, http.MethodPost) {
+		return
+	}
+	if r.Method == http.MethodGet {
+		machine, slaves, err := s.c.Slaves(r.Context())
+		if err != nil {
+			writeConsoleErr(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"machine": machine, "slaves": slaves})
+		return
+	}
+
+	var in slave.CreateInput
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	sl, err := s.c.CreateSlave(r.Context(), in)
+	if err != nil {
+		writeConsoleCreateErr(w, err)
+		return
+	}
+	writeJSON(w, 200, sl)
+}
+
+func (s *server) handleConsoleSlave(w http.ResponseWriter, r *http.Request) {
+	const prefix = "/api/console/slaves/"
+	rest := strings.TrimPrefix(r.URL.Path, prefix)
+	parts := strings.Split(rest, "/")
+	if rest == "" || parts[0] == "" || len(parts) > 2 {
+		http.NotFound(w, r)
+		return
+	}
+	id := parts[0]
+	if len(parts) == 1 {
+		if !requireMethod(w, r, http.MethodDelete) {
+			return
+		}
+		if err := s.c.DeleteSlave(r.Context(), id); err != nil {
+			writeConsoleErr(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]string{"state": "deleted"})
+		return
+	}
+
+	action := parts[1]
+	if action == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if action != "restart" && action != "pause" {
+		http.NotFound(w, r)
+		return
+	}
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var (
+		sl  slave.Slave
+		err error
+	)
+	if action == "restart" {
+		sl, err = s.c.RestartSlave(r.Context(), id)
+	} else {
+		sl, err = s.c.PauseSlave(r.Context(), id)
+	}
+	if err != nil {
+		writeConsoleErr(w, err)
+		return
+	}
+	writeJSON(w, 200, sl)
 }
 
 func (s *server) handleConsoleOpenFrontend(w http.ResponseWriter, r *http.Request) {

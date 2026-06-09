@@ -36,6 +36,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/process"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 	"github.com/agentserver/agentserver-pkg/internal/tray"
@@ -187,6 +188,10 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	if openBrowser == nil {
 		openBrowser = browser.Open
 	}
+	slaveManager, err := newCompletedSlaveManager(in)
+	if err != nil {
+		return err
+	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -199,6 +204,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		MS:                    modelserver.New("https://codeapi.cs.ac.cn"),
 		MSProxy:               modelserver.New("https://code.ai.cs.ac.cn"),
 		AS:                    agentserver.New("https://agent.cs.ac.cn"),
+		Slaves:                slaveManager,
 		ModelserverWebBaseURL: "https://code.cs.ac.cn",
 		OpenURL:               openBrowser,
 		OpenFrontend: func(ctx context.Context) error {
@@ -287,6 +293,44 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		return nil
 	}
 	return err
+}
+
+func newCompletedSlaveManager(in completedServeInput) (*slave.Manager, error) {
+	deps, err := completedSlaveManagerDeps(in)
+	if err != nil {
+		return nil, err
+	}
+	return slave.NewManager(deps), nil
+}
+
+func completedSlaveManagerDeps(in completedServeInput) (slave.ManagerDeps, error) {
+	machines := slave.NewMachineStore(in.Paths.MachineFile)
+	if _, err := machines.Load(); errors.Is(err, os.ErrNotExist) {
+		if _, err := machines.Ensure(completedComputerName()); err != nil {
+			return slave.ManagerDeps{}, fmt.Errorf("ensure machine identity: %w", err)
+		}
+	} else if err != nil {
+		return slave.ManagerDeps{}, fmt.Errorf("load machine identity: %w", err)
+	}
+	return slave.ManagerDeps{
+		Machines:  machines,
+		Registry:  slave.NewRegistry(in.Paths.SlavesFile, in.Paths.SlavesDir),
+		SlaveExe:  joinExe(in.InstallDir, "slave-agent.exe"),
+		ServerURL: "https://agent.cs.ac.cn",
+		CodexBin:  in.Paths.CodexExePath,
+	}, nil
+}
+
+func completedComputerName() string {
+	if name := strings.TrimSpace(os.Getenv("COMPUTERNAME")); name != "" {
+		return name
+	}
+	if hostname, err := os.Hostname(); err == nil {
+		if name := strings.TrimSpace(hostname); name != "" {
+			return name
+		}
+	}
+	return "local-computer"
 }
 
 const trayShutdownTimeout = 2 * time.Second

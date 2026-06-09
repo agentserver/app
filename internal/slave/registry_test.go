@@ -1,6 +1,7 @@
 package slave
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -67,10 +68,10 @@ func TestRegistryRejectsInvalidCreateInput(t *testing.T) {
 	reg := NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves"))
 	m := Machine{MachineID: "machine-1", ComputerName: "61414-PC"}
 
-	if _, err := reg.Create(m, CreateInput{Folder: filepath.Join(dir, "missing")}); err == nil {
+	if _, err := reg.Create(m, CreateInput{Folder: filepath.Join(dir, "missing")}); !errors.Is(err, ErrInvalidCreateInput) {
 		t.Fatal("expected missing folder error")
 	}
-	if _, err := reg.Create(m, CreateInput{Folder: "   "}); err == nil {
+	if _, err := reg.Create(m, CreateInput{Folder: "   "}); !errors.Is(err, ErrInvalidCreateInput) {
 		t.Fatal("expected blank folder error")
 	}
 
@@ -78,7 +79,7 @@ func TestRegistryRejectsInvalidCreateInput(t *testing.T) {
 	if err := mkdir(folder); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reg.Create(m, CreateInput{Folder: folder, Name: "123456789012345678901"}); err == nil {
+	if _, err := reg.Create(m, CreateInput{Folder: folder, Name: "123456789012345678901"}); !errors.Is(err, ErrInvalidCreateInput) {
 		t.Fatal("expected long name error")
 	}
 	if _, err := reg.Create(Machine{}, CreateInput{Folder: folder}); err == nil {
@@ -102,7 +103,7 @@ func TestRegistryRejectsDuplicateDisplayName(t *testing.T) {
 	if _, err := reg.Create(m, CreateInput{Folder: folderA, Name: "worker"}); err != nil {
 		t.Fatalf("Create first: %v", err)
 	}
-	if _, err := reg.Create(m, CreateInput{Folder: folderB, Name: "worker"}); err == nil {
+	if _, err := reg.Create(m, CreateInput{Folder: folderB, Name: "worker"}); !errors.Is(err, ErrSlaveConflict) {
 		t.Fatal("expected duplicate display name error")
 	}
 }
