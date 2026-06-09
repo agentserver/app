@@ -197,24 +197,18 @@ try {
 
 $MachinePath = Join-Path $env:USERPROFILE '.agentserver-vscode\machine.json'
 $InitialComputerName = $env:COMPUTERNAME
-$ShouldPromptComputerName = $false
-if (-not (Test-Path -LiteralPath $MachinePath)) {
-    $ShouldPromptComputerName = $true
-} else {
+if (Test-Path -LiteralPath $MachinePath) {
     try {
         $existing = Get-Content -Raw -LiteralPath $MachinePath | ConvertFrom-Json
-        $locked = $false
-        if ($null -ne $existing.PSObject.Properties['computer_name_locked']) {
-            $locked = [bool]$existing.computer_name_locked
-        }
-        if ((-not $locked) -and ($existing.computer_name -eq $env:COMPUTERNAME)) {
-            $ShouldPromptComputerName = $true
+        $existingComputerName = [string]$existing.computer_name
+        if (-not [string]::IsNullOrWhiteSpace($existingComputerName)) {
+            $InitialComputerName = $existingComputerName.Trim()
         }
     } catch {
-        Write-Host "Note: failed to inspect existing machine.json; leaving it unchanged unless machine.ps1 reports an error."
+        Write-Host "Note: failed to inspect existing machine.json; using Windows computer name as default."
     }
 }
-if ((-not $Silent) -and $ShouldPromptComputerName) {
+if (-not $Silent) {
     $machinePrompt = "Computer name [$InitialComputerName]"
     $machineInput = Read-Host $machinePrompt
     if (-not [string]::IsNullOrWhiteSpace($machineInput)) {

@@ -91,9 +91,71 @@ begin
   Result := not WizardIsTaskSelected('minimalvscode');
 end;
 
+function GetMachinePath(): String;
+var
+  UserProfile: String;
+begin
+  UserProfile := GetEnv('USERPROFILE');
+  if UserProfile = '' then begin
+    UserProfile := ExpandConstant('{userappdata}');
+  end;
+  Result := AddBackslash(UserProfile) + '.agentserver-vscode\machine.json';
+end;
+
+function JsonStringValue(Source, Key: String): String;
+var
+  Marker: String;
+  Rest: String;
+  P: Integer;
+  Q: Integer;
+begin
+  Result := '';
+  Marker := '"' + Key + '"';
+  P := Pos(Marker, Source);
+  if P = 0 then begin
+    Exit;
+  end;
+  Rest := Copy(Source, P + Length(Marker), Length(Source));
+  P := Pos(':', Rest);
+  if P = 0 then begin
+    Exit;
+  end;
+  Rest := Copy(Rest, P + 1, Length(Rest));
+  P := Pos('"', Rest);
+  if P = 0 then begin
+    Exit;
+  end;
+  Rest := Copy(Rest, P + 1, Length(Rest));
+  Q := Pos('"', Rest);
+  if Q = 0 then begin
+    Exit;
+  end;
+  Result := Copy(Rest, 1, Q - 1);
+  StringChangeEx(Result, '\"', '"', True);
+end;
+
+function GetExistingComputerName(): String;
+var
+  Lines: TArrayOfString;
+  Body: String;
+  I: Integer;
+begin
+  Result := '';
+  if LoadStringsFromFile(GetMachinePath(), Lines) then begin
+    Body := '';
+    for I := 0 to GetArrayLength(Lines) - 1 do begin
+      Body := Body + Lines[I];
+    end;
+    Result := Trim(JsonStringValue(Body, 'computer_name'));
+  end;
+end;
+
 function GetInitialComputerName(): String;
 begin
-  Result := Trim(GetEnv('COMPUTERNAME'));
+  Result := GetExistingComputerName();
+  if Result = '' then begin
+    Result := Trim(GetEnv('COMPUTERNAME'));
+  end;
 end;
 
 function GetChosenComputerName(): String;
@@ -106,17 +168,6 @@ begin
       Result := GetInitialComputerName();
     end;
   end;
-end;
-
-function GetMachinePath(): String;
-var
-  UserProfile: String;
-begin
-  UserProfile := GetEnv('USERPROFILE');
-  if UserProfile = '' then begin
-    UserProfile := ExpandConstant('{userappdata}');
-  end;
-  Result := AddBackslash(UserProfile) + '.agentserver-vscode\machine.json';
 end;
 
 function PowerShellQuote(Value: String): String;
@@ -297,7 +348,7 @@ begin
     wpSelectDir,
     '电脑名称',
     '设置这台电脑在星池指挥官中的名称',
-    '安装后此名称将写入本用户的 machine.json，已有用户确定的名称不会被覆盖。');
+    '默认读取已有电脑名称；安装时可修改，machine_id 会保持不变。');
   ComputerNamePage.Add('电脑名称:', False);
   ComputerNamePage.Values[0] := GetInitialComputerName();
 end;

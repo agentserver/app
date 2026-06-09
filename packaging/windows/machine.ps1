@@ -36,29 +36,14 @@ if (Test-Path -LiteralPath $MachinePath) {
     if ([string]::IsNullOrWhiteSpace($existingMachineID) -or [string]::IsNullOrWhiteSpace($existingComputerName)) {
         throw "Existing machine identity is incomplete: $MachinePath"
     }
-    $locked = $false
-    if ($null -ne $existing.PSObject.Properties['computer_name_locked']) {
-        $locked = [bool]$existing.computer_name_locked
+    $machine = [ordered]@{}
+    foreach ($prop in $existing.PSObject.Properties) {
+        $machine[$prop.Name] = $prop.Value
     }
-    $defaultComputerName = ''
-    if ($null -ne $env:COMPUTERNAME) {
-        $defaultComputerName = $env:COMPUTERNAME.Trim()
-    }
-    $canMigrateLegacyAutoName = (-not $locked) -and
-        ($existingComputerName -eq $defaultComputerName) -and
-        ($ComputerName -ne $existingComputerName)
-    if ($canMigrateLegacyAutoName) {
-        $machine = [ordered]@{}
-        foreach ($prop in $existing.PSObject.Properties) {
-            $machine[$prop.Name] = $prop.Value
-        }
-        $machine['computer_name'] = $ComputerName
-        $machine['computer_name_locked'] = $true
-        Write-MachineJson -Machine $machine
-        Write-Host "Migrated legacy machine name: $MachinePath"
-        return
-    }
-    Write-Host "machine.json exists; leaving unchanged: $MachinePath"
+    $machine['machine_id'] = $existingMachineID
+    $machine['computer_name'] = $ComputerName
+    Write-MachineJson -Machine $machine
+    Write-Host "Updated machine name: $MachinePath"
     return
 }
 
@@ -70,7 +55,6 @@ if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath
 $machine = [ordered]@{
     machine_id = [guid]::NewGuid().ToString()
     computer_name = $ComputerName
-    computer_name_locked = $true
 }
 Write-MachineJson -Machine $machine
 
