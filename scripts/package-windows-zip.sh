@@ -12,7 +12,7 @@
 #   codex-desktop-installer.exe (bundled to avoid winget Store execution during install)
 #   codex.exe  (246MB, bundled to avoid GitHub download from CN)
 #   icon.ico, install.ps1, ensure-vscode.ps1, ensure-codex-desktop.ps1
-#   write-install-mode.ps1, vscode-manifest.json
+#   write-install-mode.ps1, machine.ps1, vscode-manifest.json
 #   LICENSE.zh.txt, README.txt
 #
 # codex.exe is cached in dist/cache/ across builds so re-packaging doesn't
@@ -227,6 +227,7 @@ for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          packaging/windows/ensure-vscode.ps1 \
          packaging/windows/ensure-codex-desktop.ps1 \
          packaging/windows/write-install-mode.ps1 \
+         packaging/windows/machine.ps1 \
          packaging/windows/vscode-manifest.json \
          packaging/windows/icon.ico \
          packaging/windows/LICENSE.zh.txt \
@@ -277,6 +278,7 @@ cp packaging/windows/install.ps1      "$STAGE/"
 cp packaging/windows/ensure-vscode.ps1 "$STAGE/"
 cp packaging/windows/ensure-codex-desktop.ps1 "$STAGE/"
 cp packaging/windows/write-install-mode.ps1 "$STAGE/"
+cp packaging/windows/machine.ps1 "$STAGE/"
 cp packaging/windows/vscode-manifest.json "$STAGE/"
 cp packaging/windows/icon.ico         "$STAGE/"
 cp packaging/windows/LICENSE.zh.txt   "$STAGE/"

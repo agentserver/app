@@ -83,6 +83,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"ensure-vscode.ps1",
 				"ensure-codex-desktop.ps1",
 				"write-install-mode.ps1",
+				"machine.ps1",
 				"vscode-manifest.json",
 				"codex-desktop-installer.exe",
 				"slave-agent.exe",
@@ -139,6 +140,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"packaging/windows/ensure-vscode.ps1",
 				"packaging/windows/ensure-codex-desktop.ps1",
 				"packaging/windows/write-install-mode.ps1",
+				"packaging/windows/machine.ps1",
 				"packaging/windows/vscode-manifest.json",
 				"codex-desktop-installer.exe",
 				"slave-agent.exe",
@@ -149,6 +151,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"cp \"$LOOM_DRIVER_CACHE\"",
 				"cp \"$LOOM_SLAVE_CACHE\"",
 				"cp packaging/windows/ensure-vscode.ps1",
+				"cp packaging/windows/machine.ps1",
 				"cp packaging/windows/vscode-manifest.json",
 				"cp dist/windows/uninstall.exe",
 				"cp dist/windows/token-refresher.exe",
@@ -181,6 +184,9 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"ShouldInstallCodexDesktop",
 				"codex_desktop",
 				"minimal_vscode",
+				"machine.ps1",
+				"ComputerNamePage: TInputQueryWizardPage",
+				"GetEnv('COMPUTERNAME')",
 			},
 		},
 		{
@@ -201,6 +207,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"packaging/windows/vscode-manifest.json",
 				"packaging/windows/ensure-codex-desktop.ps1",
 				"packaging/windows/write-install-mode.ps1",
+				"packaging/windows/machine.ps1",
 				"packaging/windows/ChineseSimplified.isl",
 				"dist/windows/uninstall.exe",
 				"dist/windows/token-refresher.exe",
@@ -248,6 +255,115 @@ func TestWindowsPortableCodexDesktopUsesBundledInstaller(t *testing.T) {
 	want := "& (Join-Path $InstallDir 'ensure-codex-desktop.ps1') -LocalInstallerPath (Join-Path $srcDir 'codex-desktop-installer.exe')"
 	if !strings.Contains(string(body), want) {
 		t.Fatalf("install.ps1 should pass the portable bundled Codex Desktop installer to ensure-codex-desktop.ps1; missing %q", want)
+	}
+}
+
+func TestWindowsMachineScriptCreatesImmutableMachineIdentity(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/machine.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"param(",
+		`[string]$MachinePath = (Join-Path $env:USERPROFILE '.agentserver-vscode\machine.json')`,
+		`[string]$ComputerName = $env:COMPUTERNAME`,
+		"$ComputerName = $ComputerName.Trim()",
+		"if ([string]::IsNullOrWhiteSpace($ComputerName))",
+		"if (Test-Path -LiteralPath $MachinePath)",
+		"exists; leaving unchanged",
+		"[guid]::NewGuid().ToString()",
+		"machine_id",
+		"computer_name",
+		"ConvertTo-Json",
+		"UTF8Encoding $false",
+		"WriteAllText",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("machine.ps1 should create immutable machine identity; missing %q", want)
+		}
+	}
+
+	exists := strings.Index(s, "if (Test-Path -LiteralPath $MachinePath)")
+	write := strings.Index(s, "WriteAllText")
+	if exists < 0 || write < 0 || exists > write {
+		t.Fatal("machine.ps1 must check for an existing machine.json before writing")
+	}
+
+	computerNameValidation := strings.Index(s, "$ComputerName = $ComputerName.Trim()")
+	if computerNameValidation < 0 {
+		t.Fatal("machine.ps1 should trim and validate ComputerName when creating machine.json")
+	}
+	if exists > computerNameValidation {
+		t.Fatal("machine.ps1 must leave existing machine.json unchanged before validating ComputerName")
+	}
+}
+
+func TestWindowsMachineScriptDoesNotExitCaller(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/machine.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "exit") {
+			t.Fatalf("machine.ps1 must not use %q; it is dot/call invoked by installers and can terminate the caller", trimmed)
+		}
+	}
+}
+
+func TestWindowsPortableInstallerInitializesMachineBeforeFrontend(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"$MachinePath = Join-Path $env:USERPROFILE '.agentserver-vscode\\machine.json'",
+		"$InitialComputerName = $env:COMPUTERNAME",
+		"if ((-not $Silent) -and (-not (Test-Path -LiteralPath $MachinePath)))",
+		"Read-Host",
+		"& (Join-Path $InstallDir 'machine.ps1') -MachinePath $MachinePath -ComputerName $InitialComputerName",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install.ps1 should initialize machine identity before frontend setup; missing %q", want)
+		}
+	}
+
+	machine := strings.Index(s, "& (Join-Path $InstallDir 'machine.ps1')")
+	frontend := strings.Index(s, "Writing install mode")
+	if machine < 0 || frontend < 0 || machine > frontend {
+		t.Fatal("install.ps1 should initialize machine identity before writing frontend install mode")
+	}
+}
+
+func TestWindowsInnoInstallerInitializesMachineBeforeFrontend(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"ComputerNamePage: TInputQueryWizardPage",
+		"CreateInputQueryPage",
+		"GetEnv('COMPUTERNAME')",
+		"WizardSilent",
+		"GetInitialComputerName",
+		"GetMachinePath",
+		"machine.ps1",
+		"-MachinePath",
+		"-ComputerName",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("installer.iss should prompt for and initialize machine identity; missing %q", want)
+		}
+	}
+
+	machine := strings.Index(s, "RunEstimatedPowerShellStep('machine'")
+	frontend := strings.Index(s, "RunEstimatedPowerShellStep('codex-mode'")
+	alternateFrontend := strings.Index(s, "RunEstimatedPowerShellStep('vscode-mode'")
+	if machine < 0 || frontend < 0 || alternateFrontend < 0 || machine > frontend || machine > alternateFrontend {
+		t.Fatal("installer.iss should initialize machine identity before frontend mode setup")
 	}
 }
 
@@ -489,6 +605,7 @@ func TestWindowsPowerShellScriptsUseUTF8BOM(t *testing.T) {
 		"../../packaging/windows/ensure-vscode.ps1",
 		"../../packaging/windows/ensure-codex-desktop.ps1",
 		"../../packaging/windows/write-install-mode.ps1",
+		"../../packaging/windows/machine.ps1",
 		"../../packaging/windows/factory-reset.ps1",
 	} {
 		t.Run(path, func(t *testing.T) {

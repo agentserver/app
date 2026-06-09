@@ -197,6 +197,7 @@ for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          packaging/windows/ensure-vscode.ps1 \
          packaging/windows/ensure-codex-desktop.ps1 \
          packaging/windows/write-install-mode.ps1 \
+         packaging/windows/machine.ps1 \
          packaging/windows/vscode-manifest.json \
          packaging/windows/ChineseSimplified.isl \
          packaging/windows/icon.ico \

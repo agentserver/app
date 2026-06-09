@@ -68,6 +68,7 @@ Source: "install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-vscode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "write-install-mode.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "machine.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vscode-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -82,9 +83,40 @@ Filename: "{app}\{#MyAppExeName}"; \
     Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+var
+  ComputerNamePage: TInputQueryWizardPage;
+
 function ShouldInstallCodexDesktop(): Boolean;
 begin
   Result := not WizardIsTaskSelected('minimalvscode');
+end;
+
+function GetInitialComputerName(): String;
+begin
+  Result := Trim(GetEnv('COMPUTERNAME'));
+end;
+
+function GetChosenComputerName(): String;
+begin
+  if WizardSilent then begin
+    Result := GetInitialComputerName();
+  end else begin
+    Result := Trim(ComputerNamePage.Values[0]);
+    if Result = '' then begin
+      Result := GetInitialComputerName();
+    end;
+  end;
+end;
+
+function GetMachinePath(): String;
+var
+  UserProfile: String;
+begin
+  UserProfile := GetEnv('USERPROFILE');
+  if UserProfile = '' then begin
+    UserProfile := ExpandConstant('{userappdata}');
+  end;
+  Result := AddBackslash(UserProfile) + '.agentserver-vscode\machine.json';
 end;
 
 function PowerShellQuote(Value: String): String;
@@ -259,13 +291,40 @@ begin
   end;
 end;
 
+procedure InitializeWizard();
+begin
+  ComputerNamePage := CreateInputQueryPage(
+    wpSelectDir,
+    '电脑名称',
+    '设置这台电脑在星池指挥官中的名称',
+    '安装后此名称将写入本用户的 machine.json，已有文件不会被覆盖。');
+  ComputerNamePage.Add('电脑名称:', False);
+  ComputerNamePage.Values[0] := GetInitialComputerName();
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if (CurPageID = ComputerNamePage.ID) and (Trim(ComputerNamePage.Values[0]) = '') then begin
+    MsgBox('电脑名称不能为空。', mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ModePath: String;
+  MachinePath: String;
+  ComputerName: String;
 begin
   if CurStep <> ssPostInstall then begin
     Exit;
   end;
+
+  MachinePath := GetMachinePath();
+  ComputerName := GetChosenComputerName();
+  RunEstimatedPowerShellStep('machine', '正在初始化电脑名称...', 'machine.ps1',
+    '-MachinePath ' + PowerShellQuote(MachinePath) + ' -ComputerName ' + PowerShellQuote(ComputerName), 10);
 
   ModePath := ExpandConstant('{app}\install-mode.json');
   if ShouldInstallCodexDesktop then begin

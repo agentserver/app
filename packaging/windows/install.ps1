@@ -162,6 +162,7 @@ $required = @(
     'ensure-vscode.ps1',
     'ensure-codex-desktop.ps1',
     'write-install-mode.ps1',
+    'machine.ps1',
     'vscode-manifest.json',
     'icon.ico'
 )
@@ -193,6 +194,19 @@ try {
     Write-Host "Note: failed to create cache-busting icon path; using icon.ico."
     $ShellIconPath = $IconPath
 }
+
+$MachinePath = Join-Path $env:USERPROFILE '.agentserver-vscode\machine.json'
+$InitialComputerName = $env:COMPUTERNAME
+if ((-not $Silent) -and (-not (Test-Path -LiteralPath $MachinePath))) {
+    $machinePrompt = "Computer name [$InitialComputerName]"
+    $machineInput = Read-Host $machinePrompt
+    if (-not [string]::IsNullOrWhiteSpace($machineInput)) {
+        $InitialComputerName = $machineInput.Trim()
+    }
+}
+
+Write-Step "Initializing computer name..."
+& (Join-Path $InstallDir 'machine.ps1') -MachinePath $MachinePath -ComputerName $InitialComputerName
 
 if ($MinimalVSCode) {
     # Bundled codex.exe — copy into the expected per-user bin dir so
