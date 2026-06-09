@@ -37,9 +37,22 @@ type Runner interface {
 	Stop(context.Context, int) error
 }
 
-type processTracker interface {
-	IsTracked(int) bool
+type processInspector interface {
+	InspectProcess(pid int, exe string) (processInspection, error)
 }
+
+type verifiedProcessStopper interface {
+	StopProcess(context.Context, int, string) error
+}
+
+type processInspection int
+
+const (
+	processUnknown processInspection = iota
+	processMissing
+	processMismatch
+	processMatch
+)
 
 type StartRequest struct {
 	Exe        string
@@ -56,6 +69,7 @@ type StartResult struct {
 }
 
 var ErrProcessNotTracked = errors.New("slave process not tracked")
+var ErrProcessNotRunning = errors.New("slave process not running")
 
 func NewManager(d ManagerDeps) *Manager {
 	if d.Runner == nil {
@@ -73,6 +87,10 @@ func (m *Manager) List(context.Context) (Machine, []Slave, error) {
 		return Machine{}, nil, err
 	}
 	slaves, err := m.d.Registry.List()
+	if err != nil {
+		return Machine{}, nil, err
+	}
+	slaves, err = m.reconcileDeadProcesses(slaves)
 	if err != nil {
 		return Machine{}, nil, err
 	}
@@ -115,14 +133,22 @@ func (m *Manager) Restart(ctx context.Context, id string) (Slave, error) {
 	if err != nil {
 		return Slave{}, err
 	}
-	if reconciled, ok, err := m.reconcileUntrackedProcess(sl.ID, sl); err != nil {
+	if reconciled, ok, err := m.reconcileDeadProcess(sl.ID, sl); err != nil {
 		return Slave{}, err
 	} else if ok {
-		return reconciled, nil
+		sl = reconciled
 	}
 	if sl.PID != 0 {
-		if err := m.d.Runner.Stop(ctx, sl.PID); err != nil {
-			return Slave{}, err
+		if err := m.stopProcess(ctx, sl.PID); err != nil {
+			if errors.Is(err, ErrProcessNotRunning) {
+				reconciled, recErr := m.recordProcessNotRunning(sl.ID, sl.PID)
+				if recErr != nil {
+					return Slave{}, recErr
+				}
+				sl = reconciled
+			} else {
+				return Slave{}, err
+			}
 		}
 	}
 	return m.start(ctx, sl)
@@ -136,13 +162,16 @@ func (m *Manager) Pause(ctx context.Context, id string) (Slave, error) {
 	if err != nil {
 		return Slave{}, err
 	}
-	if reconciled, ok, err := m.reconcileUntrackedProcess(sl.ID, sl); err != nil {
+	if reconciled, ok, err := m.reconcileDeadProcess(sl.ID, sl); err != nil {
 		return Slave{}, err
 	} else if ok {
 		return reconciled, nil
 	}
 	if sl.PID != 0 {
-		if err := m.d.Runner.Stop(ctx, sl.PID); err != nil {
+		if err := m.stopProcess(ctx, sl.PID); err != nil {
+			if errors.Is(err, ErrProcessNotRunning) {
+				return m.recordProcessNotRunning(sl.ID, sl.PID)
+			}
 			return Slave{}, err
 		}
 	}
@@ -163,14 +192,22 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if reconciled, ok, err := m.reconcileUntrackedProcess(sl.ID, sl); err != nil {
+	if reconciled, ok, err := m.reconcileDeadProcess(sl.ID, sl); err != nil {
 		return err
 	} else if ok {
 		sl = reconciled
 	}
 	if sl.PID != 0 {
-		if err := m.d.Runner.Stop(ctx, sl.PID); err != nil {
-			return err
+		if err := m.stopProcess(ctx, sl.PID); err != nil {
+			if errors.Is(err, ErrProcessNotRunning) {
+				reconciled, recErr := m.recordProcessNotRunning(sl.ID, sl.PID)
+				if recErr != nil {
+					return recErr
+				}
+				sl = reconciled
+			} else {
+				return err
+			}
 		}
 	}
 	storageDir, err := m.d.Registry.storageDir(sl.ID)
@@ -233,7 +270,7 @@ func (m *Manager) start(ctx context.Context, sl Slave) (Slave, error) {
 	})
 	if err != nil {
 		if res.PID != 0 {
-			err = errors.Join(err, m.d.Runner.Stop(ctx, res.PID))
+			err = errors.Join(err, m.stopProcess(ctx, res.PID))
 		}
 		return Slave{}, err
 	}
@@ -241,15 +278,47 @@ func (m *Manager) start(ctx context.Context, sl Slave) (Slave, error) {
 	return updated, nil
 }
 
-func (m *Manager) reconcileUntrackedProcess(id string, sl Slave) (Slave, bool, error) {
+func (m *Manager) reconcileDeadProcesses(slaves []Slave) ([]Slave, error) {
+	out := append([]Slave(nil), slaves...)
+	for i := range out {
+		reconciled, ok, err := m.reconcileDeadProcess(out[i].ID, out[i])
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out[i] = reconciled
+		}
+	}
+	return out, nil
+}
+
+func (m *Manager) reconcileDeadProcess(id string, sl Slave) (Slave, bool, error) {
 	if sl.PID == 0 {
 		return sl, false, nil
 	}
-	tracker, ok := m.d.Runner.(processTracker)
-	if !ok || tracker.IsTracked(sl.PID) {
+	inspector, ok := m.d.Runner.(processInspector)
+	if !ok {
 		return sl, false, nil
 	}
-	pid := sl.PID
+	inspection, err := inspector.InspectProcess(sl.PID, m.d.SlaveExe)
+	if err != nil {
+		return Slave{}, false, err
+	}
+	switch inspection {
+	case processMatch:
+		return sl, false, nil
+	case processMissing, processMismatch:
+	default:
+		return Slave{}, false, fmt.Errorf("inspect slave process %d: unknown process state", sl.PID)
+	}
+	updated, err := m.recordProcessNotRunning(id, sl.PID)
+	if err != nil {
+		return Slave{}, false, err
+	}
+	return updated, true, nil
+}
+
+func (m *Manager) recordProcessNotRunning(id string, pid int) (Slave, error) {
 	updated, err := m.d.Registry.Update(id, func(s *Slave) error {
 		if s.PID != pid {
 			return errStaleProcessEvent
@@ -257,13 +326,20 @@ func (m *Manager) reconcileUntrackedProcess(id string, sl Slave) (Slave, bool, e
 		s.Status = StatusError
 		s.PID = 0
 		s.AuthURL = ""
-		s.LastError = fmt.Sprintf("%v: %d", ErrProcessNotTracked, pid)
+		s.LastError = fmt.Sprintf("%v: %d", ErrProcessNotRunning, pid)
 		return nil
 	})
 	if err != nil {
-		return Slave{}, false, err
+		return Slave{}, err
 	}
-	return updated, true, nil
+	return updated, nil
+}
+
+func (m *Manager) stopProcess(ctx context.Context, pid int) error {
+	if stopper, ok := m.d.Runner.(verifiedProcessStopper); ok {
+		return stopper.StopProcess(ctx, pid, m.d.SlaveExe)
+	}
+	return m.d.Runner.Stop(ctx, pid)
 }
 
 func (m *Manager) requireDeps(needsMachine, needsRegistry, needsRunner bool) error {
@@ -513,6 +589,10 @@ func (execRunner) Start(ctx context.Context, req StartRequest) (StartResult, err
 }
 
 func (execRunner) Stop(ctx context.Context, pid int) error {
+	return (execRunner{}).StopProcess(ctx, pid, "")
+}
+
+func (execRunner) StopProcess(ctx context.Context, pid int, expectedExe string) error {
 	if pid == 0 {
 		return nil
 	}
@@ -521,7 +601,7 @@ func (execRunner) Stop(ctx context.Context, pid int) error {
 	}
 	tracked, ok := lookupExecProcess(pid)
 	if !ok {
-		return fmt.Errorf("%w: %d", ErrProcessNotTracked, pid)
+		return terminateUntrackedProcess(ctx, pid, expectedExe, execStopWaitTimeout)
 	}
 	if err := tracked.proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
@@ -536,12 +616,33 @@ func (execRunner) Stop(ctx context.Context, pid int) error {
 	}
 }
 
-func (execRunner) IsTracked(pid int) bool {
+func (execRunner) InspectProcess(pid int, expectedExe string) (processInspection, error) {
 	if pid == 0 {
-		return false
+		return processMissing, nil
 	}
-	_, ok := lookupExecProcess(pid)
-	return ok
+	if _, ok := lookupExecProcess(pid); ok {
+		return processMatch, nil
+	}
+	return inspectOSProcess(pid, expectedExe)
+}
+
+func waitForProcessExit(ctx context.Context, pid int, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if !osProcessExists(pid) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return fmt.Errorf("wait for slave process %d exit: timeout", pid)
+		case <-ticker.C:
+		}
+	}
 }
 
 func trackExecProcess(pid int, tracked trackedExecProcess) {

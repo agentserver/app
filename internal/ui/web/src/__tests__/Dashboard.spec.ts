@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
 import Dashboard from '../components/Dashboard.vue';
 import * as api from '../api';
@@ -52,7 +52,11 @@ function deferred<T>() {
 }
 
 describe('Dashboard', () => {
-  beforeEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+  afterEach(() => vi.useRealTimers());
 
   it('renders project, workspace, quota, and subscription action', async () => {
     mockConsoleState();
@@ -278,6 +282,91 @@ describe('Dashboard', () => {
     expect(createSpy).toHaveBeenCalledWith({ folder: '/repo/app', name: 'worker' });
     expect(getSlavesSpy).toHaveBeenCalledTimes(2);
     expect(w.text()).toContain('devbox-worker');
+  });
+
+  it('automatically refreshes pending local slave status until auth is available', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+    const getSlavesSpy = vi.spyOn(api, 'getConsoleSlaves')
+      .mockResolvedValueOnce(consoleSlaves())
+      .mockResolvedValueOnce(consoleSlaves({
+        slaves: [{
+          id: 'sl-1',
+          name: 'worker',
+          display_name: 'devbox-worker',
+          folder: '/repo/app',
+          status: 'starting',
+        }],
+      }))
+      .mockResolvedValueOnce(consoleSlaves({
+        slaves: [{
+          id: 'sl-1',
+          name: 'worker',
+          display_name: 'devbox-worker',
+          folder: '/repo/app',
+          status: 'auth_required',
+          auth_url: 'https://auth.example/device',
+        }],
+      }));
+    vi.spyOn(api, 'createConsoleSlave').mockResolvedValue({
+      id: 'sl-1',
+      name: 'worker',
+      display_name: 'devbox-worker',
+      folder: '/repo/app',
+      status: 'starting',
+    });
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await setInput(w, 'slave-folder-input', '/repo/app');
+    await setInput(w, 'slave-name-input', 'worker');
+    await w.find('[data-test="create-slave"]').trigger('click');
+    await flushPromises();
+
+    expect(w.text()).toContain('启动中');
+    await vi.advanceTimersByTimeAsync(3000);
+    await flushPromises();
+
+    expect(getSlavesSpy).toHaveBeenCalledTimes(3);
+    expect(w.text()).toContain('待认证');
+    expect(w.find('a[href="https://auth.example/device"]').exists()).toBe(true);
+    w.unmount();
+  });
+
+  it('does not recreate local slave polling when an in-flight load resolves after unmount', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+    const initial = deferred<api.ConsoleSlavesResponse>();
+    const getSlavesSpy = vi.spyOn(api, 'getConsoleSlaves')
+      .mockReturnValueOnce(initial.promise)
+      .mockResolvedValue(consoleSlaves({
+        slaves: [{
+          id: 'sl-1',
+          name: 'worker',
+          display_name: 'devbox-worker',
+          folder: '/repo/app',
+          status: 'auth_required',
+          auth_url: 'https://auth.example/device',
+        }],
+      }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    w.unmount();
+    initial.resolve(consoleSlaves({
+      slaves: [{
+        id: 'sl-1',
+        name: 'worker',
+        display_name: 'devbox-worker',
+        folder: '/repo/app',
+        status: 'starting',
+      }],
+    }));
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(3000);
+    await flushPromises();
+
+    expect(getSlavesSpy).toHaveBeenCalledTimes(1);
   });
 
   it('keeps the newest local slave refresh when the initial load resolves later', async () => {

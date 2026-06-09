@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import * as api from '../api';
 import QuotaCard from './QuotaCard.vue';
 
@@ -24,6 +24,9 @@ const slaveError = ref('');
 const creatingSlave = ref(false);
 const slaveBusy = ref<Record<string, boolean>>({});
 let slaveLoadSeq = 0;
+const slavePollIntervalMs = 3000;
+let slavePollTimer: number | undefined;
+let dashboardMounted = false;
 
 const visibleErrors = computed(() => [
   { key: 'status', message: statusError.value },
@@ -72,14 +75,39 @@ async function loadSlaves() {
   const seq = ++slaveLoadSeq;
   try {
     const res = await api.getConsoleSlaves();
+    if (!dashboardMounted) return;
     if (seq !== slaveLoadSeq) return;
     slaveMachine.value = res.machine;
-    slaves.value = res.slaves;
+    slaves.value = res.slaves || [];
     slaveError.value = '';
+    syncSlavePolling();
   } catch (e) {
+    if (!dashboardMounted) return;
     if (seq !== slaveLoadSeq) return;
     slaveError.value = errorMessage(e);
+    syncSlavePolling();
   }
+}
+
+function slaveNeedsPolling(sl: api.ConsoleSlave) {
+  return sl.status === 'starting' || sl.status === 'auth_required';
+}
+
+function clearSlavePolling() {
+  if (slavePollTimer !== undefined) {
+    window.clearTimeout(slavePollTimer);
+    slavePollTimer = undefined;
+  }
+}
+
+function syncSlavePolling() {
+  clearSlavePolling();
+  if (!dashboardMounted) return;
+  if (!slaves.value.some(slaveNeedsPolling)) return;
+  slavePollTimer = window.setTimeout(() => {
+    slavePollTimer = undefined;
+    void loadSlaves();
+  }, slavePollIntervalMs);
 }
 
 async function refresh() {
@@ -253,8 +281,14 @@ function slaveStatusLabel(status: api.ConsoleSlaveStatus | string) {
 }
 
 onMounted(() => {
+  dashboardMounted = true;
   void load();
   void loadSlaves();
+});
+
+onBeforeUnmount(() => {
+  dashboardMounted = false;
+  clearSlavePolling();
 });
 </script>
 

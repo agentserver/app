@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -553,7 +554,7 @@ func TestManagerDeleteUsesTrustedStorageDirWhenConfigPathIsCorrupt(t *testing.T)
 	}
 }
 
-func TestManagerPauseReconcilesPersistedUntrackedPIDWithoutStopping(t *testing.T) {
+func TestManagerPauseStopsPersistedUntrackedPID(t *testing.T) {
 	dir := t.TempDir()
 	folder := filepath.Join(dir, "repo")
 	_ = mkdir(folder)
@@ -570,34 +571,26 @@ func TestManagerPauseReconcilesPersistedUntrackedPIDWithoutStopping(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runner := &trackingFakeRunner{}
+	runner := &fakeRunner{}
 	manager := NewManager(ManagerDeps{
 		Registry: registry,
 		Runner:   runner,
 		SlaveExe: filepath.Join(dir, "slave-agent.exe"),
 	})
 
-	reconciled, err := manager.Pause(context.Background(), sl.ID)
+	paused, err := manager.Pause(context.Background(), sl.ID)
 	if err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	if runner.stopped[1111] {
-		t.Fatalf("Stop was called for untracked PID")
+	if !runner.stopped[1111] {
+		t.Fatalf("Stop was not called for persisted PID")
 	}
-	if reconciled.Status != StatusError || reconciled.PID != 0 || reconciled.AuthURL != "" || !strings.Contains(reconciled.LastError, ErrProcessNotTracked.Error()) {
-		t.Fatalf("reconciled slave=%+v", reconciled)
-	}
-
-	paused, err := manager.Pause(context.Background(), sl.ID)
-	if err != nil {
-		t.Fatalf("second Pause: %v", err)
-	}
-	if paused.Status != StatusPaused || paused.PID != 0 {
-		t.Fatalf("paused after reconciliation=%+v", paused)
+	if paused.Status != StatusPaused || paused.PID != 0 || paused.AuthURL != "" || paused.LastError != "" {
+		t.Fatalf("paused slave=%+v", paused)
 	}
 }
 
-func TestManagerDeleteReconcilesPersistedUntrackedPIDWithoutStopping(t *testing.T) {
+func TestManagerDeleteStopsPersistedUntrackedPID(t *testing.T) {
 	dir := t.TempDir()
 	folder := filepath.Join(dir, "repo")
 	_ = mkdir(folder)
@@ -620,7 +613,7 @@ func TestManagerDeleteReconcilesPersistedUntrackedPIDWithoutStopping(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	runner := &trackingFakeRunner{}
+	runner := &fakeRunner{}
 	manager := NewManager(ManagerDeps{
 		Registry: registry,
 		Runner:   runner,
@@ -630,8 +623,8 @@ func TestManagerDeleteReconcilesPersistedUntrackedPIDWithoutStopping(t *testing.
 	if err := manager.Delete(context.Background(), sl.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if runner.stopped[2222] {
-		t.Fatalf("Stop was called for untracked PID")
+	if !runner.stopped[2222] {
+		t.Fatalf("Stop was not called for persisted PID")
 	}
 	if _, err := os.Stat(trustedDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("trusted dir still exists after delete: %v", err)
@@ -642,6 +635,175 @@ func TestManagerDeleteReconcilesPersistedUntrackedPIDWithoutStopping(t *testing.
 	}
 	if len(all) != 0 {
 		t.Fatalf("slaves after delete=%+v", all)
+	}
+}
+
+func TestManagerListReconcilesDeadPersistedPID(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	registry := NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves"))
+	sl, err := registry.Create(Machine{MachineID: "machine-1", ComputerName: "PC"}, CreateInput{Folder: folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Update(sl.ID, func(s *Slave) error {
+		s.Status = StatusRunning
+		s.PID = 3333
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(ManagerDeps{
+		Machines: NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry: registry,
+		Runner:   &inspectingFakeRunner{},
+		SlaveExe: filepath.Join(dir, "slave-agent.exe"),
+	})
+	if _, err := manager.Machines.Ensure("PC"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, slaves, err := manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(slaves) != 1 {
+		t.Fatalf("slaves=%+v", slaves)
+	}
+	got := slaves[0]
+	if got.Status != StatusError || got.PID != 0 || got.AuthURL != "" || !strings.Contains(got.LastError, ErrProcessNotRunning.Error()) {
+		t.Fatalf("reconciled slave=%+v", got)
+	}
+	persisted, err := manager.Registry.Get(sl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != StatusError || persisted.PID != 0 {
+		t.Fatalf("persisted slave=%+v", persisted)
+	}
+}
+
+func TestManagerListPreservesLiveMatchingPersistedPID(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	registry := NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves"))
+	sl, err := registry.Create(Machine{MachineID: "machine-1", ComputerName: "PC"}, CreateInput{Folder: folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Update(sl.ID, func(s *Slave) error {
+		s.Status = StatusRunning
+		s.PID = 3333
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(ManagerDeps{
+		Machines: NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry: registry,
+		Runner:   &inspectingFakeRunner{matches: map[int]bool{3333: true}},
+		SlaveExe: filepath.Join(dir, "slave-agent.exe"),
+	})
+	if _, err := manager.Machines.Ensure("PC"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, slaves, err := manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(slaves) != 1 {
+		t.Fatalf("slaves=%+v", slaves)
+	}
+	got := slaves[0]
+	if got.Status != StatusRunning || got.PID != 3333 || got.LastError != "" {
+		t.Fatalf("live slave was reconciled incorrectly=%+v", got)
+	}
+}
+
+func TestManagerPauseDoesNotStopPIDThatDoesNotMatchSlaveExe(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	registry := NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves"))
+	sl, err := registry.Create(Machine{MachineID: "machine-1", ComputerName: "PC"}, CreateInput{Folder: folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Update(sl.ID, func(s *Slave) error {
+		s.Status = StatusRunning
+		s.PID = 4444
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &inspectingFakeRunner{matches: map[int]bool{4444: false}}
+	manager := NewManager(ManagerDeps{
+		Registry: registry,
+		Runner:   runner,
+		SlaveExe: filepath.Join(dir, "slave-agent.exe"),
+	})
+
+	got, err := manager.Pause(context.Background(), sl.ID)
+	if err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	if runner.stopped[4444] {
+		t.Fatalf("Stop was called for PID that does not match slave executable")
+	}
+	if got.Status != StatusError || got.PID != 0 || !strings.Contains(got.LastError, ErrProcessNotRunning.Error()) {
+		t.Fatalf("reconciled slave=%+v", got)
+	}
+}
+
+func TestManagerDeleteReturnsInspectionErrorAndPreservesRegistry(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	registry := NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves"))
+	sl, err := registry.Create(Machine{MachineID: "machine-1", ComputerName: "PC"}, CreateInput{Folder: folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustedDir, err := registry.storageDir(sl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mkdir(trustedDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Update(sl.ID, func(s *Slave) error {
+		s.Status = StatusRunning
+		s.PID = 5555
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inspectErr := errors.New("query process image: access denied")
+	runner := &failingInspectionRunner{inspectErr: inspectErr}
+	manager := NewManager(ManagerDeps{
+		Registry: registry,
+		Runner:   runner,
+		SlaveExe: filepath.Join(dir, "slave-agent.exe"),
+	})
+
+	if err := manager.Delete(context.Background(), sl.ID); !errors.Is(err, inspectErr) {
+		t.Fatalf("Delete error=%v, want %v", err, inspectErr)
+	}
+	if runner.stopped[5555] {
+		t.Fatalf("Stop was called after process inspection failed")
+	}
+	if _, err := os.Stat(trustedDir); err != nil {
+		t.Fatalf("trusted dir should be preserved after inspection failure: %v", err)
+	}
+	got, err := manager.Registry.Get(sl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PID != 5555 || got.Status != StatusRunning {
+		t.Fatalf("slave should preserve runtime state after inspection failure=%+v", got)
 	}
 }
 
@@ -773,9 +935,98 @@ func TestExecRunnerStopStopsTrackedProcessAndWaits(t *testing.T) {
 	assertLinuxProcessExits(t, res.PID)
 }
 
-func TestExecRunnerStopReturnsErrorForUntrackedNonzeroPID(t *testing.T) {
-	if err := (execRunner{}).Stop(context.Background(), 999999); !errors.Is(err, ErrProcessNotTracked) {
-		t.Fatalf("Stop error=%v, want ErrProcessNotTracked", err)
+func TestExecRunnerStopStopsUntrackedOSProcess(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses Linux shell and /proc process checks")
+	}
+	exe := writeLinuxShellScript(t, "exec sleep 30\n")
+	cmd := exec.Command(exe)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start untracked process: %v", err)
+	}
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+	t.Cleanup(func() {
+		if linuxProcessExists(cmd.Process.Pid) {
+			_ = cmd.Process.Kill()
+		}
+		<-waitCh
+	})
+
+	if err := (execRunner{}).Stop(context.Background(), cmd.Process.Pid); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	assertLinuxProcessExits(t, cmd.Process.Pid)
+}
+
+func TestExecRunnerStopProcessStopsUntrackedMatchingExecutable(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses Linux shell and /proc process checks")
+	}
+	sleepPath, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("find sleep: %v", err)
+	}
+	cmd := exec.Command(sleepPath, "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start untracked process: %v", err)
+	}
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+	t.Cleanup(func() {
+		if linuxProcessExists(cmd.Process.Pid) {
+			_ = cmd.Process.Kill()
+		}
+		<-waitCh
+	})
+
+	if err := (execRunner{}).StopProcess(context.Background(), cmd.Process.Pid, sleepPath); err != nil {
+		t.Fatalf("StopProcess: %v", err)
+	}
+	assertLinuxProcessExits(t, cmd.Process.Pid)
+}
+
+func TestExecRunnerStopProcessRefusesUntrackedNonMatchingExecutable(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses Linux shell and /proc process checks")
+	}
+	dir := t.TempDir()
+	exe := writeLinuxShellScript(t, "exec sleep 30\n")
+	otherExe := filepath.Join(dir, "other-agent")
+	if err := os.WriteFile(otherExe, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start untracked process: %v", err)
+	}
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+	t.Cleanup(func() {
+		if linuxProcessExists(cmd.Process.Pid) {
+			_ = cmd.Process.Kill()
+		}
+		<-waitCh
+	})
+
+	err := (execRunner{}).StopProcess(context.Background(), cmd.Process.Pid, otherExe)
+	if !errors.Is(err, ErrProcessNotRunning) {
+		t.Fatalf("StopProcess error=%v, want ErrProcessNotRunning", err)
+	}
+	if !linuxProcessExists(cmd.Process.Pid) {
+		t.Fatalf("non-matching process %d was killed", cmd.Process.Pid)
+	}
+}
+
+func TestExecRunnerStopReturnsProcessNotRunningForMissingPID(t *testing.T) {
+	if err := (execRunner{}).Stop(context.Background(), 999999); !errors.Is(err, ErrProcessNotRunning) {
+		t.Fatalf("Stop error=%v, want ErrProcessNotRunning", err)
 	}
 }
 
@@ -924,13 +1175,25 @@ func (f *fakeRunner) Stop(_ context.Context, pid int) error {
 	return f.stopErr
 }
 
-type trackingFakeRunner struct {
+type inspectingFakeRunner struct {
 	fakeRunner
-	tracked map[int]bool
+	matches map[int]bool
 }
 
-func (f *trackingFakeRunner) IsTracked(pid int) bool {
-	return f.tracked[pid]
+func (f *inspectingFakeRunner) InspectProcess(pid int, _ string) (processInspection, error) {
+	if f.matches[pid] {
+		return processMatch, nil
+	}
+	return processMismatch, nil
+}
+
+type failingInspectionRunner struct {
+	fakeRunner
+	inspectErr error
+}
+
+func (f *failingInspectionRunner) InspectProcess(int, string) (processInspection, error) {
+	return processUnknown, f.inspectErr
 }
 
 func writeReadyCredentials(t *testing.T, path string) {
