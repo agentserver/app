@@ -19,8 +19,26 @@ function consoleState(): api.ConsoleState {
   };
 }
 
+function consoleSlaves(overrides?: Partial<api.ConsoleSlavesResponse>): api.ConsoleSlavesResponse {
+  return {
+    machine: { machine_id: 'machine-1', computer_name: 'devbox' },
+    slaves: [],
+    ...overrides,
+  };
+}
+
 function mockConsoleState() {
   vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+  vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves());
+}
+
+async function setInput(w: ReturnType<typeof mount>, testId: string, value: string) {
+  const wrappedInput = w.find(`[data-test="${testId}"] input`);
+  const input = wrappedInput.exists()
+    ? wrappedInput
+    : w.find(`input[data-test="${testId}"]`);
+  expect(input.exists()).toBe(true);
+  await input.setValue(value);
 }
 
 function deferred<T>() {
@@ -197,5 +215,222 @@ describe('Dashboard', () => {
     await subscriptionButton!.trigger('click');
 
     expect(subscriptionSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders local slave group with machine name and auth link', async () => {
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+    vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves({
+      slaves: [{
+        id: 'sl-1',
+        name: 'worker',
+        display_name: 'devbox-worker',
+        folder: '/repo/app',
+        status: 'auth_required',
+        auth_url: 'https://auth.example/device',
+        last_error: '等待认证',
+      }],
+    }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(w.text()).toContain('这台电脑上的 agent');
+    expect(w.text()).toContain('本机：devbox');
+    expect(w.text()).toContain('devbox-worker');
+    expect(w.text()).toContain('/repo/app');
+    expect(w.text()).toContain('待认证');
+    expect(w.text()).toContain('等待认证');
+    const authLink = w.find('a[href="https://auth.example/device"]');
+    expect(authLink.exists()).toBe(true);
+    expect(authLink.text()).toContain('认证');
+  });
+
+  it('creates a local slave with folder and custom name then refreshes', async () => {
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+    const getSlavesSpy = vi.spyOn(api, 'getConsoleSlaves')
+      .mockResolvedValueOnce(consoleSlaves())
+      .mockResolvedValueOnce(consoleSlaves({
+        slaves: [{
+          id: 'sl-1',
+          name: 'worker',
+          display_name: 'devbox-worker',
+          folder: '/repo/app',
+          status: 'starting',
+        }],
+      }));
+    const createSpy = vi.spyOn(api, 'createConsoleSlave').mockResolvedValue({
+      id: 'sl-1',
+      name: 'worker',
+      display_name: 'devbox-worker',
+      folder: '/repo/app',
+      status: 'starting',
+    });
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await setInput(w, 'slave-folder-input', '/repo/app');
+    await setInput(w, 'slave-name-input', 'worker');
+    expect(w.text()).toContain('devbox-worker');
+
+    await w.find('[data-test="create-slave"]').trigger('click');
+    await flushPromises();
+
+    expect(createSpy).toHaveBeenCalledWith({ folder: '/repo/app', name: 'worker' });
+    expect(getSlavesSpy).toHaveBeenCalledTimes(2);
+    expect(w.text()).toContain('devbox-worker');
+  });
+
+  it('keeps the newest local slave refresh when the initial load resolves later', async () => {
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+    const staleInitial = deferred<api.ConsoleSlavesResponse>();
+    const freshAfterCreate = deferred<api.ConsoleSlavesResponse>();
+    vi.spyOn(api, 'getConsoleSlaves')
+      .mockReturnValueOnce(staleInitial.promise)
+      .mockReturnValueOnce(freshAfterCreate.promise);
+    vi.spyOn(api, 'createConsoleSlave').mockResolvedValue({
+      id: 'sl-2',
+      name: 'fresh',
+      display_name: 'devbox-fresh',
+      folder: '/repo/fresh',
+      status: 'running',
+    });
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await setInput(w, 'slave-folder-input', '/repo/fresh');
+    await setInput(w, 'slave-name-input', 'fresh');
+    await w.find('[data-test="create-slave"]').trigger('click');
+    await flushPromises();
+
+    freshAfterCreate.resolve(consoleSlaves({
+      slaves: [{
+        id: 'sl-2',
+        name: 'fresh',
+        display_name: 'devbox-fresh',
+        folder: '/repo/fresh',
+        status: 'running',
+      }],
+    }));
+    await flushPromises();
+    expect(w.text()).toContain('devbox-fresh');
+
+    staleInitial.resolve(consoleSlaves({
+      slaves: [{
+        id: 'sl-1',
+        name: 'stale',
+        display_name: 'devbox-stale',
+        folder: '/repo/stale',
+        status: 'paused',
+      }],
+    }));
+    await flushPromises();
+
+    expect(w.text()).toContain('devbox-fresh');
+    expect(w.text()).not.toContain('devbox-stale');
+  });
+
+  it('ignores stale local slave load failures after a newer refresh succeeds', async () => {
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+    const staleInitial = deferred<api.ConsoleSlavesResponse>();
+    const freshAfterCreate = deferred<api.ConsoleSlavesResponse>();
+    vi.spyOn(api, 'getConsoleSlaves')
+      .mockReturnValueOnce(staleInitial.promise)
+      .mockReturnValueOnce(freshAfterCreate.promise);
+    vi.spyOn(api, 'createConsoleSlave').mockResolvedValue({
+      id: 'sl-2',
+      name: 'fresh',
+      display_name: 'devbox-fresh',
+      folder: '/repo/fresh',
+      status: 'running',
+    });
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await setInput(w, 'slave-folder-input', '/repo/fresh');
+    await setInput(w, 'slave-name-input', 'fresh');
+    await w.find('[data-test="create-slave"]').trigger('click');
+    await flushPromises();
+
+    freshAfterCreate.resolve(consoleSlaves({
+      slaves: [{
+        id: 'sl-2',
+        name: 'fresh',
+        display_name: 'devbox-fresh',
+        folder: '/repo/fresh',
+        status: 'running',
+      }],
+    }));
+    await flushPromises();
+    staleInitial.reject(new Error('stale failed'));
+    await flushPromises();
+
+    expect(w.text()).toContain('devbox-fresh');
+    expect(w.text()).not.toContain('stale failed');
+  });
+
+  it('blocks local slave names longer than 20 characters', async () => {
+    mockConsoleState();
+    const createSpy = vi.spyOn(api, 'createConsoleSlave').mockResolvedValue({} as api.ConsoleSlave);
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await setInput(w, 'slave-folder-input', '/repo/app');
+    await setInput(w, 'slave-name-input', '工'.repeat(21));
+    await w.find('[data-test="create-slave"]').trigger('click');
+    await flushPromises();
+
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(w.text()).toContain('名称最多 20 个字符');
+  });
+
+  it('runs local slave actions and refreshes after confirmation for delete', async () => {
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+    const getSlavesSpy = vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves({
+      slaves: [{
+        id: 'sl-1',
+        name: 'worker',
+        display_name: 'devbox-worker',
+        folder: '/repo/app',
+        status: 'running',
+      }],
+    }));
+    const restartSpy = vi.spyOn(api, 'restartConsoleSlave').mockResolvedValue({} as api.ConsoleSlave);
+    const pauseSpy = vi.spyOn(api, 'pauseConsoleSlave').mockResolvedValue({} as api.ConsoleSlave);
+    const deleteSpy = vi.spyOn(api, 'deleteConsoleSlave').mockResolvedValue({ state: 'deleted' });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    await w.find('[data-test="restart-slave-sl-1"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-test="pause-slave-sl-1"]').trigger('click');
+    await flushPromises();
+    await w.find('[data-test="delete-slave-sl-1"]').trigger('click');
+    await flushPromises();
+
+    expect(restartSpy).toHaveBeenCalledWith('sl-1');
+    expect(pauseSpy).toHaveBeenCalledWith('sl-1');
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('只会删除这台电脑上的本地 agent'));
+    expect(deleteSpy).toHaveBeenCalledWith('sl-1');
+    expect(getSlavesSpy).toHaveBeenCalledTimes(4);
+  });
+
+  it('renders unknown local slave statuses as the raw status', async () => {
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+    vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves({
+      slaves: [{
+        id: 'sl-unknown',
+        name: 'odd',
+        display_name: 'devbox-odd',
+        folder: '/repo/odd',
+        status: 'warming' as api.ConsoleSlaveStatus,
+      }],
+    }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(w.text()).toContain('warming');
   });
 });

@@ -57,6 +57,38 @@ export interface ConsoleState {
   last_refreshed_at?: string;
 }
 
+export interface ConsoleMachine {
+  machine_id: string;
+  computer_name: string;
+}
+
+export type ConsoleSlaveStatus =
+  'stopped' | 'starting' | 'auth_required' | 'running' | 'paused' | 'error';
+
+export interface ConsoleSlave {
+  id: string;
+  name: string;
+  display_name: string;
+  folder: string;
+  config_path?: string;
+  status: ConsoleSlaveStatus;
+  pid?: number;
+  auth_url?: string;
+  last_error?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ConsoleSlavesResponse {
+  machine: ConsoleMachine;
+  slaves: ConsoleSlave[];
+}
+
+export interface CreateConsoleSlaveInput {
+  folder: string;
+  name?: string;
+}
+
 export class OnboardingError extends Error {
   constructor(
     message: string,
@@ -122,6 +154,25 @@ export const openConsoleSubscription = () =>
 
 export const logoutConsoleModelserver = () =>
   request<{ state: 'logged_out' }>('/api/console/logout-modelserver', { method: 'POST' });
+
+export const getConsoleSlaves = () =>
+  request<ConsoleSlavesResponse>('/api/console/slaves');
+
+export const createConsoleSlave = (input: CreateConsoleSlaveInput) =>
+  request<ConsoleSlave>('/api/console/slaves', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+
+export const restartConsoleSlave = (id: string) =>
+  request<ConsoleSlave>(`/api/console/slaves/${encodeURIComponent(id)}/restart`, { method: 'POST' });
+
+export const pauseConsoleSlave = (id: string) =>
+  request<ConsoleSlave>(`/api/console/slaves/${encodeURIComponent(id)}/pause`, { method: 'POST' });
+
+export const deleteConsoleSlave = (id: string) =>
+  request<{ state: 'deleted' }>(`/api/console/slaves/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
 export const startVSCodeInstall = startFrontendInstall;
 export const configureVSCode = configureFrontend;

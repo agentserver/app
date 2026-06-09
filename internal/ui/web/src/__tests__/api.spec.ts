@@ -127,4 +127,60 @@ describe('api', () => {
     await api.logoutConsoleModelserver();
     expect(fetchSpy).toHaveBeenCalledWith('/api/console/logout-modelserver', expect.objectContaining({ method: 'POST' }));
   });
+
+  it('getConsoleSlaves returns machine and local slaves', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        machine: { machine_id: 'machine-1', computer_name: 'devbox' },
+        slaves: [{
+          id: 'sl-1',
+          name: 'worker',
+          display_name: 'devbox-worker',
+          folder: '/repo',
+          status: 'auth_required',
+          auth_url: 'https://auth.example/device',
+        }],
+      }),
+    } as Response);
+
+    const s = await api.getConsoleSlaves();
+
+    expect(s.machine.computer_name).toBe('devbox');
+    expect(s.slaves[0].status).toBe('auth_required');
+    expect(s.slaves[0].auth_url).toBe('https://auth.example/device');
+  });
+
+  it('createConsoleSlave POSTs folder and name as JSON', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'sl-1', name: 'worker', display_name: 'devbox-worker', folder: '/repo', status: 'starting' }),
+    } as Response);
+
+    await api.createConsoleSlave({ folder: '/repo', name: 'worker' });
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/slaves', expect.objectContaining({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder: '/repo', name: 'worker' }),
+    }));
+  });
+
+  it('restart pause and delete call the console slave action endpoints', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'sl-1', status: 'running' }),
+    } as Response);
+
+    await api.restartConsoleSlave('sl-1');
+    await api.pauseConsoleSlave('sl-1');
+    await api.deleteConsoleSlave('sl-1');
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/slaves/sl-1/restart', expect.objectContaining({ method: 'POST' }));
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/slaves/sl-1/pause', expect.objectContaining({ method: 'POST' }));
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/slaves/sl-1', expect.objectContaining({ method: 'DELETE' }));
+  });
 });
