@@ -238,7 +238,7 @@ describe('Dashboard', () => {
     const w = mount(Dashboard);
     await flushPromises();
 
-    expect(w.text()).toContain('这台电脑上的 agent');
+    expect(w.text()).toContain('允许被远程控制的文件夹（智能体形式提供）');
     expect(w.text()).toContain('本机：devbox');
     expect(w.text()).toContain('devbox-worker');
     expect(w.text()).toContain('/repo/app');
@@ -269,19 +269,34 @@ describe('Dashboard', () => {
       folder: '/repo/app',
       status: 'starting',
     });
+    const selectSpy = vi.spyOn(api, 'selectConsoleSlaveFolder').mockResolvedValue({ folder: '/repo/app' });
 
     const w = mount(Dashboard);
     await flushPromises();
-    await setInput(w, 'slave-folder-input', '/repo/app');
+    await w.find('[data-test="select-slave-folder"]').trigger('click');
+    await flushPromises();
     await setInput(w, 'slave-name-input', 'worker');
     expect(w.text()).toContain('devbox-worker');
 
     await w.find('[data-test="create-slave"]').trigger('click');
     await flushPromises();
 
+    expect(selectSpy).toHaveBeenCalledTimes(1);
     expect(createSpy).toHaveBeenCalledWith({ folder: '/repo/app', name: 'worker' });
     expect(getSlavesSpy).toHaveBeenCalledTimes(2);
     expect(w.text()).toContain('devbox-worker');
+  });
+
+  it('displays an error when native folder selection fails', async () => {
+    mockConsoleState();
+    vi.spyOn(api, 'selectConsoleSlaveFolder').mockRejectedValue(new Error('picker unavailable'));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await w.find('[data-test="select-slave-folder"]').trigger('click');
+    await flushPromises();
+
+    expect(w.text()).toContain('picker unavailable');
   });
 
   it('automatically refreshes pending local slave status until auth is available', async () => {
@@ -500,7 +515,7 @@ describe('Dashboard', () => {
 
     expect(restartSpy).toHaveBeenCalledWith('sl-1');
     expect(pauseSpy).toHaveBeenCalledWith('sl-1');
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('只会删除这台电脑上的本地 agent'));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('只会删除这台电脑上的本地配置和进程'));
     expect(deleteSpy).toHaveBeenCalledWith('sl-1');
     expect(getSlavesSpy).toHaveBeenCalledTimes(4);
   });

@@ -258,7 +258,7 @@ func TestWindowsPortableCodexDesktopUsesBundledInstaller(t *testing.T) {
 	}
 }
 
-func TestWindowsMachineScriptCreatesImmutableMachineIdentity(t *testing.T) {
+func TestWindowsMachineScriptCreatesLockedMachineIdentityAndMigratesLegacyAutoName(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/machine.ps1")
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +271,9 @@ func TestWindowsMachineScriptCreatesImmutableMachineIdentity(t *testing.T) {
 		"$ComputerName = $ComputerName.Trim()",
 		"if ([string]::IsNullOrWhiteSpace($ComputerName))",
 		"if (Test-Path -LiteralPath $MachinePath)",
-		"exists; leaving unchanged",
+		"computer_name_locked",
+		"Migrated legacy machine name",
+		"leaving unchanged",
 		"[guid]::NewGuid().ToString()",
 		"machine_id",
 		"computer_name",
@@ -280,13 +282,13 @@ func TestWindowsMachineScriptCreatesImmutableMachineIdentity(t *testing.T) {
 		"WriteAllText",
 	} {
 		if !strings.Contains(s, want) {
-			t.Fatalf("machine.ps1 should create immutable machine identity; missing %q", want)
+			t.Fatalf("machine.ps1 should create locked machine identity and migrate legacy auto names; missing %q", want)
 		}
 	}
 
 	exists := strings.Index(s, "if (Test-Path -LiteralPath $MachinePath)")
-	write := strings.Index(s, "WriteAllText")
-	if exists < 0 || write < 0 || exists > write {
+	newMachine := strings.LastIndex(s, "$machine = [ordered]@{")
+	if exists < 0 || newMachine < 0 || exists > newMachine {
 		t.Fatal("machine.ps1 must check for an existing machine.json before writing")
 	}
 
@@ -294,8 +296,8 @@ func TestWindowsMachineScriptCreatesImmutableMachineIdentity(t *testing.T) {
 	if computerNameValidation < 0 {
 		t.Fatal("machine.ps1 should trim and validate ComputerName when creating machine.json")
 	}
-	if exists > computerNameValidation {
-		t.Fatal("machine.ps1 must leave existing machine.json unchanged before validating ComputerName")
+	if exists < computerNameValidation {
+		t.Fatal("machine.ps1 must validate ComputerName before deciding whether a legacy auto name can be migrated")
 	}
 }
 
@@ -321,7 +323,11 @@ func TestWindowsPortableInstallerInitializesMachineBeforeFrontend(t *testing.T) 
 	for _, want := range []string{
 		"$MachinePath = Join-Path $env:USERPROFILE '.agentserver-vscode\\machine.json'",
 		"$InitialComputerName = $env:COMPUTERNAME",
-		"if ((-not $Silent) -and (-not (Test-Path -LiteralPath $MachinePath)))",
+		"$ShouldPromptComputerName = $false",
+		"$ShouldPromptComputerName = $true",
+		"$existing.computer_name_locked",
+		"$existing.computer_name -eq $env:COMPUTERNAME",
+		"if ((-not $Silent) -and $ShouldPromptComputerName)",
 		"Read-Host",
 		"& (Join-Path $InstallDir 'machine.ps1') -MachinePath $MachinePath -ComputerName $InitialComputerName",
 	} {
@@ -334,6 +340,22 @@ func TestWindowsPortableInstallerInitializesMachineBeforeFrontend(t *testing.T) 
 	frontend := strings.Index(s, "Writing install mode")
 	if machine < 0 || frontend < 0 || machine > frontend {
 		t.Fatal("install.ps1 should initialize machine identity before writing frontend install mode")
+	}
+}
+
+func TestWindowsPortableInstallerPromptsForLegacyAutoMachineName(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	legacyCheck := strings.Index(s, "$existing.computer_name -eq $env:COMPUTERNAME")
+	prompt := strings.Index(s, "if ((-not $Silent) -and $ShouldPromptComputerName)")
+	if legacyCheck < 0 || prompt < 0 || legacyCheck > prompt {
+		t.Fatal("install.ps1 should offer a computer-name prompt for existing unlocked auto-generated machine.json")
+	}
+	if strings.Contains(s, "if ((-not $Silent) -and (-not (Test-Path -LiteralPath $MachinePath)))") {
+		t.Fatal("install.ps1 should not restrict the computer-name prompt to missing machine.json only")
 	}
 }
 

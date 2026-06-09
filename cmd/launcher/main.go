@@ -27,6 +27,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/env"
+	"github.com/agentserver/agentserver-pkg/internal/folderpicker"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/launchprep"
 	"github.com/agentserver/agentserver-pkg/internal/loom"
@@ -206,7 +207,15 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		AS:                    agentserver.New("https://agent.cs.ac.cn"),
 		Slaves:                slaveManager,
 		ModelserverWebBaseURL: "https://code.cs.ac.cn",
-		OpenURL:               openBrowser,
+		RefreshModelserverToken: func(ctx context.Context) error {
+			_, err := tokenrefresh.RefreshOnce(ctx, tokenrefresh.Options{
+				Secrets: sec,
+				OAuth:   modelserver.OAuthConfig(),
+			})
+			return err
+		},
+		OpenURL:      openBrowser,
+		SelectFolder: folderpicker.Select,
 		OpenFrontend: func(ctx context.Context) error {
 			current, err := in.State.Load()
 			if err != nil {

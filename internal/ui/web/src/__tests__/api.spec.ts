@@ -168,6 +168,19 @@ describe('api', () => {
     }));
   });
 
+  it('selectConsoleSlaveFolder opens the native folder picker endpoint', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ folder: 'C:\\Users\\me\\repo' }),
+    } as Response);
+
+    const selected = await api.selectConsoleSlaveFolder();
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/select-folder', expect.objectContaining({ method: 'POST' }));
+    expect(selected.folder).toBe('C:\\Users\\me\\repo');
+  });
+
   it('restart pause and delete call the console slave action endpoints', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,

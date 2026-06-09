@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { FolderOpened } from '@element-plus/icons-vue';
 import * as api from '../api';
 import QuotaCard from './QuotaCard.vue';
 
@@ -22,6 +23,7 @@ const slaveFolder = ref('');
 const slaveName = ref('');
 const slaveError = ref('');
 const creatingSlave = ref(false);
+const selectingSlaveFolder = ref(false);
 const slaveBusy = ref<Record<string, boolean>>({});
 let slaveLoadSeq = 0;
 const slavePollIntervalMs = 3000;
@@ -220,7 +222,7 @@ async function createSlave() {
   const folder = slaveFolder.value.trim();
   const name = normalizedSlaveName();
   if (!folder) {
-    slaveError.value = '请选择 agent 文件夹';
+    slaveError.value = '请选择文件夹';
     return;
   }
   if (Array.from(name).length > 20) {
@@ -241,6 +243,22 @@ async function createSlave() {
   }
 }
 
+async function selectSlaveFolder() {
+  if (selectingSlaveFolder.value) return;
+  selectingSlaveFolder.value = true;
+  try {
+    const selected = await api.selectConsoleSlaveFolder();
+    if (selected.folder) {
+      slaveFolder.value = selected.folder;
+    }
+    slaveError.value = '';
+  } catch (e) {
+    slaveError.value = errorMessage(e);
+  } finally {
+    selectingSlaveFolder.value = false;
+  }
+}
+
 async function restartSlave(id: string) {
   await runSlaveAction(id, () => api.restartConsoleSlave(id));
 }
@@ -250,7 +268,7 @@ async function pauseSlave(id: string) {
 }
 
 async function deleteSlave(id: string) {
-  const confirmed = window.confirm('只会删除这台电脑上的本地 agent 配置和进程，不会删除远程 agentserver 卡片。确定删除吗？');
+  const confirmed = window.confirm('只会删除这台电脑上的本地配置和进程，不会删除远程工作空间中的记录。确定删除吗？');
   if (!confirmed) return;
   await runSlaveAction(id, () => api.deleteConsoleSlave(id));
 }
@@ -361,23 +379,35 @@ onBeforeUnmount(() => {
 
     <section class="slave-panel">
       <div class="section-head">
-        <h2>这台电脑上的 agent</h2>
+        <h2>允许被远程控制的文件夹（智能体形式提供）</h2>
         <p>本机：{{ machineDisplayName }}</p>
       </div>
 
       <div class="slave-create">
-        <el-input
-          v-model="slaveFolder"
-          data-test="slave-folder-input"
-          placeholder="输入或粘贴文件夹路径"
-          clearable
-        />
+        <div class="folder-select">
+          <el-input
+            v-model="slaveFolder"
+            data-test="slave-folder-input"
+            placeholder="请选择文件夹"
+            readonly
+            clearable
+          />
+          <el-button
+            data-test="select-slave-folder"
+            :icon="FolderOpened"
+            :loading="selectingSlaveFolder"
+            :disabled="selectingSlaveFolder"
+            @click="selectSlaveFolder"
+          >
+            选择文件夹
+          </el-button>
+        </div>
         <el-input
           v-model="slaveName"
           data-test="slave-name-input"
           maxlength="20"
           show-word-limit
-          placeholder="agent 名，默认使用文件夹名"
+          placeholder="名称，默认使用文件夹名"
           clearable
         />
         <span class="slave-preview">预览：{{ slaveDisplayPreview }}</span>
@@ -571,9 +601,19 @@ onBeforeUnmount(() => {
 
 .slave-create {
   display: grid;
-  grid-template-columns: minmax(220px, 2fr) minmax(180px, 1fr) minmax(180px, auto) auto;
+  grid-template-columns: minmax(300px, 2fr) minmax(180px, 1fr) minmax(180px, auto) auto;
   align-items: center;
   gap: 10px;
+}
+
+.folder-select {
+  min-width: 0;
+  display: flex;
+  gap: 8px;
+}
+
+.folder-select :deep(.el-input) {
+  min-width: 0;
 }
 
 .slave-preview {
@@ -670,6 +710,10 @@ onBeforeUnmount(() => {
   .slave-create,
   .slave-row {
     grid-template-columns: 1fr;
+  }
+
+  .folder-select {
+    flex-direction: column;
   }
 
   .slave-actions {

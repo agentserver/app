@@ -297,7 +297,7 @@ begin
     wpSelectDir,
     '电脑名称',
     '设置这台电脑在星池指挥官中的名称',
-    '安装后此名称将写入本用户的 machine.json，已有文件不会被覆盖。');
+    '安装后此名称将写入本用户的 machine.json，已有用户确定的名称不会被覆盖。');
   ComputerNamePage.Add('电脑名称:', False);
   ComputerNamePage.Values[0] := GetInitialComputerName();
 end;

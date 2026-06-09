@@ -55,6 +55,7 @@ func NewServerWithConsole(o Orchestrator, c ConsoleController) http.Handler {
 	mux.HandleFunc("/api/console/open-subscription", s.handleConsoleOpenSubscription)
 	mux.HandleFunc("/api/console/logout-modelserver", s.handleConsoleLogoutModelserver)
 	mux.HandleFunc("/api/console/quit", s.handleConsoleQuit)
+	mux.HandleFunc("/api/console/select-folder", s.handleConsoleSelectFolder)
 	mux.HandleFunc("/api/console/slaves", s.handleConsoleSlaves)
 	mux.HandleFunc("/api/console/slaves/", s.handleConsoleSlave)
 
@@ -265,6 +266,18 @@ func (s *server) handleConsoleSlaves(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, sl)
+}
+
+func (s *server) handleConsoleSelectFolder(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	folder, err := s.c.SelectFolder(r.Context())
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"folder": folder})
 }
 
 func (s *server) handleConsoleSlave(w http.ResponseWriter, r *http.Request) {

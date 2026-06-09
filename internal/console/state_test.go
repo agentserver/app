@@ -12,6 +12,7 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
+	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -310,6 +311,175 @@ func TestControllerStateMarksModelserverReconnectWhenRefreshTokenMissing(t *test
 	}
 	if got.Modelserver.AuthMessage != "大模型连接已失效，请重新连接。" {
 		t.Fatalf("AuthMessage=%q", got.Modelserver.AuthMessage)
+	}
+}
+
+func TestControllerStateRefreshesExpiredModelserverTokenBeforeQuota(t *testing.T) {
+	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage" {
+			t.Fatalf("modelserver unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer refreshed-token" {
+			t.Fatalf("Authorization=%q", r.Header.Get("Authorization"))
+		}
+		w.Write([]byte(`{"credit_usage":[{"window":"5h","percentage":30}]}`))
+	}))
+	defer ms.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	for key, value := range map[string]string{
+		tokenrefresh.AccessTokenKey:          "expired-token",
+		tokenrefresh.RefreshTokenKey:         "refresh-token",
+		tokenrefresh.AccessTokenExpiresAtKey: "2026-06-08T12:00:00Z",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refreshes := 0
+	c := NewController(Deps{
+		State:   store,
+		Secrets: sec,
+		MS:      modelserver.New(ms.URL),
+		Now:     func() time.Time { return time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC) },
+		RefreshModelserverToken: func(context.Context) error {
+			refreshes++
+			if err := sec.Set(tokenrefresh.AccessTokenKey, "refreshed-token"); err != nil {
+				return err
+			}
+			return sec.Set(tokenrefresh.AccessTokenExpiresAtKey, "2026-06-09T13:00:00Z")
+		},
+	})
+
+	got, err := c.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshes != 1 {
+		t.Fatalf("refreshes=%d", refreshes)
+	}
+	if got.Modelserver.ReconnectRequired || got.QuotaError != "" || len(got.Quotas) != 1 {
+		t.Fatalf("state=%+v", got)
+	}
+}
+
+func TestControllerStateRetriesQuotaAfterRefreshingStaleModelserverToken(t *testing.T) {
+	usageCalls := 0
+	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage" {
+			t.Fatalf("modelserver unexpected path %s", r.URL.Path)
+		}
+		usageCalls++
+		if usageCalls == 1 {
+			if r.Header.Get("Authorization") != "Bearer stale-token" {
+				t.Fatalf("first Authorization=%q", r.Header.Get("Authorization"))
+			}
+			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer refreshed-token" {
+			t.Fatalf("retry Authorization=%q", r.Header.Get("Authorization"))
+		}
+		w.Write([]byte(`{"credit_usage":[{"window":"5h","percentage":40}]}`))
+	}))
+	defer ms.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	for key, value := range map[string]string{
+		tokenrefresh.AccessTokenKey:          "stale-token",
+		tokenrefresh.RefreshTokenKey:         "refresh-token",
+		tokenrefresh.AccessTokenExpiresAtKey: "2026-06-09T13:00:00Z",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refreshes := 0
+	got, err := NewController(Deps{
+		State:   store,
+		Secrets: sec,
+		MS:      modelserver.New(ms.URL),
+		Now:     func() time.Time { return time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC) },
+		RefreshModelserverToken: func(context.Context) error {
+			refreshes++
+			if err := sec.Set(tokenrefresh.AccessTokenKey, "refreshed-token"); err != nil {
+				return err
+			}
+			return sec.Set(tokenrefresh.AccessTokenExpiresAtKey, "2026-06-09T13:00:00Z")
+		},
+	}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshes != 1 || usageCalls != 2 {
+		t.Fatalf("refreshes=%d usageCalls=%d", refreshes, usageCalls)
+	}
+	if got.Modelserver.ReconnectRequired || got.QuotaError != "" || len(got.Quotas) != 1 {
+		t.Fatalf("state=%+v", got)
+	}
+}
+
+func TestControllerStateMarksReconnectWhenRefreshRetryIsInvalidGrant(t *testing.T) {
+	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage" {
+			t.Fatalf("modelserver unexpected path %s", r.URL.Path)
+		}
+		http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+	}))
+	defer ms.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	for key, value := range map[string]string{
+		tokenrefresh.AccessTokenKey:          "stale-token",
+		tokenrefresh.RefreshTokenKey:         "refresh-token",
+		tokenrefresh.AccessTokenExpiresAtKey: "2026-06-09T13:00:00Z",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := NewController(Deps{
+		State:   store,
+		Secrets: sec,
+		MS:      modelserver.New(ms.URL),
+		Now:     func() time.Time { return time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC) },
+		RefreshModelserverToken: func(context.Context) error {
+			return oauth.ErrInvalidGrant
+		},
+	}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Modelserver.ReconnectRequired {
+		t.Fatalf("modelserver reconnect should be required: %+v", got.Modelserver)
 	}
 }
 

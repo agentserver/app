@@ -89,6 +89,10 @@ export interface CreateConsoleSlaveInput {
   name?: string;
 }
 
+export interface SelectConsoleSlaveFolderResponse {
+  folder: string;
+}
+
 export class OnboardingError extends Error {
   constructor(
     message: string,
@@ -164,6 +168,9 @@ export const createConsoleSlave = (input: CreateConsoleSlaveInput) =>
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
+
+export const selectConsoleSlaveFolder = () =>
+  request<SelectConsoleSlaveFolderResponse>('/api/console/select-folder', { method: 'POST' });
 
 export const restartConsoleSlave = (id: string) =>
   request<ConsoleSlave>(`/api/console/slaves/${encodeURIComponent(id)}/restart`, { method: 'POST' });

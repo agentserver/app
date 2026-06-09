@@ -532,6 +532,62 @@ func TestPollModelserverLogin_FullPKCE(t *testing.T) {
 	}
 }
 
+func TestPollModelserverLoginRejectsMissingRefreshToken(t *testing.T) {
+	port := freeUIPort(t)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"fake-at","token_type":"Bearer","expires_in":3600}`))
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	cfg := oauth.AuthCodeConfig{
+		Endpoint:     fake.URL,
+		AuthPath:     "/oauth2/auth",
+		TokenPath:    "/oauth2/token",
+		ClientID:     "client-x",
+		Scope:        "project:inference offline_access",
+		CallbackPath: "/oauth/modelserver/callback",
+		Ports:        []int{port},
+		LoginTimeout: 3 * time.Second,
+	}
+
+	dir := t.TempDir()
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+
+	r := &realOrchestrator{d: Deps{
+		State:       store,
+		Secrets:     sec,
+		MSOAuth:     cfg,
+		OpenBrowser: func(string) {},
+	}}
+
+	if _, err := r.LoginModelserver(context.Background()); err != nil {
+		t.Fatalf("LoginModelserver: %v", err)
+	}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		callbackURL := fmt.Sprintf("http://127.0.0.1:%d/oauth/modelserver/callback?code=code-no-refresh&state=%s",
+			port, r.msSession.State)
+		_, _ = http.Get(callbackURL)
+	}()
+
+	_, err := r.PollModelserverLogin(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "refresh_token") {
+		t.Fatalf("PollModelserverLogin err=%v, want missing refresh_token", err)
+	}
+	if got, err := sec.Get("modelserver_api_key"); err == nil {
+		t.Fatalf("access token should not be stored when refresh_token is missing: %q", got)
+	}
+	s, _ := store.Load()
+	if s.Onboarding.HasCompleted("modelserver_login") {
+		t.Fatal("modelserver_login should not complete without a refresh token")
+	}
+}
+
 func TestPollModelserverLoginCompletesWhenProjectLookupUnavailable(t *testing.T) {
 	port := freeUIPort(t)
 	projectLookupCalled := false
@@ -858,7 +914,7 @@ func TestPollModelserverLogin_SurvivesLoginCtxCancel(t *testing.T) {
 			t.Errorf("/oauth2/token bad form: %v", r.PostForm)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"access_token":"fake-at","token_type":"Bearer","expires_in":3600}`))
+		w.Write([]byte(`{"access_token":"fake-at","token_type":"Bearer","refresh_token":"fake-rt","expires_in":3600}`))
 	})
 	mux.HandleFunc("/api/v1/projects", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {

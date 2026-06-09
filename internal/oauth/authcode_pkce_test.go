@@ -46,6 +46,9 @@ func TestStartPKCE_AuthURL(t *testing.T) {
 		AuthPath: "/oauth2/auth",
 		ClientID: "5321f7e6-3d79-4ac9-a742-04809dbf9025",
 		Scope:    "project:inference offline_access",
+		ExtraAuthParams: map[string]string{
+			"prompt": "consent",
+		},
 	}
 	sess, err := StartPKCE(cfg, "http://127.0.0.1:53428/oauth/modelserver/callback")
 	if err != nil {
@@ -81,6 +84,9 @@ func TestStartPKCE_AuthURL(t *testing.T) {
 	}
 	if !strings.Contains(q.Get("scope"), "project:inference") {
 		t.Errorf("scope = %q", q.Get("scope"))
+	}
+	if q.Get("prompt") != "consent" {
+		t.Errorf("prompt = %q", q.Get("prompt"))
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
@@ -173,6 +174,10 @@ func (r *realOrchestrator) PollModelserverLogin(ctx context.Context) (modelserve
 		if err != nil {
 			r.cleanupMS()
 			return modelserver.APIKey{}, err
+		}
+		if strings.TrimSpace(tok.RefreshToken) == "" {
+			r.cleanupMS()
+			return modelserver.APIKey{}, fmt.Errorf("modelserver login did not return refresh_token; please reconnect and allow offline access")
 		}
 		r.msToken = tok
 

@@ -13,6 +13,7 @@ type ConsoleController interface {
 	Refresh(context.Context) (console.State, error)
 	Slaves(context.Context) (slave.Machine, []slave.Slave, error)
 	CreateSlave(context.Context, slave.CreateInput) (slave.Slave, error)
+	SelectFolder(context.Context) (string, error)
 	RestartSlave(context.Context, string) (slave.Slave, error)
 	PauseSlave(context.Context, string) (slave.Slave, error)
 	DeleteSlave(context.Context, string) error
@@ -36,6 +37,9 @@ func (noopConsoleController) Slaves(context.Context) (slave.Machine, []slave.Sla
 }
 func (noopConsoleController) CreateSlave(context.Context, slave.CreateInput) (slave.Slave, error) {
 	return slave.Slave{}, errors.New("console: slave manager unavailable")
+}
+func (noopConsoleController) SelectFolder(context.Context) (string, error) {
+	return "", errors.New("console: folder picker unavailable")
 }
 func (noopConsoleController) RestartSlave(context.Context, string) (slave.Slave, error) {
 	return slave.Slave{}, errors.New("console: slave manager unavailable")

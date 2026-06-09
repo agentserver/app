@@ -304,6 +304,28 @@ func TestServerConsoleOpenFrontendEndpoint(t *testing.T) {
 	}
 }
 
+func TestServerConsoleSelectFolderEndpoint(t *testing.T) {
+	cc := &fakeConsoleController{selectedFolder: `C:\Users\me\repo`}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/console/select-folder", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["folder"] != `C:\Users\me\repo` || !cc.selectedFolderCalled {
+		t.Fatalf("body=%+v called=%v", body, cc.selectedFolderCalled)
+	}
+}
+
 func TestServerConsoleLogoutModelserverEndpoint(t *testing.T) {
 	cc := &fakeConsoleController{}
 	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
@@ -566,6 +588,13 @@ func TestServerConsoleActionEndpointsRequirePost(t *testing.T) {
 			},
 		},
 		{
+			name: "select folder",
+			path: "/api/console/select-folder",
+			called: func(cc *fakeConsoleController) bool {
+				return cc.selectedFolderCalled
+			},
+		},
+		{
 			name: "logout modelserver",
 			path: "/api/console/logout-modelserver",
 			called: func(cc *fakeConsoleController) bool {
@@ -697,6 +726,8 @@ type fakeConsoleController struct {
 	refreshed            bool
 	openedFrontend       bool
 	openedSubscription   bool
+	selectedFolderCalled bool
+	selectedFolder       string
 	loggedOutModelserver bool
 	quit                 bool
 	machine              slave.Machine
@@ -727,6 +758,10 @@ func (f *fakeConsoleController) OpenFrontend(context.Context) error {
 func (f *fakeConsoleController) OpenSubscription(context.Context) error {
 	f.openedSubscription = true
 	return nil
+}
+func (f *fakeConsoleController) SelectFolder(context.Context) (string, error) {
+	f.selectedFolderCalled = true
+	return f.selectedFolder, nil
 }
 func (f *fakeConsoleController) LogoutModelserver(context.Context) error {
 	f.loggedOutModelserver = true
