@@ -256,14 +256,22 @@ if ($MinimalVSCode) {
 
 # Desktop shortcut
 Write-Step "Creating desktop shortcut..."
-$wsh = New-Object -ComObject WScript.Shell
-$shortcut = $wsh.CreateShortcut($DesktopLnk)
-$shortcut.TargetPath       = Join-Path $InstallDir 'launcher.exe'
-$shortcut.IconLocation     = $ShellIconPath + ',0'
-$shortcut.WorkingDirectory = $env:USERPROFILE
-$shortcut.Description      = '星池指挥官一键启动'
-$shortcut.Save()
-if (Test-Path $LegacyDesktopLnk) { Remove-Item $LegacyDesktopLnk -Force -ErrorAction SilentlyContinue }
+try {
+    $desktopDir = Split-Path -Parent $DesktopLnk
+    if (-not [string]::IsNullOrWhiteSpace($desktopDir) -and -not (Test-Path -LiteralPath $desktopDir)) {
+        New-Item -ItemType Directory -Force -Path $desktopDir | Out-Null
+    }
+    $wsh = New-Object -ComObject WScript.Shell
+    $shortcut = $wsh.CreateShortcut($DesktopLnk)
+    $shortcut.TargetPath       = Join-Path $InstallDir 'launcher.exe'
+    $shortcut.IconLocation     = $ShellIconPath + ',0'
+    $shortcut.WorkingDirectory = $env:USERPROFILE
+    $shortcut.Description      = '星池指挥官一键启动'
+    $shortcut.Save()
+    if (Test-Path $LegacyDesktopLnk) { Remove-Item $LegacyDesktopLnk -Force -ErrorAction SilentlyContinue }
+} catch {
+    Write-Host "Note: failed to create desktop shortcut: $($_.Exception.Message)" -ForegroundColor Yellow
+}
 
 # File/folder context menu (right-click on a file, folder, or folder background)
 Write-Step "Registering file and folder context menus..."

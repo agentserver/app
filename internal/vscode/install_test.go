@@ -359,6 +359,25 @@ func TestWindowsPortableInstallerPromptsForLegacyAutoMachineName(t *testing.T) {
 	}
 }
 
+func TestWindowsPortableInstallerDoesNotAbortWhenShortcutCreationFails(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	shortcut := strings.Index(s, "$wsh.CreateShortcut($DesktopLnk)")
+	save := strings.Index(s, "$shortcut.Save()")
+	registry := strings.Index(s, "Registering file and folder context menus")
+	catch := strings.Index(s, "failed to create desktop shortcut")
+	if shortcut < 0 || save < 0 || registry < 0 || catch < 0 {
+		t.Fatal("install.ps1 should create the desktop shortcut in a handled best-effort block")
+	}
+	tryBeforeShortcut := strings.LastIndex(s[:shortcut], "try {")
+	if tryBeforeShortcut < 0 || catch < save || catch > registry {
+		t.Fatal("install.ps1 should not abort installation when desktop shortcut creation fails")
+	}
+}
+
 func TestWindowsInnoInstallerInitializesMachineBeforeFrontend(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
