@@ -19,6 +19,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/download"
 	"github.com/agentserver/agentserver-pkg/internal/env"
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -138,8 +139,7 @@ func runTestDownloadCodex() {
 	fmt.Printf("codex.exe downloaded to %s (%d bytes)\n", p.CodexExePath, info.Size())
 }
 
-// runTestConfigure writes settings.json, config.toml, setx, and installs extensions.
-// Uses a dummy API key so OPENAI_API_KEY gets set to something visible.
+// runTestConfigure writes settings.json, config.toml, local proxy env, and installs extensions.
 func runTestConfigure() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -162,15 +162,11 @@ func runTestConfigure() {
 	}
 	fmt.Printf("wrote settings.json: %s\n", settingsPath)
 
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+	if err := configureTestCodex(p); err != nil {
 		die(err)
 	}
 	fmt.Printf("wrote codex config: %s\n", p.CodexConfigFile)
-
-	if err := env.PersistUserEnv("OPENAI_API_KEY", "ms-dummy-test-key"); err != nil {
-		die(err)
-	}
-	fmt.Println("setx OPENAI_API_KEY=ms-dummy-test-key (HKCU\\Environment)")
+	fmt.Printf("setx %s=%s (HKCU\\Environment)\n", codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
 
 	// .vsix sits next to the running agentctl.exe
 	exeDir, _ := os.Executable()
@@ -233,14 +229,11 @@ func runTestConfigureCodexDesktop() {
 	if err != nil {
 		die(err)
 	}
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+	if err := configureTestCodex(p); err != nil {
 		die(err)
 	}
 	sec := secrets.New(p.SecretsFile)
 	if err := sec.Set("modelserver_api_key", "ms-dummy-test-key"); err != nil {
-		die(err)
-	}
-	if err := env.PersistUserEnv("OPENAI_API_KEY", "ms-dummy-test-key"); err != nil {
 		die(err)
 	}
 	store := state.NewStore(p.StateFile)
@@ -276,7 +269,7 @@ func runTestOpenFolder(args []string) {
 
 func openTestFolder(ctx context.Context, s *state.State, p paths.Paths, folder string, opener codexdesktop.Opener, runVSCode func(string, []string) (int, error)) (string, error) {
 	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeCodexDesktop {
-		if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+		if err := configureTestCodex(p); err != nil {
 			return "", err
 		}
 		if err := codexdesktop.Launch(ctx, folder, opener); err != nil {
@@ -287,6 +280,9 @@ func openTestFolder(ctx context.Context, s *state.State, p paths.Paths, folder s
 	if s.VSCode.Path == "" {
 		return "", fmt.Errorf("VS Code path unknown")
 	}
+	if err := configureTestCodex(p); err != nil {
+		return "", err
+	}
 	if runVSCode == nil {
 		runVSCode = startTestVSCode
 	}
@@ -295,6 +291,16 @@ func openTestFolder(ctx context.Context, s *state.State, p paths.Paths, folder s
 		return "", err
 	}
 	return fmt.Sprintf("opened %s with VS Code (pid %d)", folder, pid), nil
+}
+
+func configureTestCodex(p paths.Paths) error {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
+		return err
+	}
+	if err := env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue); err != nil {
+		return err
+	}
+	return os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
 }
 
 func startTestVSCode(codeExe string, args []string) (int, error) {

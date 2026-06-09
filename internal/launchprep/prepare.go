@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
@@ -28,7 +29,7 @@ func PrepareVSCode(ctx context.Context, in Input) error {
 	if err := vscode.EnsureTerminalOnlyPanelState(in.Paths.VSCodeUserDataDir); err != nil {
 		return fmt.Errorf("prepare VS Code panel state: %w", err)
 	}
-	if err := codex.UpdateConfig(in.Paths.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+	if err := codex.UpdateConfig(in.Paths.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
 		return err
 	}
 	if in.EmbeddedVSIXPath == "" {

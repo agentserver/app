@@ -43,6 +43,22 @@ func TestUpdateConfig_Empty(t *testing.T) {
 	}
 }
 
+func TestModelserverProxySettingsUsesStableLocalCredential(t *testing.T) {
+	got := ModelserverProxySettings("http://127.0.0.1:53452/v1")
+	if got.Provider != "modelserver" {
+		t.Fatalf("Provider = %q, want modelserver", got.Provider)
+	}
+	if got.BaseURL != "http://127.0.0.1:53452/v1" {
+		t.Fatalf("BaseURL = %q, want local proxy URL", got.BaseURL)
+	}
+	if got.EnvKey != LocalProxyAPIKeyEnv {
+		t.Fatalf("EnvKey = %q, want %q", got.EnvKey, LocalProxyAPIKeyEnv)
+	}
+	if got.WireAPI != "responses" {
+		t.Fatalf("WireAPI = %q, want responses", got.WireAPI)
+	}
+}
+
 func TestUpdateConfig_MergeKeepsOtherProvider(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")

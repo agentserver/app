@@ -87,12 +87,6 @@ func RefreshOnce(ctx context.Context, opts Options) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
-	if err := opts.PersistEnv(OpenAIAPIKeyEnv, tok.AccessToken); err != nil {
-		return time.Time{}, err
-	}
-	if err := opts.SetProcessEnv(OpenAIAPIKeyEnv, tok.AccessToken); err != nil {
-		return time.Time{}, err
-	}
 	return expiresAt, nil
 }
 

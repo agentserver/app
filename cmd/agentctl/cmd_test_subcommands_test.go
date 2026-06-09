@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
@@ -48,6 +50,12 @@ func TestOpenTestFolderCodexDesktopUsesDeepLinkAndWritesConfig(t *testing.T) {
 	if !strings.Contains(string(b), `model_provider = "modelserver"`) {
 		t.Fatalf("config missing modelserver provider:\n%s", b)
 	}
+	if !strings.Contains(string(b), `base_url = "`+modelproxy.DefaultBaseURL+`"`) {
+		t.Fatalf("config missing local proxy base_url:\n%s", b)
+	}
+	if !strings.Contains(string(b), `env_key = "`+codex.LocalProxyAPIKeyEnv+`"`) {
+		t.Fatalf("config missing local proxy env_key:\n%s", b)
+	}
 }
 
 func TestOpenTestFolderMinimalVSCodeUsesRunner(t *testing.T) {
@@ -55,6 +63,7 @@ func TestOpenTestFolderMinimalVSCodeUsesRunner(t *testing.T) {
 	p := paths.Paths{
 		VSCodeUserDataDir: filepath.Join(dir, "vscode-data"),
 		VSCodeExtDir:      filepath.Join(dir, "vscode-extensions"),
+		CodexConfigFile:   filepath.Join(dir, ".codex", "config.toml"),
 	}
 	s := &state.State{
 		FrontendMode: state.FrontendModeMinimalVSCode,
@@ -86,6 +95,13 @@ func TestOpenTestFolderMinimalVSCodeUsesRunner(t *testing.T) {
 	}
 	if !strings.Contains(msg, "pid 123") {
 		t.Fatalf("msg=%q", msg)
+	}
+	b, err := os.ReadFile(p.CodexConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `base_url = "`+modelproxy.DefaultBaseURL+`"`) {
+		t.Fatalf("config missing local proxy base_url:\n%s", b)
 	}
 }
 

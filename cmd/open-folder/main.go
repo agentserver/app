@@ -13,8 +13,10 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/console"
+	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/launchprep"
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -123,20 +125,18 @@ func openFolder(ctx context.Context, codeExe string, p paths.Paths, folder strin
 	}
 
 	cmd := exec.Command(codeExe, vscode.LaunchArgs(p.VSCodeUserDataDir, p.VSCodeExtDir, folder)...)
-	if sec != nil {
-		if apiKey, err := sec.Get("modelserver_api_key"); err == nil {
-			cmd.Env = vscode.UpsertEnv(os.Environ(), "OPENAI_API_KEY", apiKey)
-		}
-	}
+	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Start()
 }
 
 func openFolderCodexDesktop(ctx context.Context, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string, opener codexdesktop.Opener) error {
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
 		return err
 	}
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
 	if err := codexdesktop.ConfigureLocale(
 		p.CodexDesktopGlobalStateFile,
 		p.CodexDesktopComputerUseConfigFile,

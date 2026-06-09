@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
+	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -143,7 +145,7 @@ func TestConfigureVSCodeCopiesBundledCodexBeforeDownloading(t *testing.T) {
 	}
 }
 
-func TestConfigureVSCodeSetsCurrentProcessOpenAIAPIKey(t *testing.T) {
+func TestConfigureVSCodeSetsStableLocalCodexKey(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("uses bash stub")
 	}
@@ -155,7 +157,8 @@ func TestConfigureVSCodeSetsCurrentProcessOpenAIAPIKey(t *testing.T) {
 	codexPath := filepath.Join(dir, "bin", "codex")
 	os.MkdirAll(filepath.Dir(codexPath), 0o755)
 	os.WriteFile(codexPath, []byte("codex"), 0o755)
-	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "old-openai-token")
+	t.Setenv(codex.LocalProxyAPIKeyEnv, "")
 
 	sec := secrets.New(filepath.Join(dir, "secrets.json"))
 	if err := sec.Set("modelserver_api_key", "fake-token-for-current-process"); err != nil {
@@ -179,8 +182,11 @@ func TestConfigureVSCodeSetsCurrentProcessOpenAIAPIKey(t *testing.T) {
 	if err := r.ConfigureVSCode(context.Background()); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	if got := os.Getenv("OPENAI_API_KEY"); got != "fake-token-for-current-process" {
-		t.Fatalf("OPENAI_API_KEY=%q, want current process token", got)
+	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != codex.LocalProxyAPIKeyValue {
+		t.Fatalf("%s=%q, want stable local key", codex.LocalProxyAPIKeyEnv, got)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "old-openai-token" {
+		t.Fatalf("OPENAI_API_KEY=%q, want unchanged old-openai-token", got)
 	}
 }
 
@@ -229,7 +235,7 @@ func TestConfigureVSCodeDetectsVSCodeWhenStatePathMissing(t *testing.T) {
 	}
 }
 
-func TestLaunchAndShutdownInjectsOpenAIAPIKeyAndLocale(t *testing.T) {
+func TestLaunchAndShutdownInjectsStableLocalCodexKeyAndLocale(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("uses bash stub")
 	}
@@ -239,7 +245,7 @@ func TestLaunchAndShutdownInjectsOpenAIAPIKeyAndLocale(t *testing.T) {
 	codeExe := filepath.Join(dir, "code")
 	os.WriteFile(codeExe, []byte(fmt.Sprintf(`#!/bin/bash
 printf '%%s\n' "$@" > %q
-printf '%%s\n' "$OPENAI_API_KEY" > %q
+	printf '%%s\n' "$AGENTSERVER_CODEX_LOCAL_API_KEY" > %q
 exit 0
 `, argsFile, envFile)), 0o755)
 
@@ -274,8 +280,8 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(envBody)) != "launch-token" {
-		t.Fatalf("OPENAI_API_KEY child env = %q", envBody)
+	if strings.TrimSpace(string(envBody)) != codex.LocalProxyAPIKeyValue {
+		t.Fatalf("%s child env = %q", codex.LocalProxyAPIKeyEnv, envBody)
 	}
 	argsBody, err := os.ReadFile(argsFile)
 	if err != nil {
@@ -1067,7 +1073,8 @@ func TestEnsureFrontendCodexDesktopSkipsVSCode(t *testing.T) {
 
 func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "old-openai-token")
+	t.Setenv(codex.LocalProxyAPIKeyEnv, "")
 	sec := secrets.New(filepath.Join(dir, "secrets.json"))
 	if err := sec.Set("modelserver_api_key", "desktop-token"); err != nil {
 		t.Fatal(err)
@@ -1094,8 +1101,17 @@ func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
 	if !strings.Contains(string(b), `model_provider = "modelserver"`) {
 		t.Fatalf("config missing modelserver provider:\n%s", b)
 	}
-	if got := os.Getenv("OPENAI_API_KEY"); got != "desktop-token" {
-		t.Fatalf("OPENAI_API_KEY=%q", got)
+	if !strings.Contains(string(b), `base_url = "`+modelproxy.DefaultBaseURL+`"`) {
+		t.Fatalf("config missing local proxy base_url:\n%s", b)
+	}
+	if !strings.Contains(string(b), `env_key = "`+codex.LocalProxyAPIKeyEnv+`"`) {
+		t.Fatalf("config missing local proxy env_key:\n%s", b)
+	}
+	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != codex.LocalProxyAPIKeyValue {
+		t.Fatalf("%s=%q, want stable local key", codex.LocalProxyAPIKeyEnv, got)
+	}
+	if got := os.Getenv("OPENAI_API_KEY"); got != "old-openai-token" {
+		t.Fatalf("OPENAI_API_KEY=%q, want unchanged old-openai-token", got)
 	}
 	s, _ := store.Load()
 	if !s.Onboarding.HasCompleted("codex_desktop_configured") {

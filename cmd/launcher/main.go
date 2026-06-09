@@ -24,8 +24,10 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/console"
+	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/launchprep"
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
@@ -579,9 +581,11 @@ func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths,
 }
 
 func launchCompletedCodexDesktop(ctx context.Context, p paths.Paths, sec secrets.Store, tokenRefresherExe string, opener codexdesktop.Opener) error {
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
 		return err
 	}
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
 	if err := codexdesktop.ConfigureLocale(
 		p.CodexDesktopGlobalStateFile,
 		p.CodexDesktopComputerUseConfigFile,
@@ -596,19 +600,17 @@ func launchCompletedCodexDesktop(ctx context.Context, p paths.Paths, sec secrets
 }
 
 func execVSCode(codeExe string, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string) error {
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverSettings()); err != nil {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
 		return err
 	}
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
 	if tokenRefresherExe != "" {
 		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
 	}
 	args := vscode.LaunchArgs(p.VSCodeUserDataDir, p.VSCodeExtDir, folder)
 	cmd := exec.Command(codeExe, args...)
-	if sec != nil {
-		if apiKey, err := sec.Get("modelserver_api_key"); err == nil {
-			cmd.Env = vscode.UpsertEnv(os.Environ(), "OPENAI_API_KEY", apiKey)
-		}
-	}
+	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Start()

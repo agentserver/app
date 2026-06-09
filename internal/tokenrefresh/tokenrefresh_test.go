@@ -66,7 +66,7 @@ func TestNextDelayRetriesFiveMinutesAfterRefreshFailure(t *testing.T) {
 	}
 }
 
-func TestRefreshOnceStoresAccessRefreshExpiryAndPersistsEnv(t *testing.T) {
+func TestRefreshOnceStoresAccessRefreshExpiryWithoutChangingCodexEnv(t *testing.T) {
 	now := time.Date(2026, 6, 4, 10, 0, 0, 0, time.UTC)
 	sec := newMemSecrets()
 	if err := sec.Set(RefreshTokenKey, "rtok-1"); err != nil {
@@ -74,8 +74,8 @@ func TestRefreshOnceStoresAccessRefreshExpiryAndPersistsEnv(t *testing.T) {
 	}
 
 	var gotRefresh string
-	var persistedKey, persistedValue string
-	var processKey, processValue string
+	persistCalled := false
+	processEnvCalled := false
 	expiresAt, err := RefreshOnce(context.Background(), Options{
 		Secrets: sec,
 		OAuth:   oauth.AuthCodeConfig{ClientID: "client-x"},
@@ -89,11 +89,11 @@ func TestRefreshOnceStoresAccessRefreshExpiryAndPersistsEnv(t *testing.T) {
 			}, nil
 		},
 		PersistEnv: func(key, value string) error {
-			persistedKey, persistedValue = key, value
+			persistCalled = true
 			return nil
 		},
 		SetProcessEnv: func(key, value string) error {
-			processKey, processValue = key, value
+			processEnvCalled = true
 			return nil
 		},
 	})
@@ -115,11 +115,11 @@ func TestRefreshOnceStoresAccessRefreshExpiryAndPersistsEnv(t *testing.T) {
 	if got, _ := sec.Get(AccessTokenExpiresAtKey); got != now.Add(time.Hour).Format(time.RFC3339) {
 		t.Fatalf("expires_at secret = %q", got)
 	}
-	if persistedKey != "OPENAI_API_KEY" || persistedValue != "at-2" {
-		t.Fatalf("persisted env = %q/%q, want OPENAI_API_KEY/at-2", persistedKey, persistedValue)
+	if persistCalled {
+		t.Fatal("RefreshOnce should not persist the short-lived access token into user env")
 	}
-	if processKey != "OPENAI_API_KEY" || processValue != "at-2" {
-		t.Fatalf("process env = %q/%q, want OPENAI_API_KEY/at-2", processKey, processValue)
+	if processEnvCalled {
+		t.Fatal("RefreshOnce should not write the short-lived access token into process env")
 	}
 }
 

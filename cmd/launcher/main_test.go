@@ -11,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -417,6 +419,8 @@ func TestExecVSCodeEnsuresCodexConfigBeforeLaunch(t *testing.T) {
 	s := string(b)
 	for _, want := range []string{
 		`model_provider = "modelserver"`,
+		`base_url = "` + modelproxy.DefaultBaseURL + `"`,
+		`env_key = "` + codex.LocalProxyAPIKeyEnv + `"`,
 		`[windows]`,
 		`sandbox = "unelevated"`,
 	} {
@@ -511,6 +515,12 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `model_provider = "modelserver"`) {
 		t.Fatalf("config missing modelserver provider:\n%s", b)
+	}
+	if !strings.Contains(string(b), `base_url = "`+modelproxy.DefaultBaseURL+`"`) {
+		t.Fatalf("config missing local proxy base_url:\n%s", b)
+	}
+	if !strings.Contains(string(b), `env_key = "`+codex.LocalProxyAPIKeyEnv+`"`) {
+		t.Fatalf("config missing local proxy env_key:\n%s", b)
 	}
 }
 

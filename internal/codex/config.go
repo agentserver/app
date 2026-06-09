@@ -43,6 +43,18 @@ func ModelserverSettings() Settings {
 }
 
 const (
+	LocalProxyAPIKeyEnv   = "AGENTSERVER_CODEX_LOCAL_API_KEY"
+	LocalProxyAPIKeyValue = "agentserver-local-proxy"
+)
+
+func ModelserverProxySettings(baseURL string) Settings {
+	s := ModelserverSettings()
+	s.BaseURL = baseURL
+	s.EnvKey = LocalProxyAPIKeyEnv
+	return s
+}
+
+const (
 	defaultModelReasoningEffort  = "high"
 	defaultApprovalsReviewer     = "guardian_subagent"
 	defaultSandboxMode           = "danger-full-access"

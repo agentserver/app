@@ -17,6 +17,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/download"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/loom"
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -175,10 +176,8 @@ func (r *realOrchestrator) PollModelserverLogin(ctx context.Context) (modelserve
 		}
 		r.msToken = tok
 
-		// Use the PKCE access_token directly as the OPENAI_API_KEY for codex.
-		// The proxy path /v1/* (internal/proxy/auth_middleware.go) accepts any
-		// raw Hydra token via introspection fallback when it doesn't match the
-		// "ms-" API-key prefix.
+		// Keep the PKCE access_token in local secrets. Codex uses a stable local
+		// proxy credential; the proxy injects the latest access token per request.
 		key := modelserver.APIKey{
 			Secret:    tok.AccessToken,
 			KeySuffix: lastN(tok.AccessToken, 4),
@@ -421,16 +420,11 @@ func downloadAdapter(ui chan<- ProgressEvent) chan<- download.ProgressEvent {
 
 func (r *realOrchestrator) configureSharedCodex(ctx context.Context) error {
 	_ = ctx
-	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.ModelserverSettings()); err != nil {
+	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
 		return err
 	}
-	if r.d.Secrets != nil {
-		apiKey, err := r.d.Secrets.Get("modelserver_api_key")
-		if err == nil {
-			_ = env.PersistUserEnv("OPENAI_API_KEY", apiKey)
-			_ = os.Setenv("OPENAI_API_KEY", apiKey)
-		}
-	}
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
 	if r.d.TokenRefresherExePath != "" {
 		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 	}
@@ -716,11 +710,7 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 		return fmt.Errorf("VS Code path unknown; was vscode_install completed?")
 	}
 	cmd := exec.Command(s.VSCode.Path, vscode.LaunchArgs(r.d.VSCodeUserDataDir, r.d.VSCodeExtDir)...)
-	if r.d.Secrets != nil {
-		if apiKey, err := r.d.Secrets.Get("modelserver_api_key"); err == nil {
-			cmd.Env = vscode.UpsertEnv(os.Environ(), "OPENAI_API_KEY", apiKey)
-		}
-	}
+	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
 	if r.d.TokenRefresherExePath != "" {
 		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 	}

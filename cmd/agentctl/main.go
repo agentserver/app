@@ -54,10 +54,10 @@ P13.4 verification subcommands (skip the OAuth steps, exercise everything else):
   agentctl test-install-codex-desktop
                                  install Codex Desktop with winget and persist state
   agentctl test-download-codex   download codex.exe to %LOCALAPPDATA%\agentserver-vscode\bin\
-  agentctl test-configure        write settings.json + config.toml + setx + install extensions
-                                 (assumes VS Code already detected; uses dummy API key)
-  agentctl test-configure-codex-desktop
-                                 write Codex config + dummy OPENAI_API_KEY for Codex Desktop
+	  agentctl test-configure        write settings.json + config.toml + setx + install extensions
+	                                 (assumes VS Code already detected; uses local proxy key)
+	  agentctl test-configure-codex-desktop
+	                                 write Codex config + local proxy key for Codex Desktop
   agentctl test-open-folder <path>
                                  launch VS Code with our user-data-dir + that folder
   agentctl test-mark-complete    write onboarding.status = complete so launcher takes the

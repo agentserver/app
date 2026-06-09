@@ -8,8 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
@@ -55,6 +57,18 @@ func TestOpenFolderMigratesVSCodeSettingsBeforeLaunch(t *testing.T) {
 	if settings["custom.key"] != "keep me" {
 		t.Fatalf("custom.key=%v, want keep me", settings["custom.key"])
 	}
+	b, readErr = os.ReadFile(p.CodexConfigFile)
+	if readErr != nil {
+		t.Fatalf("expected codex config to be written before launching VS Code: %v", readErr)
+	}
+	for _, want := range []string{
+		`base_url = "` + modelproxy.DefaultBaseURL + `"`,
+		`env_key = "` + codex.LocalProxyAPIKeyEnv + `"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %q in:\n%s", want, b)
+		}
+	}
 }
 
 func TestOpenFolderCodexDesktopUsesFolderDeepLink(t *testing.T) {
@@ -73,6 +87,18 @@ func TestOpenFolderCodexDesktopUsesFolderDeepLink(t *testing.T) {
 	}
 	if !strings.Contains(opened, "Project+Folder") {
 		t.Fatalf("path not encoded: %q", opened)
+	}
+	b, readErr := os.ReadFile(p.CodexConfigFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, want := range []string{
+		`base_url = "` + modelproxy.DefaultBaseURL + `"`,
+		`env_key = "` + codex.LocalProxyAPIKeyEnv + `"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %q in:\n%s", want, b)
+		}
 	}
 }
 
