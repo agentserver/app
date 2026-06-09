@@ -56,6 +56,34 @@ func NewRegistry(path, slavesDir string) *Registry {
 	return &Registry{path: path, slavesDir: slavesDir}
 }
 
+func (r *Registry) storageDir(id string) (string, error) {
+	if r == nil {
+		return "", fmt.Errorf("slave registry required")
+	}
+	if strings.TrimSpace(id) == "" {
+		return "", fmt.Errorf("slave id required")
+	}
+	if filepath.IsAbs(id) {
+		return "", fmt.Errorf("slave id must be relative: %s", id)
+	}
+	root, err := filepath.Abs(r.slavesDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve slaves dir: %w", err)
+	}
+	dir, err := filepath.Abs(filepath.Join(root, id))
+	if err != nil {
+		return "", fmt.Errorf("resolve slave storage dir: %w", err)
+	}
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return "", fmt.Errorf("validate slave storage dir: %w", err)
+	}
+	if rel == "." || rel == "" || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || rel == ".." {
+		return "", fmt.Errorf("slave storage dir escapes slaves dir: %s", id)
+	}
+	return dir, nil
+}
+
 func (r *Registry) List() ([]Slave, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -65,6 +93,22 @@ func (r *Registry) List() ([]Slave, error) {
 		return nil, err
 	}
 	return append([]Slave(nil), all...), nil
+}
+
+func (r *Registry) Get(id string) (Slave, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	all, err := r.loadLocked()
+	if err != nil {
+		return Slave{}, err
+	}
+	for _, sl := range all {
+		if sl.ID == id {
+			return sl, nil
+		}
+	}
+	return Slave{}, os.ErrNotExist
 }
 
 func (r *Registry) Create(machine Machine, in CreateInput) (Slave, error) {
@@ -128,6 +172,51 @@ func (r *Registry) Create(machine Machine, in CreateInput) (Slave, error) {
 		return Slave{}, err
 	}
 	return sl, nil
+}
+
+func (r *Registry) Update(id string, fn func(*Slave) error) (Slave, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	all, err := r.loadLocked()
+	if err != nil {
+		return Slave{}, err
+	}
+	for i := range all {
+		if all[i].ID != id {
+			continue
+		}
+		if err := fn(&all[i]); err != nil {
+			return Slave{}, err
+		}
+		all[i].UpdatedAt = time.Now().UTC()
+		if err := r.saveLocked(all); err != nil {
+			return Slave{}, err
+		}
+		return all[i], nil
+	}
+	return Slave{}, os.ErrNotExist
+}
+
+func (r *Registry) Delete(id string) (Slave, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	all, err := r.loadLocked()
+	if err != nil {
+		return Slave{}, err
+	}
+	for i, sl := range all {
+		if sl.ID != id {
+			continue
+		}
+		next := append(all[:i], all[i+1:]...)
+		if err := r.saveLocked(next); err != nil {
+			return Slave{}, err
+		}
+		return sl, nil
+	}
+	return Slave{}, os.ErrNotExist
 }
 
 func validateSlaveName(name string) error {
