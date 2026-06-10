@@ -17,6 +17,8 @@ const (
 
 	coinitApartmentThreaded = 0x2
 
+	swRestore = 9
+
 	fosPickFolders     = 0x00000020 // FOS_PICKFOLDERS
 	fosForceFilesystem = 0x00000040 // FOS_FORCEFILESYSTEM
 	fosPathMustExist   = 0x00000800 // FOS_PATHMUSTEXIST
@@ -32,6 +34,11 @@ var (
 	procCoInitializeEx   = ole32.NewProc("CoInitializeEx")
 	procCoTaskMemFree    = ole32.NewProc("CoTaskMemFree")
 	procCoUninitialize   = ole32.NewProc("CoUninitialize")
+
+	user32                  = windows.NewLazySystemDLL("user32.dll")
+	procGetForegroundWindow = user32.NewProc("GetForegroundWindow")
+	procSetForegroundWindow = user32.NewProc("SetForegroundWindow")
+	procShowWindow          = user32.NewProc("ShowWindow")
 
 	// CLSID_FileOpenDialog
 	clsidFileOpenDialog = windows.GUID{
@@ -146,7 +153,7 @@ func selectFolder(ctx context.Context) (string, error) {
 		return "", hresultError("IFileDialog.SetOptions", hr)
 	}
 
-	hr = dialog.show(0)
+	hr = dialog.show(foregroundWindowOwner())
 	if uint32(hr) == comdlgECancelled {
 		return "", nil
 	}
@@ -173,6 +180,16 @@ func selectFolder(ctx context.Context) (string, error) {
 	defer procCoTaskMemFree.Call(uintptr(unsafe.Pointer(pathPtr)))
 
 	return windows.UTF16PtrToString(pathPtr), nil
+}
+
+func foregroundWindowOwner() uintptr {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	if hwnd == 0 {
+		return 0
+	}
+	_, _, _ = procShowWindow.Call(hwnd, swRestore)
+	_, _, _ = procSetForegroundWindow.Call(hwnd)
+	return hwnd
 }
 
 func (d *iFileOpenDialog) release() {
