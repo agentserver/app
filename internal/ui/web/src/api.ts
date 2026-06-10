@@ -131,7 +131,7 @@ export const startStep = (stepId: string) =>
   request<StartStepResponse>(`/api/step/${stepId}`, { method: 'POST' });
 
 export const pollStepStatus = (stepId: string) =>
-  request<StepStatusResponse>(`/api/step/${stepId}/status`);
+  request<StepStatusResponse>(`/api/step/${stepId}/status`, { method: 'POST' });
 
 export const startFrontendInstall = () =>
   request<StreamHandle>('/api/step/frontend_install', { method: 'POST' });

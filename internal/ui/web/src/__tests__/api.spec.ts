@@ -30,11 +30,12 @@ describe('api', () => {
   });
 
   it('pollStepStatus returns success when state=success', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true, status: 200,
       json: async () => ({ state: 'success', key_suffix: 'wxyz' }),
     } as Response);
     const r = await api.pollStepStatus('modelserver_login');
+    expect(fetchSpy).toHaveBeenCalledWith('/api/step/modelserver_login/status', expect.objectContaining({ method: 'POST' }));
     expect(r.state).toBe('success');
   });
 

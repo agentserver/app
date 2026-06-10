@@ -457,7 +457,9 @@ func TestServerOnboardingMutationsRequirePostAndTrustedOrigin(t *testing.T) {
 		path string
 	}{
 		{name: "modelserver login", path: "/api/step/modelserver_login"},
+		{name: "modelserver login status", path: "/api/step/modelserver_login/status"},
 		{name: "agentserver login", path: "/api/step/agentserver_login"},
+		{name: "agentserver login status", path: "/api/step/agentserver_login/status"},
 		{name: "frontend install", path: "/api/step/frontend_install"},
 		{name: "frontend configure", path: "/api/step/frontend_configure"},
 		{name: "legacy vscode install", path: "/api/step/vscode_install"},

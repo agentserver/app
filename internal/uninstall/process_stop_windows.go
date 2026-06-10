@@ -26,7 +26,17 @@ $filter = {
 }
 $procs = @(Get-CimInstance Win32_Process | Where-Object $filter)
 foreach ($p in $procs) {
-  Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+  Stop-Process -Id $p.ProcessId -Force -PassThru -ErrorAction SilentlyContinue |
+    Wait-Process -Timeout 2 -ErrorAction SilentlyContinue
+}
+$deadline = (Get-Date).AddSeconds(8)
+do {
+  Start-Sleep -Milliseconds 250
+  $remaining = @(Get-CimInstance Win32_Process | Where-Object $filter)
+} while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline)
+if ($remaining.Count -gt 0) {
+  $ids = ($remaining | ForEach-Object { $_.ProcessId }) -join ', '
+  throw "Timed out waiting for install processes to exit: $ids"
 }
 `
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)

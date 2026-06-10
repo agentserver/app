@@ -190,6 +190,9 @@ func (s *server) handleMSLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleMSStatus(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	key, err := s.o.PollModelserverLogin(ctx)
@@ -216,6 +219,9 @@ func (s *server) handleASLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleASStatus(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	key, err := s.o.PollAgentserverLogin(ctx)

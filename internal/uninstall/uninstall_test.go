@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,6 +143,25 @@ func TestRunStopsLocalSlaveAndInstallProcessesBeforeRemovingState(t *testing.T) 
 	for _, want := range []string{"slave-agent.exe", "driver-agent.exe", "token-refresher.exe"} {
 		if !containsString(fallbackNames, want) {
 			t.Fatalf("fallback process names missing %q: %v", want, fallbackNames)
+		}
+	}
+}
+
+func TestWindowsFallbackStopWaitsForProcessesToExit(t *testing.T) {
+	body, err := os.ReadFile("process_stop_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"Wait-Process",
+		"$deadline = (Get-Date).AddSeconds(",
+		"Get-CimInstance Win32_Process | Where-Object $filter",
+		"} while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline)",
+		"if ($remaining.Count -gt 0)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("Windows fallback stop should wait for orphan install processes to exit; missing %q in:\n%s", want, s)
 		}
 	}
 }
