@@ -327,6 +327,9 @@ func completedSlaveManagerDeps(in completedServeInput) (slave.ManagerDeps, error
 		SlaveExe:  joinExe(in.InstallDir, "slave-agent.exe"),
 		ServerURL: "https://agent.cs.ac.cn",
 		CodexBin:  in.Paths.CodexExePath,
+		OpenAuthURL: func(url string) {
+			_ = browser.Open(url)
+		},
 	}, nil
 }
 

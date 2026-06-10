@@ -14,16 +14,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/process"
 	"gopkg.in/yaml.v3"
 )
 
 type ManagerDeps struct {
-	Machines  *MachineStore
-	Registry  *Registry
-	Runner    Runner
-	SlaveExe  string
-	ServerURL string
-	CodexBin  string
+	Machines    *MachineStore
+	Registry    *Registry
+	Runner      Runner
+	SlaveExe    string
+	ServerURL   string
+	CodexBin    string
+	OpenAuthURL func(string)
 }
 
 type Manager struct {
@@ -274,6 +276,9 @@ func (m *Manager) start(ctx context.Context, sl Slave) (Slave, error) {
 		}
 		return Slave{}, err
 	}
+	if res.AuthURL != "" {
+		m.openAuthURL(res.AuthURL)
+	}
 	m.monitor(sl.ID, sl.ConfigPath, res)
 	return updated, nil
 }
@@ -381,7 +386,9 @@ func (m *Manager) monitor(id string, configPath string, res StartResult) {
 					authURLs = nil
 					continue
 				}
-				m.recordAuthURL(id, res.PID, url)
+				if m.recordAuthURL(id, res.PID, url) {
+					m.openAuthURL(url)
+				}
 			case err, ok := <-exit:
 				if !ok {
 					exit = nil
@@ -398,11 +405,11 @@ func (m *Manager) monitor(id string, configPath string, res StartResult) {
 	}()
 }
 
-func (m *Manager) recordAuthURL(id string, pid int, url string) {
+func (m *Manager) recordAuthURL(id string, pid int, url string) bool {
 	if url == "" {
-		return
+		return false
 	}
-	_, _ = m.d.Registry.Update(id, func(s *Slave) error {
+	_, err := m.d.Registry.Update(id, func(s *Slave) error {
 		if s.PID != pid || s.Status == StatusPaused || s.Status == StatusRunning {
 			return errStaleProcessEvent
 		}
@@ -414,6 +421,14 @@ func (m *Manager) recordAuthURL(id string, pid int, url string) {
 		s.LastError = ""
 		return nil
 	})
+	return err == nil
+}
+
+func (m *Manager) openAuthURL(url string) {
+	if url == "" || m.d.OpenAuthURL == nil {
+		return
+	}
+	go m.d.OpenAuthURL(url)
 }
 
 func (m *Manager) recordReady(id string, pid int, configPath string) bool {
@@ -511,6 +526,7 @@ func (execRunner) Start(ctx context.Context, req StartRequest) (StartResult, err
 	}
 	cmd := exec.Command(req.Exe, req.ConfigPath)
 	cmd.Dir = req.WorkDir
+	process.HideWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = logFile.Close()

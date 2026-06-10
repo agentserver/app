@@ -45,6 +45,74 @@ func TestManagerCreateWritesConfigAndStartsProcess(t *testing.T) {
 	}
 }
 
+func TestManagerCreateAndStartOpensImmediateAuthURL(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	authURL := "https://agent.cs.ac.cn/device?user_code=ABCD"
+	opened := make(chan string, 1)
+	manager := NewManager(ManagerDeps{
+		Machines:    NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:    NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:      &fakeRunner{pid: 4321, authURL: authURL},
+		SlaveExe:    filepath.Join(dir, "slave-agent.exe"),
+		OpenAuthURL: func(url string) { opened <- url },
+	})
+	if _, err := manager.Machines.Ensure("61414-PC"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.CreateAndStart(context.Background(), CreateInput{Folder: folder, Name: "worker"}); err != nil {
+		t.Fatalf("CreateAndStart: %v", err)
+	}
+
+	select {
+	case got := <-opened:
+		if got != authURL {
+			t.Fatalf("opened auth URL=%q, want %q", got, authURL)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("auth URL was not opened")
+	}
+}
+
+func TestManagerDelayedAuthURLOpensBrowser(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	authURL := "https://agent.cs.ac.cn/device?user_code=ABCD"
+	authURLs := make(chan string, 1)
+	opened := make(chan string, 1)
+	manager := NewManager(ManagerDeps{
+		Machines:    NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:    NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:      &fakeRunner{pid: 4321, authURLs: authURLs},
+		SlaveExe:    filepath.Join(dir, "slave-agent.exe"),
+		OpenAuthURL: func(url string) { opened <- url },
+	})
+	if _, err := manager.Machines.Ensure("61414-PC"); err != nil {
+		t.Fatal(err)
+	}
+
+	sl, err := manager.CreateAndStart(context.Background(), CreateInput{Folder: folder, Name: "worker"})
+	if err != nil {
+		t.Fatalf("CreateAndStart: %v", err)
+	}
+	authURLs <- authURL
+
+	select {
+	case got := <-opened:
+		if got != authURL {
+			t.Fatalf("opened auth URL=%q, want %q", got, authURL)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("auth URL was not opened")
+	}
+	waitForSlave(t, manager.Registry, sl.ID, func(sl Slave) bool {
+		return sl.Status == StatusAuthRequired && sl.AuthURL == authURL
+	})
+}
+
 func TestManagerPauseRestartAndDelete(t *testing.T) {
 	dir := t.TempDir()
 	folder := filepath.Join(dir, "repo")
@@ -913,6 +981,23 @@ func TestExecRunnerStartPassesConfigArgAndLogsStdoutAndStderr(t *testing.T) {
 	assertLogContains(t, logPath, "stdout-line", "stderr-line")
 }
 
+func TestExecRunnerStartHidesSlaveProcessWindow(t *testing.T) {
+	body, err := os.ReadFile("process.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	command := strings.Index(s, "cmd := exec.Command(req.Exe, req.ConfigPath)")
+	hide := strings.Index(s, "process.HideWindow(cmd)")
+	start := strings.Index(s, "if err := cmd.Start(); err != nil")
+	if command < 0 || hide < 0 || start < 0 {
+		t.Fatal("execRunner.Start should create, hide, then start the slave process")
+	}
+	if command > hide || hide > start {
+		t.Fatal("execRunner.Start should call process.HideWindow before cmd.Start")
+	}
+}
+
 func TestExecRunnerStopStopsTrackedProcessAndWaits(t *testing.T) {
 	dir := t.TempDir()
 	exe := writeLinuxShellScript(t, "echo 'https://agent.cs.ac.cn/device?user_code=ABCD'\nexec sleep 30\n")
@@ -1144,6 +1229,7 @@ func TestManagerMethodsReturnErrorsForNilDependencies(t *testing.T) {
 type fakeRunner struct {
 	pid           int
 	authURL       string
+	authURLs      <-chan string
 	startedConfig string
 	stopped       map[int]bool
 	startCalls    int
@@ -1164,7 +1250,7 @@ func (f *fakeRunner) Start(_ context.Context, req StartRequest) (StartResult, er
 	if f.onStart != nil {
 		f.onStart()
 	}
-	return StartResult{PID: f.pid, AuthURL: f.authURL}, nil
+	return StartResult{PID: f.pid, AuthURL: f.authURL, AuthURLs: f.authURLs}, nil
 }
 
 func (f *fakeRunner) Stop(_ context.Context, pid int) error {
