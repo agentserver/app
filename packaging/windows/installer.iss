@@ -351,6 +351,33 @@ begin
   end;
 end;
 
+procedure StageBundledCodexForLocalSlaves();
+var
+  LocalAppData: String;
+  CodexBinDir: String;
+  CodexSrc: String;
+  CodexDst: String;
+begin
+  LocalAppData := GetEnv('LOCALAPPDATA');
+  if LocalAppData = '' then begin
+    LocalAppData := ExpandConstant('{localappdata}');
+  end;
+
+  CodexSrc := ExpandConstant('{app}\codex.exe');
+  CodexBinDir := AddBackslash(LocalAppData) + 'agentserver-vscode\bin';
+  CodexDst := AddBackslash(CodexBinDir) + 'codex.exe';
+
+  if not FileExists(CodexSrc) then begin
+    RaiseException('缺少 codex.exe，无法准备本地 slave。');
+  end;
+  if not ForceDirectories(CodexBinDir) then begin
+    RaiseException('无法创建 codex.exe 目录：' + CodexBinDir);
+  end;
+  if not FileCopy(CodexSrc, CodexDst, False) then begin
+    RaiseException('无法复制 codex.exe 到：' + CodexDst);
+  end;
+end;
+
 procedure InitializeWizard();
 begin
   ComputerNamePage := CreateInputQueryPage(
@@ -391,6 +418,8 @@ begin
   end;
   RunEstimatedPowerShellStep('machine', '正在初始化电脑名称...', 'machine.ps1',
     '-MachinePath ' + PowerShellQuote(MachinePath) + ' -ComputerNamePath ' + PowerShellQuote(ComputerNamePath), 10);
+
+  StageBundledCodexForLocalSlaves();
 
   ModePath := ExpandConstant('{app}\install-mode.json');
   if ShouldInstallCodexDesktop then begin

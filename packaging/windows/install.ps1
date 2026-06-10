@@ -219,24 +219,24 @@ if (-not $Silent) {
 Write-Step "Initializing computer name..."
 & (Join-Path $InstallDir 'machine.ps1') -MachinePath $MachinePath -ComputerName $InitialComputerName
 
-if ($MinimalVSCode) {
-    # Bundled codex.exe — copy into the expected per-user bin dir so
-    # ConfigureVSCode finds it and skips the 246MB GitHub download.
-    $codexSrc = Join-Path $srcDir 'codex.exe'
-    $codexBinDir = Join-Path $env:LOCALAPPDATA "agentserver-vscode\bin"
-    $codexDst = Join-Path $codexBinDir 'codex.exe'
-    if (Test-Path $codexSrc) {
-        if (-not (Test-Path $codexBinDir)) {
-            New-Item -ItemType Directory -Force -Path $codexBinDir | Out-Null
-        }
-        Write-Step "Staging bundled codex.exe to $codexDst ..."
-        Copy-Item $codexSrc $codexDst -Force
-        $sz = (Get-Item $codexDst).Length
-        Write-Step ("codex.exe copied ({0:N0} bytes, {1:N1} MB)" -f $sz, ($sz / 1MB))
-    } else {
-        Write-Host "Note: codex.exe NOT bundled in this zip; first launch will fetch from GitHub."
+# Bundled codex.exe - copy into the expected per-user bin dir. Minimal VS Code
+# and local slave configs use this stable path in every frontend mode.
+$codexSrc = Join-Path $srcDir 'codex.exe'
+$codexBinDir = Join-Path $env:LOCALAPPDATA "agentserver-vscode\bin"
+$codexDst = Join-Path $codexBinDir 'codex.exe'
+if (Test-Path $codexSrc) {
+    if (-not (Test-Path $codexBinDir)) {
+        New-Item -ItemType Directory -Force -Path $codexBinDir | Out-Null
     }
+    Write-Step "Staging bundled codex.exe to $codexDst ..."
+    Copy-Item $codexSrc $codexDst -Force
+    $sz = (Get-Item $codexDst).Length
+    Write-Step ("codex.exe copied ({0:N0} bytes, {1:N1} MB)" -f $sz, ($sz / 1MB))
+} else {
+    Write-Host "Note: codex.exe NOT bundled in this zip; first launch will fetch from GitHub."
+}
 
+if ($MinimalVSCode) {
     Write-Step "Writing install mode minimal_vscode..."
     & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'minimal_vscode' -Path (Join-Path $InstallDir 'install-mode.json')
     Write-Step "Ensuring VS Code is installed..."

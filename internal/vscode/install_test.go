@@ -358,6 +358,34 @@ func TestWindowsPortableInstallerPromptsWithExistingMachineNameDefault(t *testin
 	}
 }
 
+func TestWindowsPortableInstallerStagesBundledCodexForAllModesBeforeFrontend(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"$codexSrc = Join-Path $srcDir 'codex.exe'",
+		"$codexBinDir = Join-Path $env:LOCALAPPDATA \"agentserver-vscode\\bin\"",
+		"$codexDst = Join-Path $codexBinDir 'codex.exe'",
+		"Copy-Item $codexSrc $codexDst -Force",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install.ps1 should stage bundled codex.exe for local slaves; missing %q", want)
+		}
+	}
+
+	stage := strings.Index(s, "$codexSrc = Join-Path $srcDir 'codex.exe'")
+	minimalBranch := strings.Index(s, "if ($MinimalVSCode)")
+	codexDesktopMode := strings.Index(s, "Writing install mode codex_desktop")
+	if stage < 0 || minimalBranch < 0 || codexDesktopMode < 0 {
+		t.Fatal("install.ps1 missing codex staging, frontend branch, or codex_desktop setup marker")
+	}
+	if stage > minimalBranch || stage > codexDesktopMode {
+		t.Fatal("install.ps1 must stage bundled codex.exe before mode-specific frontend setup so default Codex Desktop installs support local slaves")
+	}
+}
+
 func TestWindowsPortableInstallerDoesNotAbortWhenShortcutCreationFails(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/install.ps1")
 	if err != nil {
@@ -407,6 +435,37 @@ func TestWindowsInnoInstallerInitializesMachineBeforeFrontend(t *testing.T) {
 	alternateFrontend := strings.Index(s, "RunEstimatedPowerShellStep('vscode-mode'")
 	if machine < 0 || frontend < 0 || alternateFrontend < 0 || machine > frontend || machine > alternateFrontend {
 		t.Fatal("installer.iss should initialize machine identity before frontend mode setup")
+	}
+}
+
+func TestWindowsInnoInstallerStagesBundledCodexForAllModesBeforeFrontend(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"procedure StageBundledCodexForLocalSlaves();",
+		"CodexBinDir := AddBackslash(LocalAppData) + 'agentserver-vscode\\bin';",
+		"CodexSrc := ExpandConstant('{app}\\codex.exe');",
+		"CodexDst := AddBackslash(CodexBinDir) + 'codex.exe';",
+		"FileCopy(CodexSrc, CodexDst, False)",
+		"StageBundledCodexForLocalSlaves();",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("installer.iss should stage bundled codex.exe for local slaves; missing %q", want)
+		}
+	}
+
+	machine := strings.Index(s, "RunEstimatedPowerShellStep('machine'")
+	stage := strings.LastIndex(s, "StageBundledCodexForLocalSlaves();")
+	codexFrontend := strings.Index(s, "RunEstimatedPowerShellStep('codex-mode'")
+	vscodeFrontend := strings.Index(s, "RunEstimatedPowerShellStep('vscode-mode'")
+	if machine < 0 || stage < 0 || codexFrontend < 0 || vscodeFrontend < 0 {
+		t.Fatal("installer.iss missing machine setup, codex staging, or frontend setup marker")
+	}
+	if machine > stage || stage > codexFrontend || stage > vscodeFrontend {
+		t.Fatal("installer.iss must stage bundled codex.exe after machine setup and before mode-specific frontend setup")
 	}
 }
 
