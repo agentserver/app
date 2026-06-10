@@ -106,7 +106,7 @@ func WriteConfig(sl Slave, m Machine, in ConfigInput) error {
 		Discovery: loomDiscovery{
 			DisplayName: sl.DisplayName,
 			Description: fmt.Sprintf("来自同一台电脑：%s；工作目录：%s", m.ComputerName, sl.Folder),
-			Skills:      []string{"chat", "file", "permissions", "register_mcp", "unregister_mcp"},
+			Skills:      []string{"chat", "bash", "file", "permissions", "register_mcp", "unregister_mcp"},
 		},
 		Resources: loomResources{Tags: []string{
 			"agentserver-vscode-slave",
