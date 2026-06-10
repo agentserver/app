@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -98,6 +99,47 @@ func requireMethods(w http.ResponseWriter, r *http.Request, allow string, method
 	w.Header().Set("Allow", allow)
 	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	return false
+}
+
+func requireTrustedConsoleMutation(w http.ResponseWriter, r *http.Request) bool {
+	if trustedConsoleMutationRequest(r) {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+	return false
+}
+
+func trustedConsoleMutationRequest(r *http.Request) bool {
+	fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
+	switch fetchSite {
+	case "", "same-origin", "same-site", "none":
+	case "cross-site":
+		return false
+	default:
+		return false
+	}
+	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" && !sameRequestOrigin(r, origin) {
+		return false
+	}
+	if origin := strings.TrimSpace(r.Header.Get("Referer")); origin != "" && !sameRequestOrigin(r, origin) {
+		return false
+	}
+	return true
+}
+
+func sameRequestOrigin(r *http.Request, raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, requestScheme(r)) && strings.EqualFold(u.Host, r.Host)
+}
+
+func requestScheme(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
 }
 
 func writeConsoleErr(w http.ResponseWriter, err error) {
@@ -233,6 +275,9 @@ func (s *server) handleConsoleRefresh(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
+	if !requireTrustedConsoleMutation(w, r) {
+		return
+	}
 	st, err := s.c.Refresh(r.Context())
 	if err != nil {
 		writeErr(w, 500, err)
@@ -254,6 +299,9 @@ func (s *server) handleConsoleSlaves(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"machine": machine, "slaves": slaves})
 		return
 	}
+	if !requireTrustedConsoleMutation(w, r) {
+		return
+	}
 
 	var in slave.CreateInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -270,6 +318,9 @@ func (s *server) handleConsoleSlaves(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleConsoleSelectFolder(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	folder, err := s.c.SelectFolder(r.Context())
@@ -293,6 +344,9 @@ func (s *server) handleConsoleSlave(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodDelete) {
 			return
 		}
+		if !requireTrustedConsoleMutation(w, r) {
+			return
+		}
 		if err := s.c.DeleteSlave(r.Context(), id); err != nil {
 			writeConsoleErr(w, err)
 			return
@@ -311,6 +365,9 @@ func (s *server) handleConsoleSlave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	var (
@@ -333,6 +390,9 @@ func (s *server) handleConsoleOpenFrontend(w http.ResponseWriter, r *http.Reques
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
+	if !requireTrustedConsoleMutation(w, r) {
+		return
+	}
 	if err := s.c.OpenFrontend(r.Context()); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -342,6 +402,9 @@ func (s *server) handleConsoleOpenFrontend(w http.ResponseWriter, r *http.Reques
 
 func (s *server) handleConsoleOpenSubscription(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if err := s.c.OpenSubscription(r.Context()); err != nil {
@@ -355,6 +418,9 @@ func (s *server) handleConsoleLogoutModelserver(w http.ResponseWriter, r *http.R
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
+	if !requireTrustedConsoleMutation(w, r) {
+		return
+	}
 	if err := s.c.LogoutModelserver(r.Context()); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -364,6 +430,9 @@ func (s *server) handleConsoleLogoutModelserver(w http.ResponseWriter, r *http.R
 
 func (s *server) handleConsoleQuit(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if err := s.c.Quit(r.Context()); err != nil {

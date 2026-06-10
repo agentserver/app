@@ -5,6 +5,7 @@ package slave
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -13,7 +14,19 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const machineWriteFailureChildEnv = "AGENTSERVER_MACHINE_WRITE_FAILURE_CHILD"
+
 func TestMachineStoreDoesNotPublishPartialFinalOnWriteFailure(t *testing.T) {
+	if os.Getenv(machineWriteFailureChildEnv) != "1" {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestMachineStoreDoesNotPublishPartialFinalOnWriteFailure$")
+		cmd.Env = append(os.Environ(), machineWriteFailureChildEnv+"=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("write failure subprocess failed: %v\n%s", err, out)
+		}
+		return
+	}
+
 	path := filepath.Join(t.TempDir(), "machine.json")
 
 	withFileSizeLimit(t, 0, func() {

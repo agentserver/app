@@ -1296,6 +1296,62 @@ func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
 	}
 }
 
+func TestConfigureCodexDesktopDefaultsDriverCodexBinToCodexCommand(t *testing.T) {
+	dir := t.TempDir()
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	for key, value := range map[string]string{
+		"agentserver_ws_api_key":   "sandbox-proxy-token",
+		"agentserver_tunnel_token": "tunnel-token",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		s.Agentserver.SandboxID = "sb-1"
+		s.Agentserver.WorkspaceID = "ws-1"
+		s.Agentserver.ShortID = "abc123"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driverExe := filepath.Join(dir, "install", "driver-agent.exe")
+	if err := os.MkdirAll(filepath.Dir(driverExe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(driverExe, []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	codexAbsPath := filepath.Join(dir, "agentserver-vscode", "bin", "codex.exe")
+	loomConfig := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
+	r := &realOrchestrator{d: Deps{
+		State:           store,
+		Secrets:         sec,
+		CodexConfigPath: filepath.Join(dir, ".codex", "config.toml"),
+		CodexAbsPath:    codexAbsPath,
+		LoomDriverPath:  driverExe,
+		LoomConfigPath:  loomConfig,
+	}}
+
+	if err := r.ConfigureFrontend(context.Background()); err != nil {
+		t.Fatalf("ConfigureFrontend: %v", err)
+	}
+
+	loomBytes, err := os.ReadFile(loomConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loomText := string(loomBytes)
+	if !strings.Contains(loomText, `bin: "codex"`) {
+		t.Fatalf("driver.yaml should default Codex Desktop driver bin to codex command:\n%s", loomText)
+	}
+	if strings.Contains(loomText, filepath.ToSlash(codexAbsPath)) {
+		t.Fatalf("Codex Desktop driver should not use local VS Code codex path:\n%s", loomText)
+	}
+}
+
 func TestConfigureCodexDesktopRequiresAgentserverRegistrationForLoom(t *testing.T) {
 	dir := t.TempDir()
 	sec := secrets.New(filepath.Join(dir, "secrets.json"))

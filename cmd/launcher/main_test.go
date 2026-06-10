@@ -571,10 +571,101 @@ func TestConfigureCompletedLoomDriverUsesDefaultObserver(t *testing.T) {
 		`agent_id: "driver-abc123"`,
 		`api_key: "sandbox-proxy-token"`,
 		`token_state_path: "` + filepath.ToSlash(filepath.Join(filepath.Dir(loomPath), "observer.token")) + `"`,
+		`bin: "codex"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("driver.yaml missing %q:\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, filepath.ToSlash(p.CodexExePath)) {
+		t.Fatalf("Codex Desktop driver should use Codex Desktop's codex command, not local VS Code codex path:\n%s", text)
+	}
+}
+
+func TestConfigureCompletedLoomDriverMinimalVSCodeUsesVSCodeCodexPath(t *testing.T) {
+	dir := t.TempDir()
+	installDir := filepath.Join(dir, "install")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "driver-agent.exe"), []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	for key, value := range map[string]string{
+		"agentserver_ws_api_key":   "sandbox-proxy-token",
+		"agentserver_tunnel_token": "tunnel-token",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := &state.State{FrontendMode: state.FrontendModeMinimalVSCode}
+	st.Agentserver.SandboxID = "sb-1"
+	st.Agentserver.WorkspaceID = "ws-1"
+	st.Agentserver.ShortID = "abc123"
+	p := paths.Paths{
+		UserHome:     dir,
+		CodexExePath: filepath.Join(dir, "bin", "codex.exe"),
+	}
+
+	if err := configureCompletedLoomDriver(p, st, sec, installDir); err != nil {
+		t.Fatalf("configureCompletedLoomDriver: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, ".config", "multi-agent", "driver.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `bin: "` + filepath.ToSlash(p.CodexExePath) + `"`
+	if !strings.Contains(string(body), want) {
+		t.Fatalf("driver.yaml missing %q:\n%s", want, body)
+	}
+}
+
+func TestLaunchCompletedFrontendMinimalVSCodeConfiguresLoomDriver(t *testing.T) {
+	dir := t.TempDir()
+	installDir := filepath.Join(dir, "install")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "driver-agent.exe"), []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	for key, value := range map[string]string{
+		"agentserver_ws_api_key":   "sandbox-proxy-token",
+		"agentserver_tunnel_token": "tunnel-token",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	st := &state.State{FrontendMode: state.FrontendModeMinimalVSCode}
+	st.VSCode.Path = filepath.Join(dir, "missing-code.exe")
+	st.Agentserver.SandboxID = "sb-1"
+	st.Agentserver.WorkspaceID = "ws-1"
+	st.Agentserver.ShortID = "abc123"
+	p := paths.Paths{
+		UserHome:          dir,
+		VSCodeUserDataDir: filepath.Join(dir, "vscode-data"),
+		VSCodeExtDir:      filepath.Join(dir, "vscode-ext"),
+		CodexConfigFile:   filepath.Join(dir, ".codex", "config.toml"),
+		CodexExePath:      filepath.Join(dir, "bin", "codex.exe"),
+	}
+
+	err := launchCompletedFrontend(context.Background(), st, p, sec, installDir, "", "", nil)
+	if err == nil {
+		t.Fatal("expected missing VS Code executable error")
+	}
+
+	body, readErr := os.ReadFile(filepath.Join(dir, ".config", "multi-agent", "driver.yaml"))
+	if readErr != nil {
+		t.Fatalf("expected minimal VS Code launch to configure driver before launching: %v", readErr)
+	}
+	want := `bin: "` + filepath.ToSlash(p.CodexExePath) + `"`
+	if !strings.Contains(string(body), want) {
+		t.Fatalf("driver.yaml missing %q:\n%s", want, body)
 	}
 }
 

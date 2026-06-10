@@ -635,6 +635,9 @@ func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths,
 		if s.VSCode.Path == "" {
 			return fmt.Errorf("VS Code path unknown; rerun onboarding")
 		}
+		if err := configureCompletedLoomDriver(p, s, sec, installDir); err != nil {
+			return err
+		}
 		return launchCompletedInstall(ctx, s.VSCode.Path, p, sec, tokenRefresherExe, embeddedVSIXPath)
 	}
 	return launchCompletedCodexDesktop(ctx, s, p, sec, installDir, tokenRefresherExe, codexOpen)
@@ -699,10 +702,7 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 	if s.Agentserver.ShortID != "" {
 		serverName = "driver-" + s.Agentserver.ShortID
 	}
-	codexBin := p.CodexExePath
-	if codexBin == "" {
-		codexBin = "codex"
-	}
+	codexBin := completedDriverCodexBin(p, s)
 	if err := loom.WriteDriverConfig(loomConfigPath, loom.DriverConfig{
 		ServerURL:     serverURL,
 		ServerName:    serverName,
@@ -720,6 +720,18 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 		return fmt.Errorf("configure loom driver: %w", err)
 	}
 	return nil
+}
+
+func completedDriverCodexBin(p paths.Paths, s *state.State) string {
+	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeMinimalVSCode {
+		if p.CodexExePath != "" {
+			return p.CodexExePath
+		}
+		return "codex"
+	}
+	// Codex Desktop owns its CLI runtime; do not point the driver at the
+	// VS Code helper codex.exe staged under agentserver-vscode.
+	return "codex"
 }
 
 func getSecretIfPresent(sec secrets.Store, key string) string {

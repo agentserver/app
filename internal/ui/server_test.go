@@ -407,6 +407,74 @@ func TestServerConsoleCreateSlaveEndpointForwardsInput(t *testing.T) {
 	}
 }
 
+func TestServerConsoleMutationsRejectCrossOriginBrowserRequests(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{name: "create slave", method: http.MethodPost, path: "/api/console/slaves", body: `{"folder":"/tmp/repo","name":"worker"}`},
+		{name: "restart slave", method: http.MethodPost, path: "/api/console/slaves/slave-1/restart"},
+		{name: "pause slave", method: http.MethodPost, path: "/api/console/slaves/slave-1/pause"},
+		{name: "delete slave", method: http.MethodDelete, path: "/api/console/slaves/slave-1"},
+		{name: "select folder", method: http.MethodPost, path: "/api/console/select-folder"},
+		{name: "open frontend", method: http.MethodPost, path: "/api/console/open-frontend"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cc := &fakeConsoleController{}
+			srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+			defer srv.Close()
+
+			req, err := http.NewRequest(tt.method, srv.URL+tt.path, strings.NewReader(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Origin", "https://evil.example")
+			req.Header.Set("Sec-Fetch-Site", "cross-site")
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("status=%d", resp.StatusCode)
+			}
+			if cc.createdInput.Folder != "" || cc.restartedID != "" || cc.pausedID != "" ||
+				cc.deletedID != "" || cc.selectedFolderCalled || cc.openedFrontend {
+				t.Fatalf("cross-origin request reached controller: %+v", cc)
+			}
+		})
+	}
+}
+
+func TestServerConsoleMutationsAllowSameOriginBrowserRequests(t *testing.T) {
+	cc := &fakeConsoleController{}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/console/open-frontend", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", srv.URL)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if !cc.openedFrontend {
+		t.Fatal("same-origin request should reach controller")
+	}
+}
+
 func TestServerConsoleCreateSlaveEndpointReturnsBadRequestForValidationErrors(t *testing.T) {
 	tests := []struct {
 		name string

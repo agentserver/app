@@ -465,13 +465,7 @@ func (r *realOrchestrator) configureLoomDriver() error {
 	if serverURL == "" {
 		serverURL = "https://agent.cs.ac.cn"
 	}
-	codexBin := r.d.CodexDesktopCodexPath
-	if codexBin == "" {
-		codexBin = r.d.CodexAbsPath
-	}
-	if codexBin == "" {
-		codexBin = "codex"
-	}
+	codexBin := r.loomDriverCodexBin(st)
 	serverName := "driver-" + lastN(st.InstallID, 8)
 	if st.Agentserver.ShortID != "" {
 		serverName = "driver-" + st.Agentserver.ShortID
@@ -504,6 +498,20 @@ func (r *realOrchestrator) configureLoomDriver() error {
 		return fmt.Errorf("configure codex mcp driver: %w", err)
 	}
 	return nil
+}
+
+func (r *realOrchestrator) loomDriverCodexBin(st *state.State) string {
+	if state.NormalizeFrontendMode(st.FrontendMode) == state.FrontendModeMinimalVSCode {
+		if r.d.CodexAbsPath != "" {
+			return r.d.CodexAbsPath
+		}
+		return "codex"
+	}
+	if r.d.CodexDesktopCodexPath != "" {
+		return r.d.CodexDesktopCodexPath
+	}
+	// Codex Desktop provides the CLI runtime for its own driver workflow.
+	return "codex"
 }
 
 func (r *realOrchestrator) ConfigureCodexDesktop(ctx context.Context) error {
