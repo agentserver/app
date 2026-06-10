@@ -58,7 +58,7 @@ func TestWriteConfigPublishesMachineSourceInAgentserverCardFields(t *testing.T) 
 	if cfg.Discovery.Description != `来自同一台电脑：61414-PC；工作目录：C:\Users\61414\project-a` {
 		t.Fatalf("discovery.description=%q", cfg.Discovery.Description)
 	}
-	wantSkills := []string{"chat", "bash", "file", "permissions", "register_mcp", "unregister_mcp"}
+	wantSkills := []string{"chat", "bash", "powershell", "file", "permissions", "register_mcp", "unregister_mcp"}
 	if !slices.Equal(cfg.Discovery.Skills, wantSkills) {
 		t.Fatalf("discovery.skills=%v", cfg.Discovery.Skills)
 	}

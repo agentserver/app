@@ -87,7 +87,7 @@ codex:
 discovery:
   display_name: "61414-PC-前端调试"
   description: "来自同一台电脑：61414-PC；工作目录：C:\\Users\\61414\\project-a"
-  skills: ["chat", "file", "permissions", "register_mcp", "unregister_mcp"]
+  skills: ["chat", "bash", "powershell", "file", "permissions", "register_mcp", "unregister_mcp"]
 
 resources:
   tags:
