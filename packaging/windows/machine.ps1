@@ -2,13 +2,22 @@
 
 param(
     [string]$MachinePath = (Join-Path $env:USERPROFILE '.agentserver-vscode\machine.json'),
-    [string]$ComputerName = $env:COMPUTERNAME
+    [string]$ComputerName = $env:COMPUTERNAME,
+    [string]$ComputerNamePath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 
 if ([string]::IsNullOrWhiteSpace($MachinePath)) {
     throw "Machine path cannot be empty."
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ComputerNamePath)) {
+    if (-not (Test-Path -LiteralPath $ComputerNamePath)) {
+        throw "Computer name path does not exist: $ComputerNamePath"
+    }
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    $ComputerName = [System.IO.File]::ReadAllText($ComputerNamePath, $utf8NoBom)
 }
 
 if ($null -eq $ComputerName) {

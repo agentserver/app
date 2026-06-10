@@ -176,6 +176,15 @@ begin
   Result := '''' + Value + '''';
 end;
 
+function SaveUTF8Text(Path, Text: String): Boolean;
+var
+  Lines: TArrayOfString;
+begin
+  SetArrayLength(Lines, 1);
+  Lines[0] := Text;
+  Result := SaveStringsToUTF8FileWithoutBOM(Path, Lines, False);
+end;
+
 function FormatDuration(Seconds: Integer): String;
 var
   Minutes: Integer;
@@ -367,6 +376,7 @@ var
   ModePath: String;
   MachinePath: String;
   ComputerName: String;
+  ComputerNamePath: String;
 begin
   if CurStep <> ssPostInstall then begin
     Exit;
@@ -374,8 +384,13 @@ begin
 
   MachinePath := GetMachinePath();
   ComputerName := GetChosenComputerName();
+  ComputerNamePath := ExpandConstant('{tmp}\agentserver-machine-name.txt');
+  DeleteFile(ComputerNamePath);
+  if not SaveUTF8Text(ComputerNamePath, ComputerName) then begin
+    RaiseException('无法保存电脑名称。');
+  end;
   RunEstimatedPowerShellStep('machine', '正在初始化电脑名称...', 'machine.ps1',
-    '-MachinePath ' + PowerShellQuote(MachinePath) + ' -ComputerName ' + PowerShellQuote(ComputerName), 10);
+    '-MachinePath ' + PowerShellQuote(MachinePath) + ' -ComputerNamePath ' + PowerShellQuote(ComputerNamePath), 10);
 
   ModePath := ExpandConstant('{app}\install-mode.json');
   if ShouldInstallCodexDesktop then begin

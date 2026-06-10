@@ -268,6 +268,8 @@ func TestWindowsMachineScriptCreatesStableMachineIDAndUpdatesComputerName(t *tes
 		"param(",
 		`[string]$MachinePath = (Join-Path $env:USERPROFILE '.agentserver-vscode\machine.json')`,
 		`[string]$ComputerName = $env:COMPUTERNAME`,
+		`[string]$ComputerNamePath = ''`,
+		"ReadAllText($ComputerNamePath",
 		"$ComputerName = $ComputerName.Trim()",
 		"if ([string]::IsNullOrWhiteSpace($ComputerName))",
 		"if (Test-Path -LiteralPath $MachinePath)",
@@ -393,7 +395,7 @@ func TestWindowsInnoInstallerInitializesMachineBeforeFrontend(t *testing.T) {
 		"computer_name",
 		"machine.ps1",
 		"-MachinePath",
-		"-ComputerName",
+		"-ComputerNamePath",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("installer.iss should prompt for and initialize machine identity; missing %q", want)
@@ -425,6 +427,27 @@ func TestWindowsInnoInstallerDefaultsComputerNamePageFromMachineJson(t *testing.
 	}
 	if strings.Contains(s, "ShouldSkipPage") {
 		t.Fatal("installer.iss should not skip the computer-name page when machine.json exists")
+	}
+}
+
+func TestWindowsInnoInstallerPassesComputerNameThroughUTF8File(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"SaveStringsToUTF8FileWithoutBOM",
+		"SaveUTF8Text",
+		"agentserver-machine-name.txt",
+		"-ComputerNamePath",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("installer.iss should pass non-ASCII computer names through a UTF-8 file; missing %q", want)
+		}
+	}
+	if strings.Contains(s, "-ComputerName ' + PowerShellQuote(ComputerName)") {
+		t.Fatal("installer.iss must not embed the chosen computer name directly in the PowerShell script body")
 	}
 }
 
