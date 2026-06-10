@@ -109,6 +109,13 @@ func requireTrustedConsoleMutation(w http.ResponseWriter, r *http.Request) bool 
 	return false
 }
 
+func requirePostTrustedMutation(w http.ResponseWriter, r *http.Request) bool {
+	if !requireMethod(w, r, http.MethodPost) {
+		return false
+	}
+	return requireTrustedConsoleMutation(w, r)
+}
+
 func trustedConsoleMutationRequest(r *http.Request) bool {
 	fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
 	switch fetchSite {
@@ -171,6 +178,9 @@ func (s *server) handleState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleMSLogin(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
 	oauthURL, err := s.o.LoginModelserver(r.Context())
 	if err != nil {
 		writeErr(w, 500, err)
@@ -191,6 +201,9 @@ func (s *server) handleMSStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleASLogin(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
 	oauthURL, err := s.o.LoginAgentserver(r.Context())
 	if err != nil {
 		writeErr(w, 500, err)
@@ -214,6 +227,9 @@ func (s *server) handleASStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleFrontendInstall(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
 	streamID := s.sse.newStream()
 	go func() {
 		defer s.sse.close(streamID)
@@ -226,6 +242,9 @@ func (s *server) handleFrontendInstall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleFrontendConfigure(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
 	if err := s.o.ConfigureFrontend(r.Context()); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -234,6 +253,9 @@ func (s *server) handleFrontendConfigure(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *server) handleFinalize(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
 	if err := s.o.Finalize(r.Context()); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -242,11 +264,17 @@ func (s *server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleAbort(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
 	_ = s.o.Abort(r.Context())
 	writeJSON(w, 200, map[string]string{"state": "aborted"})
 }
 
 func (s *server) handleLaunch(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
 	if err := s.o.LaunchAndShutdown(r.Context()); err != nil {
 		writeErr(w, 500, err)
 		return

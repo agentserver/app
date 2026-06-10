@@ -451,6 +451,63 @@ func TestServerConsoleMutationsRejectCrossOriginBrowserRequests(t *testing.T) {
 	}
 }
 
+func TestServerOnboardingMutationsRequirePostAndTrustedOrigin(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "modelserver login", path: "/api/step/modelserver_login"},
+		{name: "agentserver login", path: "/api/step/agentserver_login"},
+		{name: "frontend install", path: "/api/step/frontend_install"},
+		{name: "frontend configure", path: "/api/step/frontend_configure"},
+		{name: "legacy vscode install", path: "/api/step/vscode_install"},
+		{name: "legacy vscode configure", path: "/api/step/vscode_configure"},
+		{name: "finalize", path: "/api/finalize"},
+		{name: "abort", path: "/api/abort"},
+		{name: "launch", path: "/api/launch"},
+		{name: "legacy launch vscode", path: "/api/launch-vscode"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" rejects get", func(t *testing.T) {
+			srv := httptest.NewServer(NewServer(noopOrchestrator{}))
+			defer srv.Close()
+
+			resp, err := http.Get(srv.URL + tt.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Fatalf("status=%d", resp.StatusCode)
+			}
+			if resp.Header.Get("Allow") != http.MethodPost {
+				t.Fatalf("Allow=%q", resp.Header.Get("Allow"))
+			}
+		})
+
+		t.Run(tt.name+" rejects cross origin post", func(t *testing.T) {
+			srv := httptest.NewServer(NewServer(noopOrchestrator{}))
+			defer srv.Close()
+
+			req, err := http.NewRequest(http.MethodPost, srv.URL+tt.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Origin", "https://evil.example")
+			req.Header.Set("Sec-Fetch-Site", "cross-site")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("status=%d", resp.StatusCode)
+			}
+		})
+	}
+}
+
 func TestServerConsoleMutationsAllowSameOriginBrowserRequests(t *testing.T) {
 	cc := &fakeConsoleController{}
 	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))

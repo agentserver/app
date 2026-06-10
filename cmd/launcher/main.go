@@ -719,6 +719,14 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 	}); err != nil {
 		return fmt.Errorf("configure loom driver: %w", err)
 	}
+	if p.CodexConfigFile != "" {
+		if err := codex.UpdateMCPServer(p.CodexConfigFile, "driver", codex.MCPServer{
+			Command: driverPath,
+			Args:    []string{"serve-mcp", "--config", loomConfigPath},
+		}); err != nil {
+			return fmt.Errorf("configure codex mcp driver: %w", err)
+		}
+	}
 	return nil
 }
 

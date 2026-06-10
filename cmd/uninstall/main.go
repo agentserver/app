@@ -26,17 +26,21 @@ func main() {
 	if err != nil {
 		die(err)
 	}
+	appDir := ""
+	if exe, err := os.Executable(); err == nil {
+		appDir = filepath.Dir(exe)
+	}
 	if err := uninstall.Run(uninstall.Options{
 		Paths:   p,
 		Secrets: secrets.New(p.SecretsFile),
+		AppDir:  appDir,
 	}); err != nil {
 		die(err)
 	}
 
 	if !*keepInstallDir {
-		exe, err := os.Executable()
-		if err == nil {
-			if err := removeInstallDirLater(filepath.Dir(exe)); err != nil {
+		if appDir != "" {
+			if err := removeInstallDirLater(appDir); err != nil {
 				die(err)
 			}
 		}

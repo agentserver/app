@@ -80,6 +80,10 @@ func NewManager(d ManagerDeps) *Manager {
 	return &Manager{Machines: d.Machines, Registry: d.Registry, d: d}
 }
 
+func StopProcess(ctx context.Context, pid int, expectedExe string) error {
+	return (execRunner{}).StopProcess(ctx, pid, expectedExe)
+}
+
 func (m *Manager) List(context.Context) (Machine, []Slave, error) {
 	if err := m.requireDeps(true, true, false); err != nil {
 		return Machine{}, nil, err

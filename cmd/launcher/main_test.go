@@ -524,6 +524,67 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 	}
 }
 
+func TestLaunchCompletedFrontendCodexDesktopRegistersLoomDriverMCP(t *testing.T) {
+	dir := t.TempDir()
+	installDir := filepath.Join(dir, "install")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	driverPath := filepath.Join(installDir, "driver-agent.exe")
+	if err := os.WriteFile(driverPath, []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	for key, value := range map[string]string{
+		"agentserver_ws_api_key":   "sandbox-proxy-token",
+		"agentserver_tunnel_token": "tunnel-token",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := paths.Paths{
+		UserHome:                          dir,
+		CodexConfigFile:                   filepath.Join(dir, ".codex", "config.toml"),
+		CodexDesktopGlobalStateFile:       filepath.Join(dir, ".codex", ".codex-global-state.json"),
+		CodexDesktopComputerUseConfigFile: filepath.Join(dir, ".codex", "computer-use", "config.json"),
+	}
+	if err := os.MkdirAll(filepath.Dir(p.CodexConfigFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.CodexConfigFile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := &state.State{}
+	st.Onboarding.Status = state.StatusComplete
+	st.Agentserver.SandboxID = "sb-1"
+	st.Agentserver.WorkspaceID = "ws-1"
+	st.Agentserver.ShortID = "abc123"
+
+	if err := launchCompletedFrontend(context.Background(), st, p, sec, installDir, "", "", func(string) error {
+		return nil
+	}); err != nil {
+		t.Fatalf("launchCompletedFrontend: %v", err)
+	}
+
+	body, err := os.ReadFile(p.CodexConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`[mcp_servers.driver]`,
+		`command = "` + filepath.ToSlash(driverPath) + `"`,
+		`"serve-mcp"`,
+		`"--config"`,
+		`"` + filepath.ToSlash(filepath.Join(dir, ".config", "multi-agent", "driver.yaml")) + `"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("config.toml missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestConfigureCompletedLoomDriverUsesDefaultObserver(t *testing.T) {
 	dir := t.TempDir()
 	installDir := filepath.Join(dir, "install")
