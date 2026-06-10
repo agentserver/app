@@ -559,6 +559,34 @@ describe('Dashboard', () => {
     expect(getSlavesSpy).toHaveBeenCalledTimes(2);
   });
 
+  it('still allows local slave deletion when opening the remote page fails', async () => {
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+    const getSlavesSpy = vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves({
+      slaves: [{
+        id: 'sl-1',
+        name: 'worker',
+        display_name: 'devbox-worker',
+        folder: '/repo/app',
+        status: 'running',
+      }],
+    }));
+    const openRemoteSpy = vi.spyOn(api, 'openConsoleSlaveRemote').mockRejectedValue(new Error('config unreadable'));
+    const deleteSpy = vi.spyOn(api, 'deleteConsoleSlave').mockResolvedValue({ state: 'deleted' });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    await w.find('[data-test="delete-slave-sl-1"]').trigger('click');
+    await flushPromises();
+
+    expect(openRemoteSpy).toHaveBeenCalledWith('sl-1');
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('远程记录可能需要手动清理'));
+    expect(deleteSpy).toHaveBeenCalledWith('sl-1');
+    expect(getSlavesSpy).toHaveBeenCalledTimes(2);
+    expect(w.text()).not.toContain('config unreadable');
+  });
+
   it('renders unknown local slave statuses as the raw status', async () => {
     vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
     vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves({

@@ -274,6 +274,7 @@ async function pauseSlave(id: string) {
 }
 
 async function deleteSlave(id: string) {
+  let remoteOpenFailed = false;
   if (!slaveRemoteDeleteOpened.value[id]) {
     if (slaveBusy.value[id]) return;
     slaveBusy.value = { ...slaveBusy.value, [id]: true };
@@ -287,23 +288,31 @@ async function deleteSlave(id: string) {
         return;
       }
     } catch (e) {
-      slaveError.value = errorMessage(e);
-      slaveNotice.value = '';
-      return;
+      remoteOpenFailed = true;
+      slaveError.value = '';
+      slaveNotice.value = `未能自动打开 agentserver 页面：${errorMessage(e)}。远程记录可能需要手动清理。`;
     } finally {
       slaveBusy.value = { ...slaveBusy.value, [id]: false };
     }
   }
 
-  const confirmed = window.confirm(slaveRemoteDeleteOpened.value[id]
-    ? '我已在 agentserver 网页删除远程记录，现在删除这台电脑上的本地配置和进程。确定继续吗？'
-    : '删除这台电脑上的本地配置和进程。确定删除吗？');
+  const confirmed = window.confirm(deleteSlaveConfirmMessage(id, remoteOpenFailed));
   if (!confirmed) return;
   await runSlaveAction(id, async () => {
     await api.deleteConsoleSlave(id);
     clearSlaveRemoteDeleteOpened(id);
     slaveNotice.value = '';
   });
+}
+
+function deleteSlaveConfirmMessage(id: string, remoteOpenFailed: boolean) {
+  if (slaveRemoteDeleteOpened.value[id]) {
+    return '我已在 agentserver 网页删除远程记录，现在删除这台电脑上的本地配置和进程。确定继续吗？';
+  }
+  if (remoteOpenFailed) {
+    return '未能自动打开 agentserver 页面，远程记录可能需要手动清理。现在删除这台电脑上的本地配置和进程。确定继续吗？';
+  }
+  return '删除这台电脑上的本地配置和进程。确定删除吗？';
 }
 
 async function runSlaveAction(id: string, action: () => Promise<unknown>) {
