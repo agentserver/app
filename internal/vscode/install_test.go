@@ -616,6 +616,48 @@ func TestWindowsInnoInstallerStopsRunningAppProcessesBeforeReplacingFiles(t *tes
 	}
 }
 
+func TestWindowsInnoInstallerStopsLocalAppDataCodexBeforeReplacingFiles(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"$localAppDataRoot = Join-Path $env:LOCALAPPDATA ''agentserver-vscode''",
+		"$codexBin = Join-Path $localAppDataRoot ''bin\\codex.exe''",
+		"$exe -ieq $codexBin",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("installer.iss should stop LocalAppData bundled codex.exe before replacing files; missing %q", want)
+		}
+	}
+}
+
+func TestWindowsPortableInstallerStopsRunningProcessesBeforeCopy(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"function Stop-RunningAgentserverProcesses",
+		"Get-CimInstance Win32_Process",
+		"$localAppDataRoot = Join-Path $env:LOCALAPPDATA 'agentserver-vscode'",
+		"$codexBin = Join-Path $localAppDataRoot 'bin\\codex.exe'",
+		"$exe -ieq $codexBin",
+		"\nStop-RunningAgentserverProcesses\n",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install.ps1 should stop old app processes and LocalAppData codex.exe before overwriting files; missing %q", want)
+		}
+	}
+	stopCall := strings.Index(s, "\nStop-RunningAgentserverProcesses\n")
+	copyStart := strings.Index(s, "# Mkdir + copy")
+	if stopCall < 0 || copyStart < 0 || stopCall >= copyStart {
+		t.Fatal("install.ps1 must stop running processes before copying payload files")
+	}
+}
+
 func TestWindowsPackageScriptsDeleteBadVSCodePartFiles(t *testing.T) {
 	for _, path := range []string{
 		"../../scripts/package-windows.sh",

@@ -92,6 +92,32 @@ func TestMachineStoreEnsureBlankNameReturnsExistingIdentity(t *testing.T) {
 	}
 }
 
+func TestMachineStoreEnsureBacksUpAndRecreatesInvalidIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "machine.json")
+	badBody := []byte(`{"machine_id":""}`)
+	if err := os.WriteFile(path, badBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewMachineStore(path).Ensure("RECOVERED-PC")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if got.ComputerName != "RECOVERED-PC" || got.MachineID == "" {
+		t.Fatalf("machine=%+v", got)
+	}
+
+	loaded, err := NewMachineStore(path).Load()
+	if err != nil {
+		t.Fatalf("Load recreated identity: %v", err)
+	}
+	if loaded != got {
+		t.Fatalf("loaded=%+v, want %+v", loaded, got)
+	}
+	assertMachineBackup(t, dir, badBody)
+}
+
 func TestMachineStoreEnsureCreatesParentDirectories(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "machine", "machine.json")
 	if _, err := NewMachineStore(path).Ensure("61414-PC"); err != nil {
@@ -200,6 +226,29 @@ func TestMachineStoreLoadsInstallerWrittenFile(t *testing.T) {
 	if got.MachineID != "machine-123" || got.ComputerName != "INSTALL-PC" {
 		t.Fatalf("machine=%+v", got)
 	}
+}
+
+func assertMachineBackup(t *testing.T, dir string, want []byte) {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "machine.json.bad-") {
+			continue
+		}
+		got, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatalf("ReadFile backup: %v", err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("backup body=%q, want %q", string(got), string(want))
+		}
+		return
+	}
+	t.Fatalf("missing machine.json.bad-* backup in %s", dir)
 }
 
 func assertNoMachineTempFiles(t *testing.T, dir string) {

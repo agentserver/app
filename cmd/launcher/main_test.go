@@ -135,6 +135,38 @@ func TestCompletedStateOrchestratorLoadsDashboardState(t *testing.T) {
 	}
 }
 
+func TestCompletedSlaveManagerDepsRecoversBadMachineIdentity(t *testing.T) {
+	dir := t.TempDir()
+	machinePath := filepath.Join(dir, ".agentserver-vscode", "machine.json")
+	if err := os.MkdirAll(filepath.Dir(machinePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(machinePath, []byte(`{"machine_id":"broken"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COMPUTERNAME", "RECOVERED-PC")
+
+	deps, err := completedSlaveManagerDeps(completedServeInput{
+		Paths: paths.Paths{
+			MachineFile:  machinePath,
+			SlavesFile:   filepath.Join(dir, ".agentserver-vscode", "slaves.json"),
+			SlavesDir:    filepath.Join(dir, ".agentserver-vscode", "slaves"),
+			CodexExePath: filepath.Join(dir, "local-appdata", "agentserver-vscode", "bin", "codex.exe"),
+		},
+		InstallDir: filepath.Join(dir, "app"),
+	})
+	if err != nil {
+		t.Fatalf("completedSlaveManagerDeps: %v", err)
+	}
+	got, err := deps.Machines.Load()
+	if err != nil {
+		t.Fatalf("Load recovered machine identity: %v", err)
+	}
+	if got.ComputerName != "RECOVERED-PC" || got.MachineID == "" {
+		t.Fatalf("machine=%+v", got)
+	}
+}
+
 func TestCompletedConsoleOrchestratorStartsModelserverLogin(t *testing.T) {
 	dir := t.TempDir()
 	store := state.NewStore(filepath.Join(dir, "state.json"))

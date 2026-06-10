@@ -319,9 +319,17 @@ begin
   ScriptBody :=
     '$ErrorActionPreference = ''Stop''' + #13#10 +
     '$installDir = ' + PowerShellQuote(ExpandConstant('{app}')) + #13#10 +
+    'if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {' + #13#10 +
+    '  $localAppDataRoot = ' + PowerShellQuote(ExpandConstant('{localappdata}\agentserver-vscode')) + #13#10 +
+    '} else {' + #13#10 +
+    '  $localAppDataRoot = Join-Path $env:LOCALAPPDATA ''agentserver-vscode''' + #13#10 +
+    '}' + #13#10 +
+    '$codexBin = Join-Path $localAppDataRoot ''bin\codex.exe''' + #13#10 +
     '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''slave-agent.exe'', ''codex.exe'')' + #13#10 +
     '$filter = {' + #13#10 +
-    '  $_.ExecutablePath -and ($names -contains $_.Name) -and $_.ExecutablePath -like ($installDir + ''*'')' + #13#10 +
+    '  if (-not $_.ExecutablePath) { return $false }' + #13#10 +
+    '  $exe = [System.IO.Path]::GetFullPath($_.ExecutablePath)' + #13#10 +
+    '  (($names -contains $_.Name) -and $_.ExecutablePath -like ($installDir + ''*'')) -or (($_.Name -eq ''codex.exe'') -and ($exe -ieq $codexBin))' + #13#10 +
     '}' + #13#10 +
     '$procs = @(Get-CimInstance Win32_Process | Where-Object $filter)' + #13#10 +
     'foreach ($p in $procs) {' + #13#10 +

@@ -314,12 +314,8 @@ func newCompletedSlaveManager(in completedServeInput) (*slave.Manager, error) {
 
 func completedSlaveManagerDeps(in completedServeInput) (slave.ManagerDeps, error) {
 	machines := slave.NewMachineStore(in.Paths.MachineFile)
-	if _, err := machines.Load(); errors.Is(err, os.ErrNotExist) {
-		if _, err := machines.Ensure(completedComputerName()); err != nil {
-			return slave.ManagerDeps{}, fmt.Errorf("ensure machine identity: %w", err)
-		}
-	} else if err != nil {
-		return slave.ManagerDeps{}, fmt.Errorf("load machine identity: %w", err)
+	if _, err := machines.Ensure(completedComputerName()); err != nil {
+		return slave.ManagerDeps{}, fmt.Errorf("ensure machine identity: %w", err)
 	}
 	return slave.ManagerDeps{
 		Machines:  machines,

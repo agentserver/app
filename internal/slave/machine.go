@@ -7,9 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+var ErrInvalidMachineIdentity = errors.New("invalid machine identity")
 
 type Machine struct {
 	MachineID    string `json:"machine_id"`
@@ -34,10 +37,10 @@ func (s *MachineStore) Load() (Machine, error) {
 	}
 	var m Machine
 	if err := json.Unmarshal(b, &m); err != nil {
-		return Machine{}, fmt.Errorf("parse machine: %w", err)
+		return Machine{}, fmt.Errorf("%w: parse machine: %v", ErrInvalidMachineIdentity, err)
 	}
 	if strings.TrimSpace(m.MachineID) == "" || strings.TrimSpace(m.ComputerName) == "" {
-		return Machine{}, fmt.Errorf("machine identity incomplete")
+		return Machine{}, fmt.Errorf("%w: machine identity incomplete", ErrInvalidMachineIdentity)
 	}
 	return m, nil
 }
@@ -46,12 +49,34 @@ func (s *MachineStore) Ensure(computerName string) (Machine, error) {
 	if existing, err := s.Load(); err == nil {
 		return existing, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
+		if !errors.Is(err, ErrInvalidMachineIdentity) {
+			return Machine{}, err
+		}
+		name, nameErr := normalizeComputerName(computerName)
+		if nameErr != nil {
+			return Machine{}, nameErr
+		}
+		if backupErr := s.backupInvalid(); backupErr != nil && !errors.Is(backupErr, os.ErrNotExist) {
+			return Machine{}, fmt.Errorf("backup invalid machine identity: %w", backupErr)
+		}
+		return s.create(name)
+	}
+	name, err := normalizeComputerName(computerName)
+	if err != nil {
 		return Machine{}, err
 	}
+	return s.create(name)
+}
+
+func normalizeComputerName(computerName string) (string, error) {
 	name := strings.TrimSpace(computerName)
 	if name == "" {
-		return Machine{}, fmt.Errorf("computer name required")
+		return "", fmt.Errorf("computer name required")
 	}
+	return name, nil
+}
+
+func (s *MachineStore) create(name string) (Machine, error) {
 	id, err := uuid.NewRandom()
 	if err != nil {
 		return Machine{}, fmt.Errorf("generate machine id: %w", err)
@@ -70,6 +95,13 @@ func (s *MachineStore) Ensure(computerName string) (Machine, error) {
 		return Machine{}, err
 	}
 	return m, nil
+}
+
+func (s *MachineStore) backupInvalid() error {
+	dir := filepath.Dir(s.path)
+	base := filepath.Base(s.path)
+	backup := filepath.Join(dir, fmt.Sprintf("%s.bad-%d-%d", base, os.Getpid(), time.Now().UTC().UnixNano()))
+	return os.Rename(s.path, backup)
 }
 
 func publishMachineFile(path string, b []byte) error {

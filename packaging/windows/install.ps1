@@ -98,6 +98,50 @@ function Remove-RegistrySubKeyTree([string]$SubKey) {
     }
 }
 
+function Stop-RunningAgentserverProcesses {
+    Write-Step "Stopping running $AppDisplayName processes..."
+
+    $names = @(
+        'launcher.exe',
+        'onboarding-server.exe',
+        'agentctl.exe',
+        'open-folder.exe',
+        'token-refresher.exe',
+        'driver-agent.exe',
+        'slave-agent.exe',
+        'codex.exe'
+    )
+    $installRoot = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $localAppDataRoot = Join-Path $env:USERPROFILE 'AppData\Local\agentserver-vscode'
+    } else {
+        $localAppDataRoot = Join-Path $env:LOCALAPPDATA 'agentserver-vscode'
+    }
+    $codexBin = Join-Path $localAppDataRoot 'bin\codex.exe'
+    $filter = {
+        if (-not $_.ExecutablePath) { return $false }
+        $exe = [System.IO.Path]::GetFullPath($_.ExecutablePath)
+        $inInstallDir = ($names -contains $_.Name) -and $exe.StartsWith($installRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)
+        $isLocalCodex = ($_.Name -eq 'codex.exe') -and ($exe -ieq $codexBin)
+        return $inInstallDir -or $isLocalCodex
+    }
+
+    $procs = @(Get-CimInstance Win32_Process | Where-Object $filter)
+    foreach ($p in $procs) {
+        Stop-Process -Id $p.ProcessId -Force -PassThru -ErrorAction SilentlyContinue |
+            Wait-Process -Timeout 2 -ErrorAction SilentlyContinue
+    }
+    $deadline = (Get-Date).AddSeconds(8)
+    do {
+        Start-Sleep -Milliseconds 250
+        $remaining = @(Get-CimInstance Win32_Process | Where-Object $filter)
+    } while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline)
+    if ($remaining.Count -gt 0) {
+        $ids = ($remaining | ForEach-Object { $_.ProcessId }) -join ', '
+        throw "Timed out waiting for running $AppDisplayName processes to exit: $ids"
+    }
+}
+
 function Do-Uninstall {
     Write-Step "Uninstalling $AppDisplayName..."
 
@@ -171,6 +215,8 @@ foreach ($f in $required) {
         throw "Missing payload file: $f (expected in $srcDir)"
     }
 }
+
+Stop-RunningAgentserverProcesses
 
 # Mkdir + copy
 if (-not (Test-Path $InstallDir)) {

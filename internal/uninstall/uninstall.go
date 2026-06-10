@@ -125,6 +125,11 @@ func stopRunningProcesses(ctx context.Context, opts Options) error {
 			errs = append(errs, fmt.Errorf("stop install processes: %w", err))
 		}
 	}
+	if opts.Paths.LocalAppDataRoot != "" {
+		if err := opts.StopInstallProcesses(ctx, opts.Paths.LocalAppDataRoot, []string{"codex.exe"}); err != nil {
+			errs = append(errs, fmt.Errorf("stop local appdata processes: %w", err))
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -136,6 +141,7 @@ func installProcessNames() []string {
 		"slave-agent.exe",
 		"driver-agent.exe",
 		"token-refresher.exe",
+		"codex.exe",
 	}
 }
 
