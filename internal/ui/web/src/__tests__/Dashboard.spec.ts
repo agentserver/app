@@ -500,6 +500,7 @@ describe('Dashboard', () => {
     }));
     const restartSpy = vi.spyOn(api, 'restartConsoleSlave').mockResolvedValue({} as api.ConsoleSlave);
     const pauseSpy = vi.spyOn(api, 'pauseConsoleSlave').mockResolvedValue({} as api.ConsoleSlave);
+    const openRemoteSpy = vi.spyOn(api, 'openConsoleSlaveRemote').mockResolvedValue({ state: 'unavailable' });
     const deleteSpy = vi.spyOn(api, 'deleteConsoleSlave').mockResolvedValue({ state: 'deleted' });
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
 
@@ -515,9 +516,47 @@ describe('Dashboard', () => {
 
     expect(restartSpy).toHaveBeenCalledWith('sl-1');
     expect(pauseSpy).toHaveBeenCalledWith('sl-1');
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('只会删除这台电脑上的本地配置和进程'));
+    expect(openRemoteSpy).toHaveBeenCalledWith('sl-1');
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('删除这台电脑上的本地配置和进程'));
     expect(deleteSpy).toHaveBeenCalledWith('sl-1');
     expect(getSlavesSpy).toHaveBeenCalledTimes(4);
+  });
+
+  it('opens the remote agentserver page before deleting a linked local slave', async () => {
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+    const getSlavesSpy = vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves({
+      slaves: [{
+        id: 'sl-1',
+        name: 'worker',
+        display_name: 'devbox-worker',
+        folder: '/repo/app',
+        status: 'running',
+      }],
+    }));
+    const openRemoteSpy = vi.spyOn(api, 'openConsoleSlaveRemote').mockResolvedValue({
+      state: 'opened',
+      url: 'https://agent.cs.ac.cn/w/workspace-1/sandboxes/sandbox-1',
+    });
+    const deleteSpy = vi.spyOn(api, 'deleteConsoleSlave').mockResolvedValue({ state: 'deleted' });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    await w.find('[data-test="delete-slave-sl-1"]').trigger('click');
+    await flushPromises();
+
+    expect(openRemoteSpy).toHaveBeenCalledWith('sl-1');
+    expect(deleteSpy).not.toHaveBeenCalled();
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(w.text()).toContain('已打开 agentserver 页面');
+
+    await w.find('[data-test="delete-slave-sl-1"]').trigger('click');
+    await flushPromises();
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('我已在 agentserver 网页删除远程记录'));
+    expect(deleteSpy).toHaveBeenCalledWith('sl-1');
+    expect(getSlavesSpy).toHaveBeenCalledTimes(2);
   });
 
   it('renders unknown local slave statuses as the raw status', async () => {

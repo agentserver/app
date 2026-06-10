@@ -417,6 +417,7 @@ func TestServerConsoleMutationsRejectCrossOriginBrowserRequests(t *testing.T) {
 		{name: "create slave", method: http.MethodPost, path: "/api/console/slaves", body: `{"folder":"/tmp/repo","name":"worker"}`},
 		{name: "restart slave", method: http.MethodPost, path: "/api/console/slaves/slave-1/restart"},
 		{name: "pause slave", method: http.MethodPost, path: "/api/console/slaves/slave-1/pause"},
+		{name: "open remote slave", method: http.MethodPost, path: "/api/console/slaves/slave-1/open-remote"},
 		{name: "delete slave", method: http.MethodDelete, path: "/api/console/slaves/slave-1"},
 		{name: "select folder", method: http.MethodPost, path: "/api/console/select-folder"},
 		{name: "open frontend", method: http.MethodPost, path: "/api/console/open-frontend"},
@@ -444,7 +445,7 @@ func TestServerConsoleMutationsRejectCrossOriginBrowserRequests(t *testing.T) {
 				t.Fatalf("status=%d", resp.StatusCode)
 			}
 			if cc.createdInput.Folder != "" || cc.restartedID != "" || cc.pausedID != "" ||
-				cc.deletedID != "" || cc.selectedFolderCalled || cc.openedFrontend {
+				cc.openedRemoteID != "" || cc.deletedID != "" || cc.selectedFolderCalled || cc.openedFrontend {
 				t.Fatalf("cross-origin request reached controller: %+v", cc)
 			}
 		})
@@ -661,6 +662,33 @@ func TestServerConsoleSlaveActionEndpoints(t *testing.T) {
 	}
 }
 
+func TestServerConsoleOpenSlaveRemoteEndpoint(t *testing.T) {
+	cc := &fakeConsoleController{
+		openRemoteResult: console.SlaveRemoteOpenResult{
+			State: "opened",
+			URL:   "https://agent.cs.ac.cn/w/workspace-1/sandboxes/sandbox-1",
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/console/slaves/slave-1/open-remote", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body console.SlaveRemoteOpenResult
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if cc.openedRemoteID != "slave-1" || body.State != "opened" || body.URL == "" {
+		t.Fatalf("body=%+v openedRemoteID=%q", body, cc.openedRemoteID)
+	}
+}
+
 func TestServerConsoleDeleteSlaveEndpoint(t *testing.T) {
 	cc := &fakeConsoleController{}
 	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
@@ -789,6 +817,13 @@ func TestServerConsoleSlaveEndpointsRequireAllowedMethods(t *testing.T) {
 			allow: http.MethodPost,
 		},
 		{
+			name: "open remote rejects get",
+			req: func(base string) (*http.Request, error) {
+				return http.NewRequest(http.MethodGet, base+"/api/console/slaves/slave-1/open-remote", nil)
+			},
+			allow: http.MethodPost,
+		},
+		{
 			name: "delete rejects post",
 			req: func(base string) (*http.Request, error) {
 				return http.NewRequest(http.MethodPost, base+"/api/console/slaves/slave-1", nil)
@@ -817,7 +852,7 @@ func TestServerConsoleSlaveEndpointsRequireAllowedMethods(t *testing.T) {
 			if resp.Header.Get("Allow") != tt.allow {
 				t.Fatalf("Allow=%q", resp.Header.Get("Allow"))
 			}
-			if cc.createdInput.Folder != "" || cc.restartedID != "" || cc.pausedID != "" || cc.deletedID != "" {
+			if cc.createdInput.Folder != "" || cc.restartedID != "" || cc.pausedID != "" || cc.openedRemoteID != "" || cc.deletedID != "" {
 				t.Fatalf("controller should not be called: %+v", cc)
 			}
 		})
@@ -865,6 +900,8 @@ type fakeConsoleController struct {
 	createErr            error
 	restartedID          string
 	pausedID             string
+	openedRemoteID       string
+	openRemoteResult     console.SlaveRemoteOpenResult
 	deletedID            string
 }
 
@@ -919,6 +956,13 @@ func (f *fakeConsoleController) RestartSlave(_ context.Context, id string) (slav
 func (f *fakeConsoleController) PauseSlave(_ context.Context, id string) (slave.Slave, error) {
 	f.pausedID = id
 	return slave.Slave{ID: id, Status: slave.StatusPaused}, nil
+}
+func (f *fakeConsoleController) OpenSlaveRemote(_ context.Context, id string) (console.SlaveRemoteOpenResult, error) {
+	f.openedRemoteID = id
+	if f.openRemoteResult.State != "" {
+		return f.openRemoteResult, nil
+	}
+	return console.SlaveRemoteOpenResult{State: "unavailable"}, nil
 }
 func (f *fakeConsoleController) DeleteSlave(_ context.Context, id string) error {
 	f.deletedID = id

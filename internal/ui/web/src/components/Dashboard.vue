@@ -22,9 +22,11 @@ const slaves = ref<api.ConsoleSlave[]>([]);
 const slaveFolder = ref('');
 const slaveName = ref('');
 const slaveError = ref('');
+const slaveNotice = ref('');
 const creatingSlave = ref(false);
 const selectingSlaveFolder = ref(false);
 const slaveBusy = ref<Record<string, boolean>>({});
+const slaveRemoteDeleteOpened = ref<Record<string, boolean>>({});
 let slaveLoadSeq = 0;
 const slavePollIntervalMs = 3000;
 let slavePollTimer: number | undefined;
@@ -231,6 +233,7 @@ async function createSlave() {
   }
 
   creatingSlave.value = true;
+  slaveNotice.value = '';
   try {
     await api.createConsoleSlave({ folder, name });
     slaveFolder.value = '';
@@ -246,6 +249,7 @@ async function createSlave() {
 async function selectSlaveFolder() {
   if (selectingSlaveFolder.value) return;
   selectingSlaveFolder.value = true;
+  slaveNotice.value = '';
   try {
     const selected = await api.selectConsoleSlaveFolder();
     if (selected.folder) {
@@ -260,17 +264,46 @@ async function selectSlaveFolder() {
 }
 
 async function restartSlave(id: string) {
+  slaveNotice.value = '';
   await runSlaveAction(id, () => api.restartConsoleSlave(id));
 }
 
 async function pauseSlave(id: string) {
+  slaveNotice.value = '';
   await runSlaveAction(id, () => api.pauseConsoleSlave(id));
 }
 
 async function deleteSlave(id: string) {
-  const confirmed = window.confirm('只会删除这台电脑上的本地配置和进程，不会删除远程工作空间中的记录。确定删除吗？');
+  if (!slaveRemoteDeleteOpened.value[id]) {
+    if (slaveBusy.value[id]) return;
+    slaveBusy.value = { ...slaveBusy.value, [id]: true };
+    slaveNotice.value = '';
+    try {
+      const remote = await api.openConsoleSlaveRemote(id);
+      if (remote.state === 'opened') {
+        slaveRemoteDeleteOpened.value = { ...slaveRemoteDeleteOpened.value, [id]: true };
+        slaveNotice.value = '已打开 agentserver 页面。请先在网页中删除远程记录，完成后再次点击删除来清理本机配置和进程。';
+        slaveError.value = '';
+        return;
+      }
+    } catch (e) {
+      slaveError.value = errorMessage(e);
+      slaveNotice.value = '';
+      return;
+    } finally {
+      slaveBusy.value = { ...slaveBusy.value, [id]: false };
+    }
+  }
+
+  const confirmed = window.confirm(slaveRemoteDeleteOpened.value[id]
+    ? '我已在 agentserver 网页删除远程记录，现在删除这台电脑上的本地配置和进程。确定继续吗？'
+    : '删除这台电脑上的本地配置和进程。确定删除吗？');
   if (!confirmed) return;
-  await runSlaveAction(id, () => api.deleteConsoleSlave(id));
+  await runSlaveAction(id, async () => {
+    await api.deleteConsoleSlave(id);
+    clearSlaveRemoteDeleteOpened(id);
+    slaveNotice.value = '';
+  });
 }
 
 async function runSlaveAction(id: string, action: () => Promise<unknown>) {
@@ -284,6 +317,12 @@ async function runSlaveAction(id: string, action: () => Promise<unknown>) {
   } finally {
     slaveBusy.value = { ...slaveBusy.value, [id]: false };
   }
+}
+
+function clearSlaveRemoteDeleteOpened(id: string) {
+  const next = { ...slaveRemoteDeleteOpened.value };
+  delete next[id];
+  slaveRemoteDeleteOpened.value = next;
 }
 
 function slaveStatusLabel(status: api.ConsoleSlaveStatus | string) {
@@ -333,6 +372,7 @@ onBeforeUnmount(() => {
       :closable="false"
       show-icon
     />
+    <el-alert v-if="slaveNotice" type="info" :title="slaveNotice" :closable="false" show-icon />
     <el-alert v-if="state?.quota_error" type="warning" :title="state.quota_error" :closable="false" show-icon />
     <el-alert
       v-if="state?.modelserver.reconnect_required"

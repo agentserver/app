@@ -72,6 +72,13 @@ type StartResult struct {
 
 var ErrProcessNotTracked = errors.New("slave process not tracked")
 var ErrProcessNotRunning = errors.New("slave process not running")
+var ErrRemoteIdentityUnavailable = errors.New("slave remote identity unavailable")
+
+type RemoteIdentity struct {
+	ServerURL   string
+	WorkspaceID string
+	SandboxID   string
+}
 
 func NewManager(d ManagerDeps) *Manager {
 	if d.Runner == nil {
@@ -101,6 +108,17 @@ func (m *Manager) List(context.Context) (Machine, []Slave, error) {
 		return Machine{}, nil, err
 	}
 	return machine, slaves, nil
+}
+
+func (m *Manager) RemoteIdentity(_ context.Context, id string) (RemoteIdentity, error) {
+	if err := m.requireDeps(false, true, false); err != nil {
+		return RemoteIdentity{}, err
+	}
+	sl, err := m.d.Registry.Get(id)
+	if err != nil {
+		return RemoteIdentity{}, err
+	}
+	return readRemoteIdentity(sl.ConfigPath, m.d.ServerURL)
 }
 
 func (m *Manager) CreateAndStart(ctx context.Context, in CreateInput) (Slave, error) {
@@ -499,6 +517,39 @@ func configHasCredentials(path string) (bool, error) {
 		strings.TrimSpace(c.ProxyToken) != "" &&
 		strings.TrimSpace(c.WorkspaceID) != "" &&
 		strings.TrimSpace(c.ShortID) != "", nil
+}
+
+func readRemoteIdentity(path, fallbackServerURL string) (RemoteIdentity, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return RemoteIdentity{}, ErrRemoteIdentityUnavailable
+	}
+	if err != nil {
+		return RemoteIdentity{}, err
+	}
+	var cfg struct {
+		Server      loomServer      `yaml:"server"`
+		Credentials loomCredentials `yaml:"credentials"`
+	}
+	if err := yaml.Unmarshal(b, &cfg); err != nil {
+		return RemoteIdentity{}, err
+	}
+	sandboxID := strings.TrimSpace(cfg.Credentials.SandboxID)
+	if sandboxID == "" {
+		return RemoteIdentity{}, ErrRemoteIdentityUnavailable
+	}
+	serverURL := strings.TrimSpace(cfg.Server.URL)
+	if serverURL == "" {
+		serverURL = strings.TrimSpace(fallbackServerURL)
+	}
+	if serverURL == "" {
+		serverURL = DefaultServerURL
+	}
+	return RemoteIdentity{
+		ServerURL:   serverURL,
+		WorkspaceID: strings.TrimSpace(cfg.Credentials.WorkspaceID),
+		SandboxID:   sandboxID,
+	}, nil
 }
 
 type execRunner struct{}

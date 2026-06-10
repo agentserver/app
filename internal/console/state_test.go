@@ -732,6 +732,129 @@ func TestControllerListsAndControlsSlaves(t *testing.T) {
 	}
 }
 
+func TestControllerOpenSlaveRemoteOpensSandboxPageFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	manager := slave.NewManager(slave.ManagerDeps{
+		Machines:  slave.NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:  slave.NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:    &testSlaveRunner{pid: 1111},
+		SlaveExe:  filepath.Join(dir, "slave-agent.exe"),
+		ServerURL: "https://agent.example/",
+	})
+	if _, err := manager.Machines.Ensure("PC"); err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.CreateAndStart(context.Background(), slave.CreateInput{Folder: folder, Name: "worker"})
+	if err != nil {
+		t.Fatalf("CreateSlave: %v", err)
+	}
+	writeConsoleSlaveConfig(t, created.ConfigPath, "https://agent.example/", "workspace-1", "sandbox-1")
+	var openedURL string
+	c := NewController(Deps{
+		Slaves: manager,
+		OpenURL: func(url string) error {
+			openedURL = url
+			return nil
+		},
+	})
+
+	got, err := c.OpenSlaveRemote(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("OpenSlaveRemote: %v", err)
+	}
+	if got.State != "opened" || openedURL != "https://agent.example/w/workspace-1/sandboxes/sandbox-1" {
+		t.Fatalf("result=%+v openedURL=%q", got, openedURL)
+	}
+}
+
+func TestControllerOpenSlaveRemoteFallsBackToStateWorkspaceID(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Agentserver.WorkspaceID = "workspace-from-state"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := slave.NewManager(slave.ManagerDeps{
+		Machines:  slave.NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:  slave.NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:    &testSlaveRunner{pid: 1111},
+		SlaveExe:  filepath.Join(dir, "slave-agent.exe"),
+		ServerURL: "https://agent.example",
+	})
+	if _, err := manager.Machines.Ensure("PC"); err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.CreateAndStart(context.Background(), slave.CreateInput{Folder: folder, Name: "worker"})
+	if err != nil {
+		t.Fatalf("CreateSlave: %v", err)
+	}
+	writeConsoleSlaveConfig(t, created.ConfigPath, "https://agent.example", "", "sandbox-1")
+	var openedURL string
+	c := NewController(Deps{
+		State:  store,
+		Slaves: manager,
+		OpenURL: func(url string) error {
+			openedURL = url
+			return nil
+		},
+	})
+
+	got, err := c.OpenSlaveRemote(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("OpenSlaveRemote: %v", err)
+	}
+	if got.State != "opened" || openedURL != "https://agent.example/w/workspace-from-state/sandboxes/sandbox-1" {
+		t.Fatalf("result=%+v openedURL=%q", got, openedURL)
+	}
+}
+
+func TestControllerOpenSlaveRemoteReturnsUnavailableBeforeAuthentication(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	manager := slave.NewManager(slave.ManagerDeps{
+		Machines: slave.NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry: slave.NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:   &testSlaveRunner{pid: 1111},
+		SlaveExe: filepath.Join(dir, "slave-agent.exe"),
+	})
+	if _, err := manager.Machines.Ensure("PC"); err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.CreateAndStart(context.Background(), slave.CreateInput{Folder: folder, Name: "worker"})
+	if err != nil {
+		t.Fatalf("CreateSlave: %v", err)
+	}
+	var openedURL string
+	c := NewController(Deps{
+		Slaves: manager,
+		OpenURL: func(url string) error {
+			openedURL = url
+			return nil
+		},
+	})
+
+	got, err := c.OpenSlaveRemote(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("OpenSlaveRemote: %v", err)
+	}
+	if got.State != "unavailable" || openedURL != "" {
+		t.Fatalf("result=%+v openedURL=%q", got, openedURL)
+	}
+}
+
 func TestControllerSlaveMethodsRequireManager(t *testing.T) {
 	c := NewController(Deps{})
 	ctx := context.Background()
@@ -749,6 +872,9 @@ func TestControllerSlaveMethodsRequireManager(t *testing.T) {
 	}
 	if err := c.DeleteSlave(ctx, "slave-1"); err == nil || err.Error() != "console: slave manager unavailable" {
 		t.Fatalf("DeleteSlave err=%v", err)
+	}
+	if _, err := c.OpenSlaveRemote(ctx, "slave-1"); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("OpenSlaveRemote err=%v", err)
 	}
 }
 
@@ -795,6 +921,14 @@ type testSlaveRunner struct {
 	authURL       string
 	startedConfig string
 	stopped       map[int]bool
+}
+
+func writeConsoleSlaveConfig(t *testing.T, path, serverURL, workspaceID, sandboxID string) {
+	t.Helper()
+	body := []byte("server:\n  url: " + serverURL + "\ncredentials:\n  sandbox_id: " + sandboxID + "\n  workspace_id: " + workspaceID + "\n")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("write slave config: %v", err)
+	}
 }
 
 func (r *testSlaveRunner) Start(context.Context, slave.StartRequest) (slave.StartResult, error) {

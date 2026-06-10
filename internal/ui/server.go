@@ -394,7 +394,7 @@ func (s *server) handleConsoleSlave(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if action != "restart" && action != "pause" {
+	if action != "restart" && action != "pause" && action != "open-remote" {
 		http.NotFound(w, r)
 		return
 	}
@@ -402,6 +402,15 @@ func (s *server) handleConsoleSlave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !requireTrustedConsoleMutation(w, r) {
+		return
+	}
+	if action == "open-remote" {
+		result, err := s.c.OpenSlaveRemote(r.Context(), id)
+		if err != nil {
+			writeConsoleErr(w, err)
+			return
+		}
+		writeJSON(w, 200, result)
 		return
 	}
 	var (

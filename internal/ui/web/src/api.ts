@@ -93,6 +93,11 @@ export interface SelectConsoleSlaveFolderResponse {
   folder: string;
 }
 
+export interface OpenConsoleSlaveRemoteResponse {
+  state: 'opened' | 'unavailable';
+  url?: string;
+}
+
 export class OnboardingError extends Error {
   constructor(
     message: string,
@@ -177,6 +182,9 @@ export const restartConsoleSlave = (id: string) =>
 
 export const pauseConsoleSlave = (id: string) =>
   request<ConsoleSlave>(`/api/console/slaves/${encodeURIComponent(id)}/pause`, { method: 'POST' });
+
+export const openConsoleSlaveRemote = (id: string) =>
+  request<OpenConsoleSlaveRemoteResponse>(`/api/console/slaves/${encodeURIComponent(id)}/open-remote`, { method: 'POST' });
 
 export const deleteConsoleSlave = (id: string) =>
   request<{ state: 'deleted' }>(`/api/console/slaves/${encodeURIComponent(id)}`, { method: 'DELETE' });

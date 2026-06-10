@@ -191,10 +191,12 @@ describe('api', () => {
 
     await api.restartConsoleSlave('sl-1');
     await api.pauseConsoleSlave('sl-1');
+    await api.openConsoleSlaveRemote('sl-1');
     await api.deleteConsoleSlave('sl-1');
 
     expect(fetchSpy).toHaveBeenCalledWith('/api/console/slaves/sl-1/restart', expect.objectContaining({ method: 'POST' }));
     expect(fetchSpy).toHaveBeenCalledWith('/api/console/slaves/sl-1/pause', expect.objectContaining({ method: 'POST' }));
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/slaves/sl-1/open-remote', expect.objectContaining({ method: 'POST' }));
     expect(fetchSpy).toHaveBeenCalledWith('/api/console/slaves/sl-1', expect.objectContaining({ method: 'DELETE' }));
   });
 });

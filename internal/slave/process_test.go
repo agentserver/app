@@ -251,6 +251,54 @@ func TestManagerAuthRequiredSlaveBecomesRunningWhenCredentialsAreWritten(t *test
 	}
 }
 
+func TestManagerRemoteIdentityReadsAuthenticatedConfig(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	manager := NewManager(ManagerDeps{
+		Machines:  NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:  NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:    &fakeRunner{pid: 1111},
+		SlaveExe:  filepath.Join(dir, "slave-agent.exe"),
+		ServerURL: "https://agent.example/",
+	})
+	_, _ = manager.Machines.Ensure("PC")
+	sl, err := manager.CreateAndStart(context.Background(), CreateInput{Folder: folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeReadyCredentials(t, sl.ConfigPath)
+
+	got, err := manager.RemoteIdentity(context.Background(), sl.ID)
+	if err != nil {
+		t.Fatalf("RemoteIdentity: %v", err)
+	}
+	if got.ServerURL != "https://agent.example/" || got.WorkspaceID != "workspace-1" || got.SandboxID != "sandbox-1" {
+		t.Fatalf("remote identity=%+v", got)
+	}
+}
+
+func TestManagerRemoteIdentityUnavailableBeforeAuthentication(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	manager := NewManager(ManagerDeps{
+		Machines: NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry: NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:   &fakeRunner{pid: 1111},
+		SlaveExe: filepath.Join(dir, "slave-agent.exe"),
+	})
+	_, _ = manager.Machines.Ensure("PC")
+	sl, err := manager.CreateAndStart(context.Background(), CreateInput{Folder: folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.RemoteIdentity(context.Background(), sl.ID); !errors.Is(err, ErrRemoteIdentityUnavailable) {
+		t.Fatalf("RemoteIdentity error=%v, want ErrRemoteIdentityUnavailable", err)
+	}
+}
+
 func TestManagerStartingSlaveBecomesRunningWhenCredentialsAreWritten(t *testing.T) {
 	dir := t.TempDir()
 	folder := filepath.Join(dir, "repo")

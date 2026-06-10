@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const DefaultServerURL = "https://agent.cs.ac.cn"
 const DefaultObserverURL = "https://loom.nj.cs.ac.cn:10062/"
 
 type ConfigInput struct {
@@ -81,7 +82,7 @@ func WriteConfig(sl Slave, m Machine, in ConfigInput) error {
 	}
 	serverURL := in.ServerURL
 	if serverURL == "" {
-		serverURL = "https://agent.cs.ac.cn"
+		serverURL = DefaultServerURL
 	}
 	observerURL := in.ObserverURL
 	if observerURL == "" {

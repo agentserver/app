@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net/url"
 	"strings"
 	"time"
 
@@ -58,6 +59,11 @@ type ModelserverView struct {
 type AgentserverView struct {
 	WorkspaceID   string `json:"workspace_id,omitempty"`
 	WorkspaceName string `json:"workspace_name,omitempty"`
+}
+
+type SlaveRemoteOpenResult struct {
+	State string `json:"state"`
+	URL   string `json:"url,omitempty"`
 }
 
 type QuotaWindow struct {
@@ -199,6 +205,33 @@ func (c *Controller) DeleteSlave(ctx context.Context, id string) error {
 		return errors.New("console: slave manager unavailable")
 	}
 	return c.d.Slaves.Delete(ctx, id)
+}
+
+func (c *Controller) OpenSlaveRemote(ctx context.Context, id string) (SlaveRemoteOpenResult, error) {
+	if c.d.Slaves == nil {
+		return SlaveRemoteOpenResult{}, errors.New("console: slave manager unavailable")
+	}
+	identity, err := c.d.Slaves.RemoteIdentity(ctx, id)
+	if errors.Is(err, slave.ErrRemoteIdentityUnavailable) {
+		return SlaveRemoteOpenResult{State: "unavailable"}, nil
+	}
+	if err != nil {
+		return SlaveRemoteOpenResult{}, err
+	}
+	workspaceID := strings.TrimSpace(identity.WorkspaceID)
+	if workspaceID == "" {
+		workspaceID = c.agentserverWorkspaceID()
+	}
+	if workspaceID == "" || strings.TrimSpace(identity.SandboxID) == "" {
+		return SlaveRemoteOpenResult{State: "unavailable"}, nil
+	}
+	remoteURL := slaveRemoteURL(identity.ServerURL, workspaceID, identity.SandboxID)
+	if c.d.OpenURL != nil {
+		if err := c.d.OpenURL(remoteURL); err != nil {
+			return SlaveRemoteOpenResult{}, err
+		}
+	}
+	return SlaveRemoteOpenResult{State: "opened", URL: remoteURL}, nil
 }
 
 func (c *Controller) Healthy(context.Context) bool {
@@ -381,6 +414,22 @@ func frontendName(mode state.FrontendMode) string {
 		return "极简界面"
 	}
 	return "Codex Desktop"
+}
+
+func (c *Controller) agentserverWorkspaceID() string {
+	if c.d.State == nil {
+		return ""
+	}
+	st, err := c.d.State.Load()
+	if err != nil || st == nil {
+		return ""
+	}
+	return strings.TrimSpace(st.Agentserver.WorkspaceID)
+}
+
+func slaveRemoteURL(baseURL, workspaceID, sandboxID string) string {
+	base := strings.TrimRight(defaultString(strings.TrimSpace(baseURL), slave.DefaultServerURL), "/")
+	return base + "/w/" + url.PathEscape(workspaceID) + "/sandboxes/" + url.PathEscape(sandboxID)
 }
 
 func defaultString(v, fallback string) string {

@@ -16,6 +16,7 @@ type ConsoleController interface {
 	SelectFolder(context.Context) (string, error)
 	RestartSlave(context.Context, string) (slave.Slave, error)
 	PauseSlave(context.Context, string) (slave.Slave, error)
+	OpenSlaveRemote(context.Context, string) (console.SlaveRemoteOpenResult, error)
 	DeleteSlave(context.Context, string) error
 	Healthy(context.Context) bool
 	OpenFrontend(context.Context) error
@@ -46,6 +47,9 @@ func (noopConsoleController) RestartSlave(context.Context, string) (slave.Slave,
 }
 func (noopConsoleController) PauseSlave(context.Context, string) (slave.Slave, error) {
 	return slave.Slave{}, errors.New("console: slave manager unavailable")
+}
+func (noopConsoleController) OpenSlaveRemote(context.Context, string) (console.SlaveRemoteOpenResult, error) {
+	return console.SlaveRemoteOpenResult{}, errors.New("console: slave manager unavailable")
 }
 func (noopConsoleController) DeleteSlave(context.Context, string) error {
 	return errors.New("console: slave manager unavailable")
