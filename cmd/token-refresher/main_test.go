@@ -39,6 +39,7 @@ func TestRunWithDepsServesLocalModelProxy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	errCh := make(chan error, 1)
+	refreshCalled := make(chan struct{}, 1)
 	go func() {
 		errCh <- runWithDeps(ctx, runDeps{
 			Secrets:              sec,
@@ -46,8 +47,11 @@ func TestRunWithDepsServesLocalModelProxy(t *testing.T) {
 			ProxyAddr:            addr,
 			ProxyUpstreamBaseURL: upstream.URL + "/v1",
 			Refresh: func(context.Context, oauth.AuthCodeConfig, string) (oauth.Token, error) {
-				t.Fatal("refresh should not run while stored token expires in the future")
-				return oauth.Token{}, nil
+				select {
+				case refreshCalled <- struct{}{}:
+				default:
+				}
+				return oauth.Token{AccessToken: "refreshed-access", RefreshToken: "refresh-token", ExpiresIn: 3600}, nil
 			},
 		})
 	}()
@@ -78,6 +82,11 @@ func TestRunWithDepsServesLocalModelProxy(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("runWithDeps did not stop after context cancellation")
+	}
+	select {
+	case <-refreshCalled:
+		t.Fatal("refresh should not run while stored token expires in the future")
+	default:
 	}
 }
 

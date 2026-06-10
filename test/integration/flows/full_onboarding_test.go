@@ -114,9 +114,9 @@ func pollUntilSuccess(t *testing.T, url string) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(url)
+		resp, err := http.Post(url, "application/json", nil)
 		if err != nil {
-			t.Fatalf("GET %s: %v", url, err)
+			t.Fatalf("POST %s: %v", url, err)
 		}
 		var body map[string]any
 		json.NewDecoder(resp.Body).Decode(&body)
