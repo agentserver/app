@@ -1,12 +1,17 @@
 package vscode
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -335,6 +340,66 @@ func TestWindowsDriverSupportScriptInstallsSkillsAndConcisePrompt(t *testing.T) 
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("install-driver-support.ps1 missing %q", want)
+		}
+	}
+}
+
+func TestWindowsDriverCodexPromptsPackageUsesConcisePrompt(t *testing.T) {
+	promptPath := "../../packaging/windows/driver-codex-prompts/prompts-codex/AGENTS.md"
+	body, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"# Agentserver Driver Workspace",
+		"Use the `multiagent` skill",
+		"`mcp_servers.driver`",
+		"use the installed Superpower skills",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("driver Codex prompt source missing %q:\n%s", want, s)
+		}
+	}
+	for _, notWant := range []string{
+		"# Multi-Agent Driver",
+		"## Core tools",
+		"mcp__driver__list_agents",
+		"## Permissions skill",
+	} {
+		if strings.Contains(s, notWant) {
+			t.Fatalf("driver Codex prompt source still contains verbose Loom prompt %q:\n%s", notWant, s)
+		}
+	}
+
+	out := filepath.Join(t.TempDir(), "driver-codex-prompts.tar.gz")
+	cmd := exec.Command("python3", "../../scripts/package-driver-codex-prompts.py", out)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("package-driver-codex-prompts.py: %v\n%s", err, output)
+	}
+	got := readTarGzEntry(t, out, "prompts-codex/AGENTS.md")
+	if got != s {
+		t.Fatalf("packaged prompt differs from source\nwant:\n%s\ngot:\n%s", s, got)
+	}
+}
+
+func TestWindowsPackageScriptsBuildDriverCodexPromptsFromLocalConciseSource(t *testing.T) {
+	for _, path := range []string{
+		"../../scripts/package-windows.sh",
+		"../../scripts/package-windows-zip.sh",
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(body)
+		want := `python3 scripts/package-driver-codex-prompts.py "$LOOM_DRIVER_CODEX_PROMPTS_CACHE"`
+		if !strings.Contains(s, want) {
+			t.Fatalf("%s should build driver-codex-prompts.tar.gz from the local concise prompt; missing %q", path, want)
+		}
+		notWant := `download_loom_asset "$LOOM_DRIVER_CODEX_PROMPTS_ASSET"`
+		if strings.Contains(s, notWant) {
+			t.Fatalf("%s should not package the verbose upstream Loom prompt archive directly", path)
 		}
 	}
 }
@@ -1039,5 +1104,37 @@ func TestInstallAndDetect_InstallFails_DetectFindsWrongVersion(t *testing.T) {
 	_, err := InstallAndDetect(context.Background(), "/tmp/x.exe", InstallPlan{}, install, detect)
 	if err == nil {
 		t.Fatal("expected error when detected version != LockedVersion")
+	}
+}
+
+func readTarGzEntry(t *testing.T, archivePath, entryName string) string {
+	t.Helper()
+	f, err := os.Open(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			t.Fatalf("%s not found in %s", entryName, archivePath)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Name != entryName {
+			continue
+		}
+		b, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
 	}
 }

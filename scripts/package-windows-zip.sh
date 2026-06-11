@@ -52,7 +52,6 @@ LOOM_DRIVER_SKILLS_SHA256="7086dd93f3181c552fbe475c4698aa809c746ecd48dc5ed942539
 LOOM_DRIVER_SKILLS_CACHE="$OUT/cache/loom/$LOOM_RELEASE/$LOOM_DRIVER_SKILLS_ASSET"
 SUPERPOWER_SKILLS_CACHE="$OUT/cache/superpowers/driver-superpower-skills.tar.gz"
 LOOM_DRIVER_CODEX_PROMPTS_ASSET="driver-codex-prompts.tar.gz"
-LOOM_DRIVER_CODEX_PROMPTS_SHA256="dbbc4cc87cf2cfb377f7ec188610839ff9152ec05fa07adde999fdb39f2d6721"
 LOOM_DRIVER_CODEX_PROMPTS_CACHE="$OUT/cache/loom/$LOOM_RELEASE/$LOOM_DRIVER_CODEX_PROMPTS_ASSET"
 VSCODE_MANIFEST="packaging/windows/vscode-manifest.json"
 
@@ -191,8 +190,8 @@ echo "Codex Desktop installer: $codex_desktop_size bytes (cached)"
 download_loom_asset "$LOOM_DRIVER_ASSET" "$LOOM_DRIVER_CACHE" "$LOOM_DRIVER_SHA256"
 download_loom_asset "$LOOM_SLAVE_ASSET" "$LOOM_SLAVE_CACHE" "$LOOM_SLAVE_SHA256"
 download_loom_asset "$LOOM_DRIVER_SKILLS_ASSET" "$LOOM_DRIVER_SKILLS_CACHE" "$LOOM_DRIVER_SKILLS_SHA256"
-download_loom_asset "$LOOM_DRIVER_CODEX_PROMPTS_ASSET" "$LOOM_DRIVER_CODEX_PROMPTS_CACHE" "$LOOM_DRIVER_CODEX_PROMPTS_SHA256"
 python3 scripts/package-superpower-skills.py "$SUPERPOWER_SKILLS_CACHE"
+python3 scripts/package-driver-codex-prompts.py "$LOOM_DRIVER_CODEX_PROMPTS_CACHE"
 
 if ! verify_vscode_cache; then
   mkdir -p "$(dirname "$VSCODE_CACHE")"
