@@ -11,14 +11,20 @@ CODEX_DESKTOP_PRODUCT_ID="9PLM9XGG6VKS"
 CODEX_DESKTOP_ASSET="Codex Installer.exe"
 CODEX_DESKTOP_URL="https://get.microsoft.com/installer/download/$CODEX_DESKTOP_PRODUCT_ID?cid=website_cta_psi"
 CODEX_DESKTOP_CACHE="dist/cache/codex-desktop/$CODEX_DESKTOP_PRODUCT_ID/$CODEX_DESKTOP_ASSET"
-LOOM_RELEASE="v0.0.3"
+LOOM_RELEASE="v0.0.4"
 LOOM_BASE_URL="https://github.com/agentserver/loom/releases/download/$LOOM_RELEASE"
 LOOM_DRIVER_ASSET="driver-agent.windows-amd64.exe"
-LOOM_DRIVER_SHA256="502d356c37b63a9f17e7ab147000b7e1e6bfa0dd4893a50997c59c69ac5ad021"
+LOOM_DRIVER_SHA256="f2f3d3ed2e27f9d681640b4884bdc78d807cef4ba2f9b9afaa19ccbcffe5796e"
 LOOM_DRIVER_CACHE="dist/cache/loom/$LOOM_RELEASE/$LOOM_DRIVER_ASSET"
 LOOM_SLAVE_ASSET="slave-agent.windows-amd64.exe"
-LOOM_SLAVE_SHA256="965197e9a78ef61efb7d26da1bebe570fdf5e4f6743ca810c16f21fde369af46"
+LOOM_SLAVE_SHA256="92e39b6e38c198a997ecb7d5102232934d578a66a00265ee5a0981e13bd7a97d"
 LOOM_SLAVE_CACHE="dist/cache/loom/$LOOM_RELEASE/$LOOM_SLAVE_ASSET"
+LOOM_DRIVER_SKILLS_ASSET="driver-skills.tar.gz"
+LOOM_DRIVER_SKILLS_SHA256="8679cdb901b9479ec39bde99f90aa9e8afe115fdc0011ed747d7448d8bfa81e2"
+LOOM_DRIVER_SKILLS_CACHE="dist/cache/loom/$LOOM_RELEASE/$LOOM_DRIVER_SKILLS_ASSET"
+LOOM_DRIVER_CODEX_PROMPTS_ASSET="driver-codex-prompts.tar.gz"
+LOOM_DRIVER_CODEX_PROMPTS_SHA256="dbbc4cc87cf2cfb377f7ec188610839ff9152ec05fa07adde999fdb39f2d6721"
+LOOM_DRIVER_CODEX_PROMPTS_CACHE="dist/cache/loom/$LOOM_RELEASE/$LOOM_DRIVER_CODEX_PROMPTS_ASSET"
 VSCODE_MANIFEST="packaging/windows/vscode-manifest.json"
 
 eval "$(
@@ -153,6 +159,8 @@ echo "Codex Desktop installer: $codex_desktop_size bytes (cached)"
 
 download_loom_asset "$LOOM_DRIVER_ASSET" "$LOOM_DRIVER_CACHE" "$LOOM_DRIVER_SHA256"
 download_loom_asset "$LOOM_SLAVE_ASSET" "$LOOM_SLAVE_CACHE" "$LOOM_SLAVE_SHA256"
+download_loom_asset "$LOOM_DRIVER_SKILLS_ASSET" "$LOOM_DRIVER_SKILLS_CACHE" "$LOOM_DRIVER_SKILLS_SHA256"
+download_loom_asset "$LOOM_DRIVER_CODEX_PROMPTS_ASSET" "$LOOM_DRIVER_CODEX_PROMPTS_CACHE" "$LOOM_DRIVER_CODEX_PROMPTS_SHA256"
 
 if ! verify_vscode_cache; then
   mkdir -p "$(dirname "$VSCODE_CACHE")"
@@ -206,6 +214,8 @@ for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          "$CODEX_DESKTOP_CACHE" \
          "$LOOM_DRIVER_CACHE" \
          "$LOOM_SLAVE_CACHE" \
+         "$LOOM_DRIVER_SKILLS_CACHE" \
+         "$LOOM_DRIVER_CODEX_PROMPTS_CACHE" \
          "$CODEX_CACHE"; do
   if [[ ! -e "$f" ]]; then
     echo "missing: $f"

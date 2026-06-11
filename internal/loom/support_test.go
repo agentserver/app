@@ -1,0 +1,152 @@
+package loom
+
+import (
+	"archive/tar"
+	"compress/gzip"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestInstallDriverSupportInstallsSkillsAndPrompt(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	skillsArchive := filepath.Join(dir, "driver-skills.tar.gz")
+	promptsArchive := filepath.Join(dir, "driver-codex-prompts.tar.gz")
+	writeTarGz(t, skillsArchive, map[string]string{
+		"skills/multiagent/SKILL.md":                   "---\nname: multiagent\n---\nUse driver tools.\n",
+		"skills/multiagent/references/driver-tools.md": "Driver tools reference.\n",
+	})
+	writeTarGz(t, promptsArchive, map[string]string{
+		"prompts-codex/AGENTS.md": "# Multi-Agent Driver\n\nUse `role == \"slave\"`.\n",
+	})
+
+	if err := InstallDriverSupport(DriverSupportInput{
+		UserHome:                home,
+		SkillsArchivePath:       skillsArchive,
+		CodexPromptsArchivePath: promptsArchive,
+	}); err != nil {
+		t.Fatalf("InstallDriverSupport: %v", err)
+	}
+
+	for _, path := range []string{
+		filepath.Join(home, ".agents", "skills", "multiagent", "SKILL.md"),
+		filepath.Join(home, ".codex", "skills", "multiagent", "SKILL.md"),
+		filepath.Join(home, ".agents", "skills", "multiagent", "references", "driver-tools.md"),
+		filepath.Join(home, ".codex", "skills", "multiagent", "references", "driver-tools.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected installed file %s: %v", path, err)
+		}
+	}
+	body := readFile(t, filepath.Join(home, ".codex", "AGENTS.md"))
+	for _, want := range []string{
+		loomPromptStartMarker,
+		"# Multi-Agent Driver",
+		"role == \"slave\"",
+		loomPromptEndMarker,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("AGENTS.md missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestInstallDriverSupportReplacesManagedPromptBlock(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	agentsPath := filepath.Join(home, ".codex", "AGENTS.md")
+	if err := os.MkdirAll(filepath.Dir(agentsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prior := strings.Join([]string{
+		"keep before",
+		loomPromptStartMarker,
+		"old managed prompt",
+		loomPromptEndMarker,
+		"keep after",
+		"",
+	}, "\n")
+	if err := os.WriteFile(agentsPath, []byte(prior), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	promptsArchive := filepath.Join(dir, "driver-codex-prompts.tar.gz")
+	writeTarGz(t, promptsArchive, map[string]string{
+		"prompts-codex/AGENTS.md": "new managed prompt\n",
+	})
+
+	if err := InstallDriverSupport(DriverSupportInput{
+		UserHome:                home,
+		CodexPromptsArchivePath: promptsArchive,
+	}); err != nil {
+		t.Fatalf("InstallDriverSupport: %v", err)
+	}
+
+	body := readFile(t, agentsPath)
+	for _, want := range []string{"keep before", "new managed prompt", "keep after"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("AGENTS.md missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "old managed prompt") {
+		t.Fatalf("old managed prompt was not replaced:\n%s", body)
+	}
+	if strings.Count(body, loomPromptStartMarker) != 1 || strings.Count(body, loomPromptEndMarker) != 1 {
+		t.Fatalf("managed markers should appear exactly once:\n%s", body)
+	}
+}
+
+func TestInstallDriverSupportRejectsEscapingArchivePath(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	skillsArchive := filepath.Join(dir, "driver-skills.tar.gz")
+	writeTarGz(t, skillsArchive, map[string]string{
+		"skills/../evil.txt": "bad\n",
+	})
+
+	err := InstallDriverSupport(DriverSupportInput{
+		UserHome:          home,
+		SkillsArchivePath: skillsArchive,
+	})
+	if err == nil {
+		t.Fatal("expected archive path escape error")
+	}
+	if _, statErr := os.Stat(filepath.Join(home, ".agents", "evil.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("escaping file exists or stat failed unexpectedly: %v", statErr)
+	}
+}
+
+func writeTarGz(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gw := gzip.NewWriter(f)
+	defer gw.Close()
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
+	for name, content := range files {
+		b := []byte(content)
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(b))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}

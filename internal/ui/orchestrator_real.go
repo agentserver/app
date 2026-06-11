@@ -494,13 +494,35 @@ func (r *realOrchestrator) configureLoomDriver() error {
 	}); err != nil {
 		return fmt.Errorf("configure loom driver: %w", err)
 	}
+	if err := loom.InstallDriverSupport(loom.DriverSupportInput{
+		UserHome:                codexUserHome(r.d.CodexConfigPath),
+		SkillsArchivePath:       filepath.Join(filepath.Dir(r.d.LoomDriverPath), "driver-skills.tar.gz"),
+		CodexPromptsArchivePath: filepath.Join(filepath.Dir(r.d.LoomDriverPath), "driver-codex-prompts.tar.gz"),
+	}); err != nil {
+		return fmt.Errorf("install loom driver support: %w", err)
+	}
+	enabled := true
 	if err := codex.UpdateMCPServer(r.d.CodexConfigPath, "driver", codex.MCPServer{
-		Command: r.d.LoomDriverPath,
-		Args:    []string{"serve-mcp", "--config", r.d.LoomConfigPath},
+		Command:           r.d.LoomDriverPath,
+		Args:              []string{"serve-mcp", "--config", r.d.LoomConfigPath},
+		StartupTimeoutSec: 30,
+		ToolTimeoutSec:    120,
+		Enabled:           &enabled,
 	}); err != nil {
 		return fmt.Errorf("configure codex mcp driver: %w", err)
 	}
 	return nil
+}
+
+func codexUserHome(configPath string) string {
+	codexDir := filepath.Dir(configPath)
+	if filepath.Base(codexDir) == ".codex" {
+		return filepath.Dir(codexDir)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return ""
 }
 
 func (r *realOrchestrator) loomDriverCodexBin(st *state.State) string {

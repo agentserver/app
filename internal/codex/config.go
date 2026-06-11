@@ -26,10 +26,13 @@ type Settings struct {
 }
 
 type MCPServer struct {
-	Command string
-	Args    []string
-	Env     map[string]string
-	Cwd     string
+	Command           string
+	Args              []string
+	Env               map[string]string
+	Cwd               string
+	StartupTimeoutSec int
+	ToolTimeoutSec    int
+	Enabled           *bool
 }
 
 func ModelserverSettings() Settings {
@@ -147,6 +150,15 @@ func UpdateMCPServer(path, name string, server MCPServer) error {
 	entry := map[string]any{
 		"command": server.Command,
 		"args":    append([]string(nil), server.Args...),
+	}
+	if server.StartupTimeoutSec > 0 {
+		entry["startup_timeout_sec"] = server.StartupTimeoutSec
+	}
+	if server.ToolTimeoutSec > 0 {
+		entry["tool_timeout_sec"] = server.ToolTimeoutSec
+	}
+	if server.Enabled != nil {
+		entry["enabled"] = *server.Enabled
 	}
 	if len(server.Env) > 0 {
 		entry["env"] = server.Env

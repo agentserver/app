@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -1323,6 +1325,12 @@ func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
 	if err := os.WriteFile(driverExe, []byte("driver"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-skills.tar.gz"), map[string]string{
+		"skills/multiagent/SKILL.md": "---\nname: multiagent\n---\nUse driver tools.\n",
+	})
+	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-codex-prompts.tar.gz"), map[string]string{
+		"prompts-codex/AGENTS.md": "# Multi-Agent Driver\n\nUse `role == \"slave\"`.\n",
+	})
 	loomConfig := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
 	r := &realOrchestrator{d: Deps{
 		State:                 store,
@@ -1375,10 +1383,28 @@ func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
 		`[mcp_servers.driver]`,
 		`command = "` + strings.ReplaceAll(driverExe, `\`, `\\`) + `"`,
 		`args = ["serve-mcp", "--config", "` + strings.ReplaceAll(loomConfig, `\`, `\\`) + `"]`,
+		`startup_timeout_sec = 30`,
+		`tool_timeout_sec = 120`,
+		`enabled = true`,
 	} {
 		if !strings.Contains(codexText, want) {
 			t.Fatalf("config.toml missing %q:\n%s", want, codexText)
 		}
+	}
+	for _, path := range []string{
+		filepath.Join(dir, ".agents", "skills", "multiagent", "SKILL.md"),
+		filepath.Join(dir, ".codex", "skills", "multiagent", "SKILL.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected Loom driver skill at %s: %v", path, err)
+		}
+	}
+	agentsText, err := os.ReadFile(filepath.Join(dir, ".codex", "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(agentsText), "role == \"slave\"") {
+		t.Fatalf("AGENTS.md missing Loom Codex driver prompt:\n%s", agentsText)
 	}
 }
 
@@ -1536,6 +1562,31 @@ func assertJSONField(t *testing.T, path, key, want string) {
 	}
 	if got := root[key]; got != want {
 		t.Fatalf("%s[%q]=%v, want %q", path, key, got, want)
+	}
+}
+
+func writeTestTarGz(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gw := gzip.NewWriter(f)
+	defer gw.Close()
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
+	for name, content := range files {
+		b := []byte(content)
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(b))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(b); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

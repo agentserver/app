@@ -760,10 +760,21 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 	}); err != nil {
 		return fmt.Errorf("configure loom driver: %w", err)
 	}
+	if err := loom.InstallDriverSupport(loom.DriverSupportInput{
+		UserHome:                p.UserHome,
+		SkillsArchivePath:       joinExe(installDir, "driver-skills.tar.gz"),
+		CodexPromptsArchivePath: joinExe(installDir, "driver-codex-prompts.tar.gz"),
+	}); err != nil {
+		return fmt.Errorf("install loom driver support: %w", err)
+	}
 	if p.CodexConfigFile != "" {
+		enabled := true
 		if err := codex.UpdateMCPServer(p.CodexConfigFile, "driver", codex.MCPServer{
-			Command: driverPath,
-			Args:    []string{"serve-mcp", "--config", loomConfigPath},
+			Command:           driverPath,
+			Args:              []string{"serve-mcp", "--config", loomConfigPath},
+			StartupTimeoutSec: 30,
+			ToolTimeoutSec:    120,
+			Enabled:           &enabled,
 		}); err != nil {
 			return fmt.Errorf("configure codex mcp driver: %w", err)
 		}

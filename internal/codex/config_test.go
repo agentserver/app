@@ -121,8 +121,11 @@ func TestUpdateMCPServerAddsDriverAndKeepsModelConfig(t *testing.T) {
 	}
 
 	if err := UpdateMCPServer(path, "driver", MCPServer{
-		Command: `C:\Users\61414\AppData\Local\Programs\agentserver-app\driver-agent.exe`,
-		Args:    []string{"serve-mcp", "--config", `C:\Users\61414\.config\multi-agent\driver.yaml`},
+		Command:           `C:\Users\61414\AppData\Local\Programs\agentserver-app\driver-agent.exe`,
+		Args:              []string{"serve-mcp", "--config", `C:\Users\61414\.config\multi-agent\driver.yaml`},
+		StartupTimeoutSec: 30,
+		ToolTimeoutSec:    120,
+		Enabled:           boolPtr(true),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -135,9 +138,16 @@ func TestUpdateMCPServerAddsDriverAndKeepsModelConfig(t *testing.T) {
 		`[mcp_servers.driver]`,
 		`command = "C:\\Users\\61414\\AppData\\Local\\Programs\\agentserver-app\\driver-agent.exe"`,
 		`args = ["serve-mcp", "--config", "C:\\Users\\61414\\.config\\multi-agent\\driver.yaml"]`,
+		`startup_timeout_sec = 30`,
+		`tool_timeout_sec = 120`,
+		`enabled = true`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in:\n%s", want, s)
 		}
 	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
