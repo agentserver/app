@@ -60,7 +60,11 @@ function Invoke-CodexDesktopLocalInstaller {
     Write-Step $LocalInstallerPath
     $p = Start-Process -FilePath $LocalInstallerPath -Wait -PassThru
     if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0) {
-        throw "Codex Desktop installer failed with exit code $($p.ExitCode)"
+        if ($p.ExitCode -eq 1612) {
+            Write-Step "Codex Desktop installer opened Microsoft Store; waiting for the user to complete installation..."
+        } else {
+            throw "Codex Desktop installer failed with exit code $($p.ExitCode)"
+        }
     }
     Write-Step "Waiting for Codex Desktop to become available..."
     if (-not (Wait-CodexDesktopInstalled -TimeoutSeconds $InstallTimeoutSeconds)) {

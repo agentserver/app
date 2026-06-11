@@ -837,6 +837,23 @@ func TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback(t *tes
 	}
 }
 
+func TestEnsureCodexDesktopScriptWaitsWhenStoreInstallerReturns1612(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-codex-desktop.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"$p.ExitCode -eq 1612",
+		"Microsoft Store",
+		"Wait-CodexDesktopInstalled -TimeoutSeconds $InstallTimeoutSeconds",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-codex-desktop.ps1 missing %q", want)
+		}
+	}
+}
+
 func TestWindowsInnoInstallerScriptUsesUTF8BOM(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
