@@ -82,6 +82,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"[switch]$MinimalVSCode",
 				"ensure-vscode.ps1",
 				"ensure-codex-desktop.ps1",
+				"install-driver-support.ps1",
 				"write-install-mode.ps1",
 				"machine.ps1",
 				"vscode-manifest.json",
@@ -145,6 +146,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"vscode-installer.exe",
 				"packaging/windows/ensure-vscode.ps1",
 				"packaging/windows/ensure-codex-desktop.ps1",
+				"packaging/windows/install-driver-support.ps1",
 				"packaging/windows/write-install-mode.ps1",
 				"packaging/windows/machine.ps1",
 				"packaging/windows/vscode-manifest.json",
@@ -160,6 +162,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"cp \"$SUPERPOWER_SKILLS_CACHE\"",
 				"cp \"$LOOM_DRIVER_CODEX_PROMPTS_CACHE\"",
 				"cp packaging/windows/ensure-vscode.ps1",
+				"cp packaging/windows/install-driver-support.ps1",
 				"cp packaging/windows/machine.ps1",
 				"cp packaging/windows/vscode-manifest.json",
 				"cp dist/windows/uninstall.exe",
@@ -180,6 +183,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"driver-skills.tar.gz",
 				"driver-superpower-skills.tar.gz",
 				"driver-codex-prompts.tar.gz",
+				"install-driver-support.ps1",
 				"codex-x86_64-pc-windows-msvc.exe",
 				"DestName: \"codex.exe\"",
 				"VSCodeUserSetup-x64-1.96.0.exe",
@@ -188,6 +192,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"DestName: \"codex-desktop-installer.exe\"",
 				"MessagesFile: \"ChineseSimplified.isl\"",
 				"ensure-vscode.ps1",
+				"install-driver-support.ps1",
 				"minimalvscode",
 				"ensure-codex-desktop.ps1",
 				"write-install-mode.ps1",
@@ -225,6 +230,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"Codex Installer.exe",
 				"packaging/windows/vscode-manifest.json",
 				"packaging/windows/ensure-codex-desktop.ps1",
+				"packaging/windows/install-driver-support.ps1",
 				"packaging/windows/write-install-mode.ps1",
 				"packaging/windows/machine.ps1",
 				"packaging/windows/ChineseSimplified.isl",
@@ -276,6 +282,60 @@ func TestWindowsPortableCodexDesktopUsesBundledInstaller(t *testing.T) {
 	want := "& (Join-Path $InstallDir 'ensure-codex-desktop.ps1') -LocalInstallerPath (Join-Path $srcDir 'codex-desktop-installer.exe')"
 	if !strings.Contains(string(body), want) {
 		t.Fatalf("install.ps1 should pass the portable bundled Codex Desktop installer to ensure-codex-desktop.ps1; missing %q", want)
+	}
+}
+
+func TestWindowsInstallScriptInstallsDriverSupportDuringInstall(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"install-driver-support.ps1",
+		"& (Join-Path $InstallDir 'install-driver-support.ps1') -InstallDir $InstallDir",
+		"[System.IO.Path]::GetFullPath($srcPath)",
+		"[System.IO.Path]::GetFullPath($dstPath)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install.ps1 should install driver support during install; missing %q", want)
+		}
+	}
+	copyIdx := strings.Index(s, `Write-Step "Copied $($required.Count) files."`)
+	supportIdx := strings.Index(s, "& (Join-Path $InstallDir 'install-driver-support.ps1') -InstallDir $InstallDir")
+	frontendIdx := strings.Index(s, "Writing install mode minimal_vscode")
+	if copyIdx < 0 || supportIdx < 0 || frontendIdx < 0 {
+		t.Fatalf("install.ps1 missing expected copy/support/frontend markers")
+	}
+	if supportIdx < copyIdx {
+		t.Fatal("Install-DriverSupport must run after payload files are copied into the install directory")
+	}
+	if supportIdx > frontendIdx {
+		t.Fatal("Install-DriverSupport should run before frontend setup so installed Codex sees fresh skills and AGENTS.md")
+	}
+}
+
+func TestWindowsDriverSupportScriptInstallsSkillsAndConcisePrompt(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install-driver-support.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"function Expand-SkillsArchive",
+		"function Merge-DriverCodexAgentsPrompt",
+		"driver-superpower-skills.tar.gz",
+		"$CodexDriverPrompt",
+		"Use the `multiagent` skill",
+		"mcp_servers.driver",
+		"agentserver-app loom driver prompt:start",
+		"tar.exe -xzf",
+		".agents\\skills",
+		".codex\\skills",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install-driver-support.ps1 missing %q", want)
+		}
 	}
 }
 
@@ -487,6 +547,35 @@ func TestWindowsInnoInstallerStagesBundledCodexForAllModesBeforeFrontend(t *test
 	}
 	if machine > stage || stage > codexFrontend || stage > vscodeFrontend {
 		t.Fatal("installer.iss must stage bundled codex.exe after machine setup and before mode-specific frontend setup")
+	}
+}
+
+func TestWindowsInnoInstallerInstallsDriverSupportBeforeFrontend(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		`Source: "install-driver-support.ps1"; DestDir: "{app}"; Flags: ignoreversion`,
+		"RunEstimatedPowerShellStep('driver-support'",
+		"install-driver-support.ps1",
+		"-InstallDir",
+		"正在安装 driver skills 和 Codex 指令",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("installer.iss should install driver support during install; missing %q", want)
+		}
+	}
+	stage := strings.LastIndex(s, "StageBundledCodexForLocalSlaves();")
+	support := strings.Index(s, "RunEstimatedPowerShellStep('driver-support'")
+	codexFrontend := strings.Index(s, "RunEstimatedPowerShellStep('codex-mode'")
+	vscodeFrontend := strings.Index(s, "RunEstimatedPowerShellStep('vscode-mode'")
+	if stage < 0 || support < 0 || codexFrontend < 0 || vscodeFrontend < 0 {
+		t.Fatal("installer.iss missing stage/support/frontend markers")
+	}
+	if stage > support || support > codexFrontend || support > vscodeFrontend {
+		t.Fatal("installer.iss must install driver support after staging codex.exe and before mode-specific frontend setup")
 	}
 }
 

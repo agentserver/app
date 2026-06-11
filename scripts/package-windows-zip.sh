@@ -234,6 +234,7 @@ for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          extensions/agentserver-app/agentserver-app-0.1.0.vsix \
          internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
+         packaging/windows/install-driver-support.ps1 \
          packaging/windows/ensure-vscode.ps1 \
          packaging/windows/ensure-codex-desktop.ps1 \
          packaging/windows/write-install-mode.ps1 \
@@ -291,6 +292,7 @@ cp extensions/agentserver-app/agentserver-app-0.1.0.vsix \
 
 # Resources
 cp packaging/windows/install.ps1      "$STAGE/"
+cp packaging/windows/install-driver-support.ps1 "$STAGE/"
 cp packaging/windows/ensure-vscode.ps1 "$STAGE/"
 cp packaging/windows/ensure-codex-desktop.ps1 "$STAGE/"
 cp packaging/windows/write-install-mode.ps1 "$STAGE/"

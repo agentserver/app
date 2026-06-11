@@ -71,6 +71,7 @@ Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE.zh.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Portable installer helpers reused by the Inno setup.
 Source: "install.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "install-driver-support.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-vscode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "write-install-mode.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -435,6 +436,9 @@ begin
     '-MachinePath ' + PowerShellQuote(MachinePath) + ' -ComputerNamePath ' + PowerShellQuote(ComputerNamePath), 10);
 
   StageBundledCodexForLocalSlaves();
+
+  RunEstimatedPowerShellStep('driver-support', '正在安装 driver skills 和 Codex 指令...', 'install-driver-support.ps1',
+    '-InstallDir ' + PowerShellQuote(ExpandConstant('{app}')), 20);
 
   ModePath := ExpandConstant('{app}\install-mode.json');
   if ShouldInstallCodexDesktop then begin

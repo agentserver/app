@@ -208,6 +208,7 @@ $required = @(
     'agentserver-app.vsix',
     'ensure-vscode.ps1',
     'ensure-codex-desktop.ps1',
+    'install-driver-support.ps1',
     'write-install-mode.ps1',
     'machine.ps1',
     'vscode-manifest.json',
@@ -226,9 +227,15 @@ if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 }
 foreach ($f in $required) {
-    Copy-Item (Join-Path $srcDir $f) (Join-Path $InstallDir $f) -Force
+    $srcPath = Join-Path $srcDir $f
+    $dstPath = Join-Path $InstallDir $f
+    if ([System.IO.Path]::GetFullPath($srcPath) -ieq [System.IO.Path]::GetFullPath($dstPath)) {
+        continue
+    }
+    Copy-Item $srcPath $dstPath -Force
 }
 Write-Step "Copied $($required.Count) files."
+& (Join-Path $InstallDir 'install-driver-support.ps1') -InstallDir $InstallDir
 
 $IconPath = Join-Path $InstallDir 'icon.ico'
 $ShellIconPath = $IconPath
@@ -344,7 +351,10 @@ Set-ItemProperty -Path $UninstallKey -Name 'NoModify'        -Value 1 -Type DWor
 Set-ItemProperty -Path $UninstallKey -Name 'NoRepair'        -Value 1 -Type DWord
 
 # Copy ourselves into install dir so uninstall works
-Copy-Item $MyInvocation.MyCommand.Path (Join-Path $InstallDir 'install.ps1') -Force
+$selfDst = Join-Path $InstallDir 'install.ps1'
+if ([System.IO.Path]::GetFullPath($MyInvocation.MyCommand.Path) -ine [System.IO.Path]::GetFullPath($selfDst)) {
+    Copy-Item $MyInvocation.MyCommand.Path $selfDst -Force
+}
 Refresh-ShellIconCache
 
 Write-Host ""
