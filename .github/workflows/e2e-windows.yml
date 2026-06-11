@@ -2,9 +2,6 @@ name: Windows E2E
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
 jobs:
   e2e:
