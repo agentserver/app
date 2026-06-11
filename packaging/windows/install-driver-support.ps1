@@ -39,9 +39,52 @@ function Expand-SkillsArchive([string]$ArchivePath, [string]$DestRoot) {
         if (Test-Path $skillsRoot) {
             $sourceRoot = $skillsRoot
         }
-        Get-ChildItem -Path $sourceRoot -Force | ForEach-Object {
-            Copy-Item $_.FullName -Destination $DestRoot -Recurse -Force
+        $sourceRootFull = [System.IO.Path]::GetFullPath($sourceRoot).TrimEnd('\')
+        $items = Get-ChildItem -Path $sourceRoot -Force -Recurse
+        foreach ($item in $items) {
+            $full = [System.IO.Path]::GetFullPath($item.FullName)
+            $rel = $full.Substring($sourceRootFull.Length).TrimStart('\')
+            if ([string]::IsNullOrWhiteSpace($rel)) {
+                continue
+            }
+            $dest = Join-Path $DestRoot $rel
+            if ($item.PSIsContainer) {
+                if (-not (Test-Path $dest)) {
+                    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+                }
+                continue
+            }
+            if (Test-Path $dest) { continue }
+            $parent = Split-Path -Parent $dest
+            if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path $parent)) {
+                New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            }
+            Copy-Item -LiteralPath $item.FullName -Destination $dest
         }
+    } finally {
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Read-DriverCodexPrompt([string]$ArchivePath) {
+    if (-not (Test-Path $ArchivePath)) {
+        return $null
+    }
+    if (-not (Get-Command tar.exe -ErrorAction SilentlyContinue)) {
+        throw "tar.exe is required to install driver Codex prompt"
+    }
+    $tmp = Join-Path $env:TEMP ("agentserver-codex-prompt-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    try {
+        & tar.exe -xzf $ArchivePath -C $tmp
+        if ($LASTEXITCODE -ne 0) {
+            throw "tar.exe failed to extract $ArchivePath with exit code $LASTEXITCODE"
+        }
+        $promptPath = Join-Path $tmp 'prompts-codex\AGENTS.md'
+        if (-not (Test-Path $promptPath)) {
+            return $null
+        }
+        return [System.IO.File]::ReadAllText($promptPath)
     } finally {
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -49,17 +92,9 @@ function Expand-SkillsArchive([string]$ArchivePath, [string]$DestRoot) {
 
 $LoomPromptStartMarker = '<!-- agentserver-app loom driver prompt:start -->'
 $LoomPromptEndMarker = '<!-- agentserver-app loom driver prompt:end -->'
-$CodexDriverPrompt = @'
-# Agentserver Driver Workspace
 
-- Use the `multiagent` skill when the user wants to inspect or use workspace resources, agents, or remote execution.
-- Use the registered `mcp_servers.driver` MCP server as the source of truth for workspace agents, resources, and driver tools.
-- Discover agents and resources before acting. Filter agents by `role == "slave"` and choose shell helpers from each target's `platform` and `command_interfaces`.
-- For complex planning, debugging, implementation, or review tasks, use the installed Superpower skills. Start with `using-superpowers` when available.
-'@
-
-function Merge-DriverCodexAgentsPrompt([string]$AgentsPath) {
-    $prompt = $CodexDriverPrompt.TrimEnd()
+function Merge-DriverCodexAgentsPrompt([string]$AgentsPath, [string]$Prompt) {
+    $prompt = $Prompt.TrimEnd()
     $block = $LoomPromptStartMarker + "`n" + $prompt + "`n" + $LoomPromptEndMarker
     $existing = ''
     if (Test-Path $AgentsPath) {
@@ -94,5 +129,8 @@ foreach ($archive in @(
     Expand-SkillsArchive $archive $codexSkills
 }
 if (Test-Path (Join-Path $InstallDir 'driver-codex-prompts.tar.gz')) {
-    Merge-DriverCodexAgentsPrompt (Join-Path $env:USERPROFILE '.codex\AGENTS.md')
+    $driverCodexPrompt = Read-DriverCodexPrompt (Join-Path $InstallDir 'driver-codex-prompts.tar.gz')
+    if (-not [string]::IsNullOrWhiteSpace($driverCodexPrompt)) {
+        Merge-DriverCodexAgentsPrompt (Join-Path $env:USERPROFILE '.codex\AGENTS.md') $driverCodexPrompt
+    }
 }

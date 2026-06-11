@@ -19,7 +19,14 @@ func TestInstallDriverSupportInstallsSkillsAndPrompt(t *testing.T) {
 		"skills/multiagent/references/driver-tools.md": "Driver tools reference.\n",
 	})
 	writeTarGz(t, promptsArchive, map[string]string{
-		"prompts-codex/AGENTS.md": "# Multi-Agent Driver\n\nUse `role == \"slave\"`.\n",
+		"prompts-codex/AGENTS.md": strings.Join([]string{
+			"# Agentserver Driver Workspace",
+			"",
+			"- Use the `multiagent` skill when the user wants to inspect or use workspace resources, agents, or remote execution.",
+			"- Use the registered `mcp_servers.driver` MCP server as the source of truth for workspace agents, resources, and driver tools.",
+			"- Discover agents and resources before acting. Filter agents by `role == \"slave\"`.",
+			"",
+		}, "\n"),
 	})
 
 	if err := InstallDriverSupport(DriverSupportInput{
@@ -61,13 +68,12 @@ func TestInstallDriverSupportWritesLightweightCodexAgentsPrompt(t *testing.T) {
 	promptsArchive := filepath.Join(dir, "driver-codex-prompts.tar.gz")
 	writeTarGz(t, promptsArchive, map[string]string{
 		"prompts-codex/AGENTS.md": strings.Join([]string{
-			"# Multi-Agent Driver",
+			"# Agentserver Driver Workspace",
 			"",
-			"## Core tools",
-			"- `mcp__driver__run_slave_bash(...)` - run Bash commands.",
-			"",
-			"## Permissions skill",
-			"Use low-level permission helpers.",
+			"- Use the `multiagent` skill when the user wants to inspect or use workspace resources, agents, or remote execution.",
+			"- Use the registered `mcp_servers.driver` MCP server as the source of truth for workspace agents, resources, and driver tools.",
+			"- Discover agents and resources before acting. Filter agents by `role == \"slave\"` and choose shell helpers from each target's `platform` and `command_interfaces`.",
+			"- For complex planning, debugging, implementation, or review tasks, use the installed Superpower skills. Start with `using-superpowers` when available.",
 			"",
 		}, "\n"),
 	})
@@ -181,6 +187,83 @@ func TestInstallDriverSupportInstallsSuperpowerSkillsArchive(t *testing.T) {
 	}
 }
 
+func TestInstallDriverSupportDoesNotOverwriteExistingSkillFiles(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	existingConfig := filepath.Join(home, ".codex", "skills", "ask-search", "searxng", "searxng.yml")
+	if err := os.MkdirAll(filepath.Dir(existingConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(existingConfig, []byte("secret: user-custom\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	existingAgentsSkill := filepath.Join(home, ".agents", "skills", "ask-search", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(existingAgentsSkill), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(existingAgentsSkill, []byte("user edited skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	superpowerSkillsArchive := filepath.Join(dir, "driver-superpower-skills.tar.gz")
+	writeTarGz(t, superpowerSkillsArchive, map[string]string{
+		"ask-search/SKILL.md":              "bundled skill\n",
+		"ask-search/searxng/searxng.yml":   "secret: bundled-placeholder\n",
+		"ask-search/references/usage.md":   "new reference\n",
+		"using-superpowers/SKILL.md":       "new skill\n",
+		"using-superpowers/references.md":  "new reference\n",
+		"test-driven-development/SKILL.md": "new skill\n",
+	})
+
+	if err := InstallDriverSupport(DriverSupportInput{
+		UserHome:                    home,
+		SuperpowerSkillsArchivePath: superpowerSkillsArchive,
+	}); err != nil {
+		t.Fatalf("InstallDriverSupport: %v", err)
+	}
+
+	if got := readFile(t, existingConfig); got != "secret: user-custom\n" {
+		t.Fatalf("existing .codex skill config was overwritten:\n%s", got)
+	}
+	if got := readFile(t, existingAgentsSkill); got != "user edited skill\n" {
+		t.Fatalf("existing .agents skill file was overwritten:\n%s", got)
+	}
+	for _, path := range []string{
+		filepath.Join(home, ".codex", "skills", "ask-search", "references", "usage.md"),
+		filepath.Join(home, ".codex", "skills", "using-superpowers", "SKILL.md"),
+		filepath.Join(home, ".agents", "skills", "using-superpowers", "SKILL.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected missing bundled skill file to be installed at %s: %v", path, err)
+		}
+	}
+}
+
+func TestInstallDriverSupportUsesCodexPromptArchiveContent(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	promptsArchive := filepath.Join(dir, "driver-codex-prompts.tar.gz")
+	writeTarGz(t, promptsArchive, map[string]string{
+		"prompts-codex/AGENTS.md": "# Archive Prompt\n\nUse archive-managed instructions.\n",
+	})
+
+	if err := InstallDriverSupport(DriverSupportInput{
+		UserHome:                home,
+		CodexPromptsArchivePath: promptsArchive,
+	}); err != nil {
+		t.Fatalf("InstallDriverSupport: %v", err)
+	}
+
+	body := readFile(t, filepath.Join(home, ".codex", "AGENTS.md"))
+	for _, want := range []string{"# Archive Prompt", "Use archive-managed instructions."} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("AGENTS.md missing archive prompt content %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "# Agentserver Driver Workspace") {
+		t.Fatalf("AGENTS.md used hard-coded prompt instead of archive content:\n%s", body)
+	}
+}
+
 func TestInstallDriverSupportReplacesManagedPromptBlock(t *testing.T) {
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")
@@ -212,7 +295,7 @@ func TestInstallDriverSupportReplacesManagedPromptBlock(t *testing.T) {
 	}
 
 	body := readFile(t, agentsPath)
-	for _, want := range []string{"keep before", "# Agentserver Driver Workspace", "keep after"} {
+	for _, want := range []string{"keep before", "new managed prompt", "keep after"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("AGENTS.md missing %q:\n%s", want, body)
 		}

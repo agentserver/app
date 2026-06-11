@@ -15,11 +15,6 @@ import (
 const (
 	loomPromptStartMarker = "<!-- agentserver-app loom driver prompt:start -->"
 	loomPromptEndMarker   = "<!-- agentserver-app loom driver prompt:end -->"
-	codexDriverPrompt     = "# Agentserver Driver Workspace\n\n" +
-		"- Use the `multiagent` skill when the user wants to inspect or use workspace resources, agents, or remote execution.\n" +
-		"- Use the registered `mcp_servers.driver` MCP server as the source of truth for workspace agents, resources, and driver tools.\n" +
-		"- Discover agents and resources before acting. Filter agents by `role == \"slave\"` and choose shell helpers from each target's `platform` and `command_interfaces`.\n" +
-		"- For complex planning, debugging, implementation, or review tasks, use the installed Superpower skills. Start with `using-superpowers` when available.\n"
 )
 
 type DriverSupportInput struct {
@@ -49,12 +44,12 @@ func InstallDriverSupport(in DriverSupportInput) error {
 			return err
 		}
 		if exists {
-			_, ok, err := readArchiveFile(in.CodexPromptsArchivePath, "prompts-codex/AGENTS.md")
+			prompt, ok, err := readArchiveFile(in.CodexPromptsArchivePath, "prompts-codex/AGENTS.md")
 			if err != nil {
 				return err
 			}
 			if ok {
-				if err := mergeCodexAgents(filepath.Join(in.UserHome, ".codex", "AGENTS.md"), codexDriverPrompt); err != nil {
+				if err := mergeCodexAgents(filepath.Join(in.UserHome, ".codex", "AGENTS.md"), string(prompt)); err != nil {
 					return err
 				}
 			}
@@ -218,8 +213,11 @@ func writeFileFromReader(path string, r io.Reader, mode os.FileMode) error {
 	if mode == 0 {
 		mode = 0o644
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
 	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil
+		}
 		return err
 	}
 	_, copyErr := io.Copy(f, r)

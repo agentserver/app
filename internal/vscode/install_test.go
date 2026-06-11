@@ -328,11 +328,12 @@ func TestWindowsDriverSupportScriptInstallsSkillsAndConcisePrompt(t *testing.T) 
 	s := string(body)
 	for _, want := range []string{
 		"function Expand-SkillsArchive",
+		"function Read-DriverCodexPrompt",
 		"function Merge-DriverCodexAgentsPrompt",
 		"driver-superpower-skills.tar.gz",
-		"$CodexDriverPrompt",
-		"Use the `multiagent` skill",
-		"mcp_servers.driver",
+		"prompts-codex\\AGENTS.md",
+		"Test-Path $dest",
+		"ReadAllText($promptPath)",
 		"agentserver-app loom driver prompt:start",
 		"tar.exe -xzf",
 		".agents\\skills",
@@ -340,6 +341,14 @@ func TestWindowsDriverSupportScriptInstallsSkillsAndConcisePrompt(t *testing.T) 
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("install-driver-support.ps1 missing %q", want)
+		}
+	}
+	for _, notWant := range []string{
+		"$CodexDriverPrompt",
+		"Copy-Item $_.FullName -Destination $DestRoot -Recurse -Force",
+	} {
+		if strings.Contains(s, notWant) {
+			t.Fatalf("install-driver-support.ps1 should not contain %q", notWant)
 		}
 	}
 }
