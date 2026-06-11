@@ -857,7 +857,7 @@ func TestPlanInstall_Unsupported(t *testing.T) {
 func TestInstallAndDetect_InstallOK_DetectOK(t *testing.T) {
 	install := func(context.Context, string, InstallPlan) error { return nil }
 	detect := func() (Detected, error) {
-		return Detected{Installed: true, Path: "/x/code", Version: LockedVersion}, nil
+		return Detected{Installed: true, Path: "/x/code", Version: "1.85.0"}, nil
 	}
 	det, err := InstallAndDetect(context.Background(), "/tmp/x.exe", InstallPlan{}, install, detect)
 	if err != nil {
@@ -888,13 +888,13 @@ func TestInstallAndDetect_InstallFails_DetectFindsIt(t *testing.T) {
 		return errors.New("exit status 0xc0000409")
 	}
 	detect := func() (Detected, error) {
-		return Detected{Installed: true, Path: "/x/code", Version: LockedVersion}, nil
+		return Detected{Installed: true, Path: "/x/code", Version: "1.85.0"}, nil
 	}
 	det, err := InstallAndDetect(context.Background(), "/tmp/x.exe", InstallPlan{}, install, detect)
 	if err != nil {
 		t.Fatalf("expected fallback success, got: %v", err)
 	}
-	if det.Path != "/x/code" || det.Version != LockedVersion {
+	if det.Path != "/x/code" || det.Version != "1.85.0" {
 		t.Errorf("got %+v", det)
 	}
 }
@@ -913,19 +913,25 @@ func TestInstallAndDetect_InstallFails_DetectDoesntFindIt(t *testing.T) {
 	if !strings.Contains(err.Error(), "ERROR 5: access denied") {
 		t.Errorf("install err should be wrapped: %v", err)
 	}
+	if strings.Contains(err.Error(), "1.96.0") {
+		t.Errorf("Store bootstrapper error should not mention a locked VS Code version: %v", err)
+	}
 }
 
-func TestInstallAndDetect_InstallFails_DetectFindsWrongVersion(t *testing.T) {
-	// e.g. user already had VS Code 1.85 installed; install fails for real;
-	// don't pretend it succeeded.
+func TestInstallAndDetect_InstallFails_DetectFindsAnyVersion(t *testing.T) {
+	// Store bootstrapper installs the current Store version; if post-install
+	// detection finds VS Code, accept that instead of requiring a pinned build.
 	install := func(context.Context, string, InstallPlan) error {
-		return errors.New("disk full")
+		return errors.New("exit status 0xc0000409")
 	}
 	detect := func() (Detected, error) {
 		return Detected{Installed: true, Path: "/x/code", Version: "1.85.0"}, nil
 	}
-	_, err := InstallAndDetect(context.Background(), "/tmp/x.exe", InstallPlan{}, install, detect)
-	if err == nil {
-		t.Fatal("expected error when detected version != LockedVersion")
+	det, err := InstallAndDetect(context.Background(), "/tmp/x.exe", InstallPlan{}, install, detect)
+	if err != nil {
+		t.Fatalf("expected fallback success with detected VS Code, got: %v", err)
+	}
+	if det.Path != "/x/code" || det.Version != "1.85.0" {
+		t.Errorf("got %+v", det)
 	}
 }

@@ -23,20 +23,6 @@ type InstallPlan struct {
 	SilentArgs      []string
 }
 
-// LockedVersion is the VS Code version we ship. Bumping requires updating
-// the SHA256 below (fetch from https://code.visualstudio.com/sha?build=stable).
-const LockedVersion = "1.96.0"
-
-// lockedCommitWin64User is the immutable VS Code git commit for LockedVersion.
-// Used in the direct-CDN mirror URL.
-const lockedCommitWin64User = "138f619c86f1199955d53b4166bef66ef252935c"
-
-// lockedSHA256Win64User MUST be updated when LockedVersion changes.
-// Fetch with:
-//
-//	curl -s 'https://update.code.visualstudio.com/api/versions/1.96.0/win32-x64-user/stable' | jq -r .sha256hash
-const lockedSHA256Win64User = "3b445b7031069b527c16202107baa56ad5f8b5e09e43d688dc71d099c8e1cad1"
-
 const StoreProductID = "XP9KHM4BK9FZ7Q"
 const StoreBootstrapperURL = "https://get.microsoft.com/installer/download/" + StoreProductID + "?cid=website_cta_psi"
 
@@ -128,6 +114,6 @@ func InstallAndDetect(
 	if detErr == nil && det.Installed && det.Version != "" {
 		return det, nil
 	}
-	return Detected{}, fmt.Errorf("install failed and post-install detect didn't find VS Code %s: install err=%w; detect err=%v",
-		LockedVersion, installErr, detErr)
+	return Detected{}, fmt.Errorf("install failed and post-install detect didn't find VS Code: install err=%w; detect err=%v",
+		installErr, detErr)
 }
