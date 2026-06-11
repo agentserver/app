@@ -29,18 +29,6 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
 
-// codexDownloadURL is the URL we fetch codex.exe from. Pinned to a
-// specific release tag so the install is reproducible. Bumping the
-// version requires updating the tag below; openai/codex does NOT
-// publish a SHA256 for the standalone .exe (only for -package-.tar.gz),
-// so verification relies on HTTPS + GitHub trust.
-const codexReleaseTag = "rust-v0.136.0"
-
-func codexDownloadURL() string {
-	return "https://github.com/openai/codex/releases/download/" +
-		codexReleaseTag + "/codex-x86_64-pc-windows-msvc.exe"
-}
-
 type Deps struct {
 	State                             *state.Store
 	Secrets                           secrets.Store
@@ -63,8 +51,6 @@ type Deps struct {
 	// CodexDesktopCodexPath is the codex CLI used by loom's internal planner.
 	// Minimal VS Code mode uses CodexAbsPath when this is empty.
 	CodexDesktopCodexPath string
-	// CodexDownloadURL overrides the default GitHub Releases URL when set.
-	CodexDownloadURL string
 
 	CodexDesktopEnsure func(context.Context) (codexdesktop.Detected, error)
 	CodexDesktopOpen   func(string) error

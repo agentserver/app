@@ -92,13 +92,6 @@ func TestConfigureVSCodeCopiesBundledCodexBeforeDownloading(t *testing.T) {
 	codeExe := filepath.Join(dir, "code")
 	os.WriteFile(codeExe, []byte("#!/bin/bash\nexit 0\n"), 0o755)
 
-	codexSrvHits := 0
-	codexSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		codexSrvHits++
-		http.Error(w, "should not download when bundled codex exists", http.StatusInternalServerError)
-	}))
-	defer codexSrv.Close()
-
 	store := state.NewStore(filepath.Join(dir, "state.json"))
 	store.Update(func(s *state.State) error {
 		s.VSCode.Path = codeExe
@@ -115,11 +108,15 @@ func TestConfigureVSCodeCopiesBundledCodexBeforeDownloading(t *testing.T) {
 	os.WriteFile(codexPath+".part", []byte("partial-download"), 0o644)
 	os.WriteFile(codexPath+".meta", []byte("{}"), 0o644)
 
+	runtimeEnsureCalls := 0
 	r := &realOrchestrator{d: Deps{
-		State:             store,
-		CodexAbsPath:      codexPath,
-		BundledCodexPath:  bundledCodex,
-		CodexDownloadURL:  codexSrv.URL + "/codex",
+		State:            store,
+		CodexAbsPath:     codexPath,
+		BundledCodexPath: bundledCodex,
+		CodexRuntimeEnsure: func(ctx context.Context, manifestPath, destRoot, cacheDir string) error {
+			runtimeEnsureCalls++
+			return fmt.Errorf("should not install runtime when bundled codex exists")
+		},
 		VSCodeUserDataDir: filepath.Join(dir, "data"),
 		VSCodeExtDir:      filepath.Join(dir, "ext"),
 		EmbeddedVSIXPath:  vsix,
@@ -140,8 +137,8 @@ func TestConfigureVSCodeCopiesBundledCodexBeforeDownloading(t *testing.T) {
 	if _, err := os.Stat(codexPath + ".meta"); !os.IsNotExist(err) {
 		t.Errorf("stale download metadata should be removed, err=%v", err)
 	}
-	if codexSrvHits != 0 {
-		t.Fatalf("download server was hit %d times; bundled codex should avoid network", codexSrvHits)
+	if runtimeEnsureCalls != 0 {
+		t.Fatalf("runtime installer was called %d times; bundled codex should avoid runtime install", runtimeEnsureCalls)
 	}
 }
 

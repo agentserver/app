@@ -85,13 +85,15 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			want: []string{
 				"[switch]$MinimalVSCode",
 				"ensure-vscode.ps1",
+				"ensure-codex.ps1",
 				"ensure-codex-desktop.ps1",
 				"write-install-mode.ps1",
 				"machine.ps1",
-				"vscode-manifest.json",
+				"codex-manifest.json",
 				"codex-desktop-installer.exe",
 				"slave-agent.exe",
 				"uninstall.exe",
+				"Ensuring Codex runtime",
 				"Ensuring VS Code is installed",
 				"codex_desktop",
 				"minimal_vscode",
@@ -135,27 +137,26 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			name: "package-windows-zip.sh",
 			path: "../../scripts/package-windows-zip.sh",
 			want: []string{
-				"VSCODE_CACHE",
 				"LOOM_RELEASE=\"v0.0.3\"",
 				"LOOM_DRIVER_CACHE",
 				"LOOM_SLAVE_CACHE",
-				"vscode-installer.exe",
 				"packaging/windows/ensure-vscode.ps1",
+				"packaging/windows/ensure-codex.ps1",
+				"packaging/windows/codex-manifest.json",
 				"packaging/windows/ensure-codex-desktop.ps1",
 				"packaging/windows/write-install-mode.ps1",
 				"packaging/windows/machine.ps1",
-				"packaging/windows/vscode-manifest.json",
 				"codex-desktop-installer.exe",
 				"slave-agent.exe",
 				"dist/windows/uninstall.exe",
 				"dist/windows/token-refresher.exe",
-				"cp \"$VSCODE_CACHE\"",
 				"cp \"$CODEX_DESKTOP_CACHE\"",
 				"cp \"$LOOM_DRIVER_CACHE\"",
 				"cp \"$LOOM_SLAVE_CACHE\"",
 				"cp packaging/windows/ensure-vscode.ps1",
+				"cp packaging/windows/ensure-codex.ps1",
+				"cp packaging/windows/codex-manifest.json",
 				"cp packaging/windows/machine.ps1",
-				"cp packaging/windows/vscode-manifest.json",
 				"cp dist/windows/uninstall.exe",
 				"cp dist/windows/token-refresher.exe",
 			},
@@ -170,20 +171,18 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"DestName: \"driver-agent.exe\"",
 				"slave-agent.windows-amd64.exe",
 				"DestName: \"slave-agent.exe\"",
-				"codex-x86_64-pc-windows-msvc.exe",
-				"DestName: \"codex.exe\"",
-				"VSCodeUserSetup-x64-1.96.0.exe",
-				"DestName: \"vscode-installer.exe\"",
 				"Codex Installer.exe",
 				"DestName: \"codex-desktop-installer.exe\"",
 				"MessagesFile: \"ChineseSimplified.isl\"",
 				"ensure-vscode.ps1",
+				"ensure-codex.ps1",
+				"codex-manifest.json",
 				"minimalvscode",
 				"ensure-codex-desktop.ps1",
 				"write-install-mode.ps1",
-				"vscode-manifest.json",
 				"powershell",
 				"ensure-vscode.ps1",
+				"RunEstimatedPowerShellStep('codex-runtime'",
 				"ShouldInstallCodexDesktop",
 				"codex_desktop",
 				"minimal_vscode",
@@ -196,18 +195,15 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			name: "package-windows.sh",
 			path: "../../scripts/package-windows.sh",
 			want: []string{
-				"CODEX_CACHE",
-				"VSCODE_CACHE",
 				"CODEX_DESKTOP_CACHE",
 				"LOOM_RELEASE=\"v0.0.3\"",
 				"LOOM_DRIVER_CACHE",
 				"LOOM_SLAVE_CACHE",
-				"codex-x86_64-pc-windows-msvc.exe",
 				"driver-agent.windows-amd64.exe",
 				"slave-agent.windows-amd64.exe",
-				"VSCodeUserSetup-x64-$VSCODE_VERSION.exe",
 				"Codex Installer.exe",
-				"packaging/windows/vscode-manifest.json",
+				"packaging/windows/ensure-codex.ps1",
+				"packaging/windows/codex-manifest.json",
 				"packaging/windows/ensure-codex-desktop.ps1",
 				"packaging/windows/write-install-mode.ps1",
 				"packaging/windows/machine.ps1",
@@ -217,8 +213,6 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"ISCC=()",
 				"ISCC=(\"wine\" \"$HOME/.wine/drive_c/Program Files (x86)/Inno Setup 6/ISCC.exe\")",
 				"\"${ISCC[@]}\" installer.iss",
-				"\"$VSCODE_CACHE\"",
-				"\"$CODEX_CACHE\"",
 				"\"$CODEX_DESKTOP_CACHE\"",
 				"\"$LOOM_DRIVER_CACHE\"",
 				"\"$LOOM_SLAVE_CACHE\"",
@@ -236,6 +230,85 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWindowsPackagingDoesNotBundleCodexExeOrVSCodeInstaller(t *testing.T) {
+	for _, path := range []string{
+		"../../packaging/windows/installer.iss",
+		"../../packaging/windows/install.ps1",
+		"../../scripts/package-windows.sh",
+		"../../scripts/package-windows-zip.sh",
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(body)
+		for _, notWant := range []string{
+			"codex-x86_64-pc-windows-msvc" + ".exe",
+			"VSCode" + "UserSetup",
+			"vscode-installer" + ".exe",
+			"CODEX" + "_CACHE",
+			"VSCODE" + "_CACHE",
+			"vscode-manifest" + ".json",
+		} {
+			if strings.Contains(s, notWant) {
+				t.Fatalf("%s must not contain %q", path, notWant)
+			}
+		}
+	}
+}
+
+func TestWindowsPackagingIncludesCodexRuntimeEnsure(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{
+			path: "../../packaging/windows/installer.iss",
+			want: []string{
+				"ensure-codex.ps1",
+				"codex-manifest.json",
+				"RunEstimatedPowerShellStep('codex-runtime'",
+				"ensure-codex.ps1",
+				"RunEstimatedPowerShellStep('codex-mode'",
+				"RunEstimatedPowerShellStep('vscode-mode'",
+			},
+		},
+		{
+			path: "../../packaging/windows/install.ps1",
+			want: []string{
+				"'ensure-codex.ps1'",
+				"'codex-manifest.json'",
+				"Ensuring Codex runtime",
+				"install-mode.json",
+			},
+		},
+		{
+			path: "../../scripts/package-windows.sh",
+			want: []string{
+				"packaging/windows/ensure-codex.ps1",
+				"packaging/windows/codex-manifest.json",
+			},
+		},
+		{
+			path: "../../scripts/package-windows-zip.sh",
+			want: []string{
+				"cp packaging/windows/ensure-codex.ps1",
+				"cp packaging/windows/codex-manifest.json",
+			},
+		},
+	} {
+		body, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(string(body), want) {
+				t.Fatalf("%s missing %q", tc.path, want)
+			}
+		}
 	}
 }
 
@@ -260,17 +333,6 @@ func TestWindowsEnsureCodexScriptCallsAgentctlInstallCodex(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Fatalf("ensure-codex.ps1 missing %q", want)
 		}
-	}
-}
-
-func TestWindowsPortableMinimalVSCodeUsesBundledInstaller(t *testing.T) {
-	body, err := os.ReadFile("../../packaging/windows/install.ps1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "& (Join-Path $InstallDir 'ensure-vscode.ps1') -ManifestPath (Join-Path $InstallDir 'vscode-manifest.json') -LocalInstallerPath (Join-Path $srcDir 'vscode-installer.exe')"
-	if !strings.Contains(string(body), want) {
-		t.Fatalf("install.ps1 should pass the portable bundled VS Code installer to ensure-vscode.ps1; missing %q", want)
 	}
 }
 
@@ -385,34 +447,6 @@ func TestWindowsPortableInstallerPromptsWithExistingMachineNameDefault(t *testin
 	}
 }
 
-func TestWindowsPortableInstallerStagesBundledCodexForAllModesBeforeFrontend(t *testing.T) {
-	body, err := os.ReadFile("../../packaging/windows/install.ps1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(body)
-	for _, want := range []string{
-		"$codexSrc = Join-Path $srcDir 'codex.exe'",
-		"$codexBinDir = Join-Path $env:LOCALAPPDATA \"agentserver-app\\bin\"",
-		"$codexDst = Join-Path $codexBinDir 'codex.exe'",
-		"Copy-Item $codexSrc $codexDst -Force",
-	} {
-		if !strings.Contains(s, want) {
-			t.Fatalf("install.ps1 should stage bundled codex.exe for local slaves; missing %q", want)
-		}
-	}
-
-	stage := strings.Index(s, "$codexSrc = Join-Path $srcDir 'codex.exe'")
-	minimalBranch := strings.Index(s, "if ($MinimalVSCode)")
-	codexDesktopMode := strings.Index(s, "Writing install mode codex_desktop")
-	if stage < 0 || minimalBranch < 0 || codexDesktopMode < 0 {
-		t.Fatal("install.ps1 missing codex staging, frontend branch, or codex_desktop setup marker")
-	}
-	if stage > minimalBranch || stage > codexDesktopMode {
-		t.Fatal("install.ps1 must stage bundled codex.exe before mode-specific frontend setup so default Codex Desktop installs support local slaves")
-	}
-}
-
 func TestWindowsPortableInstallerDoesNotAbortWhenShortcutCreationFails(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/install.ps1")
 	if err != nil {
@@ -462,37 +496,6 @@ func TestWindowsInnoInstallerInitializesMachineBeforeFrontend(t *testing.T) {
 	alternateFrontend := strings.Index(s, "RunEstimatedPowerShellStep('vscode-mode'")
 	if machine < 0 || frontend < 0 || alternateFrontend < 0 || machine > frontend || machine > alternateFrontend {
 		t.Fatal("installer.iss should initialize machine identity before frontend mode setup")
-	}
-}
-
-func TestWindowsInnoInstallerStagesBundledCodexForAllModesBeforeFrontend(t *testing.T) {
-	body, err := os.ReadFile("../../packaging/windows/installer.iss")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(body)
-	for _, want := range []string{
-		"procedure StageBundledCodexForLocalSlaves();",
-		"CodexBinDir := AddBackslash(LocalAppData) + 'agentserver-app\\bin';",
-		"CodexSrc := ExpandConstant('{app}\\codex.exe');",
-		"CodexDst := AddBackslash(CodexBinDir) + 'codex.exe';",
-		"FileCopy(CodexSrc, CodexDst, False)",
-		"StageBundledCodexForLocalSlaves();",
-	} {
-		if !strings.Contains(s, want) {
-			t.Fatalf("installer.iss should stage bundled codex.exe for local slaves; missing %q", want)
-		}
-	}
-
-	machine := strings.Index(s, "RunEstimatedPowerShellStep('machine'")
-	stage := strings.LastIndex(s, "StageBundledCodexForLocalSlaves();")
-	codexFrontend := strings.Index(s, "RunEstimatedPowerShellStep('codex-mode'")
-	vscodeFrontend := strings.Index(s, "RunEstimatedPowerShellStep('vscode-mode'")
-	if machine < 0 || stage < 0 || codexFrontend < 0 || vscodeFrontend < 0 {
-		t.Fatal("installer.iss missing machine setup, codex staging, or frontend setup marker")
-	}
-	if machine > stage || stage > codexFrontend || stage > vscodeFrontend {
-		t.Fatal("installer.iss must stage bundled codex.exe after machine setup and before mode-specific frontend setup")
 	}
 }
 
@@ -686,38 +689,6 @@ func TestWindowsPortableInstallerStopsRunningProcessesBeforeCopy(t *testing.T) {
 	copyStart := strings.Index(s, "# Mkdir + copy")
 	if stopCall < 0 || copyStart < 0 || stopCall >= copyStart {
 		t.Fatal("install.ps1 must stop running processes before copying payload files")
-	}
-}
-
-func TestWindowsPackageScriptsDeleteBadVSCodePartFiles(t *testing.T) {
-	for _, path := range []string{
-		"../../scripts/package-windows.sh",
-		"../../scripts/package-windows-zip.sh",
-	} {
-		t.Run(path, func(t *testing.T) {
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s := string(body)
-			for _, marker := range []string{
-				`if [[ "$local_size" != "$VSCODE_SIZE" ]]; then`,
-				`if [[ "$local_sum" != "$VSCODE_SHA256" ]]; then`,
-			} {
-				start := strings.Index(s, marker)
-				if start < 0 {
-					t.Fatalf("%s missing validation block %q", path, marker)
-				}
-				end := strings.Index(s[start:], "\n  fi")
-				if end < 0 {
-					t.Fatalf("%s validation block %q missing fi", path, marker)
-				}
-				block := s[start : start+end]
-				if !strings.Contains(block, `rm -f "$VSCODE_CACHE.part"`) {
-					t.Fatalf("%s validation block %q should delete bad partial file:\n%s", path, marker, block)
-				}
-			}
-		})
 	}
 }
 

@@ -50,12 +50,8 @@ Source: "..\..\dist\cache\loom\v0.0.3\driver-agent.windows-amd64.exe"; \
     DestDir: "{app}"; DestName: "driver-agent.exe"; Flags: ignoreversion
 Source: "..\..\dist\cache\loom\v0.0.3\slave-agent.windows-amd64.exe"; \
     DestDir: "{app}"; DestName: "slave-agent.exe"; Flags: ignoreversion
-Source: "..\..\dist\cache\rust-v0.136.0\codex-x86_64-pc-windows-msvc.exe"; \
-    DestDir: "{app}"; DestName: "codex.exe"; Flags: ignoreversion
 Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
     DestDir: "{app}"; DestName: "codex-desktop-installer.exe"; Flags: ignoreversion
-Source: "..\..\dist\cache\vscode\1.96.0\VSCodeUserSetup-x64-1.96.0.exe"; \
-    DestDir: "{app}"; DestName: "vscode-installer.exe"; Flags: ignoreversion
 ; Bundled VS Code extension
 Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.0.vsix"; \
     DestDir: "{app}"; DestName: "agentserver-app.vsix"; Flags: ignoreversion
@@ -66,10 +62,11 @@ Source: "LICENSE.zh.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Portable installer helpers reused by the Inno setup.
 Source: "install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-vscode.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "ensure-codex.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "write-install-mode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "machine.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "vscode-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "codex-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; \
@@ -360,33 +357,6 @@ begin
   end;
 end;
 
-procedure StageBundledCodexForLocalSlaves();
-var
-  LocalAppData: String;
-  CodexBinDir: String;
-  CodexSrc: String;
-  CodexDst: String;
-begin
-  LocalAppData := GetEnv('LOCALAPPDATA');
-  if LocalAppData = '' then begin
-    LocalAppData := ExpandConstant('{localappdata}');
-  end;
-
-  CodexSrc := ExpandConstant('{app}\codex.exe');
-  CodexBinDir := AddBackslash(LocalAppData) + 'agentserver-app\bin';
-  CodexDst := AddBackslash(CodexBinDir) + 'codex.exe';
-
-  if not FileExists(CodexSrc) then begin
-    RaiseException('缺少 codex.exe，无法准备本地 slave。');
-  end;
-  if not ForceDirectories(CodexBinDir) then begin
-    RaiseException('无法创建 codex.exe 目录：' + CodexBinDir);
-  end;
-  if not FileCopy(CodexSrc, CodexDst, False) then begin
-    RaiseException('无法复制 codex.exe 到：' + CodexDst);
-  end;
-end;
-
 procedure InitializeWizard();
 begin
   ComputerNamePage := CreateInputQueryPage(
@@ -428,7 +398,8 @@ begin
   RunEstimatedPowerShellStep('machine', '正在初始化电脑名称...', 'machine.ps1',
     '-MachinePath ' + PowerShellQuote(MachinePath) + ' -ComputerNamePath ' + PowerShellQuote(ComputerNamePath), 10);
 
-  StageBundledCodexForLocalSlaves();
+  RunEstimatedPowerShellStep('codex-runtime', '正在从国内 npm 镜像准备 Codex 运行时...', 'ensure-codex.ps1',
+    '-ManifestPath ' + PowerShellQuote(ExpandConstant('{app}\codex-manifest.json')), 300);
 
   ModePath := ExpandConstant('{app}\install-mode.json');
   if ShouldInstallCodexDesktop then begin
@@ -440,7 +411,7 @@ begin
     RunEstimatedPowerShellStep('vscode-mode', '正在准备极简风模式...', 'write-install-mode.ps1',
       '-Mode ' + PowerShellQuote('minimal_vscode') + ' -Path ' + PowerShellQuote(ModePath), 10);
     RunEstimatedPowerShellStep('vscode-install', '正在安装极简 VS Code（可能需要几分钟，请勿关闭）...', 'ensure-vscode.ps1',
-      '-ManifestPath ' + PowerShellQuote(ExpandConstant('{app}\vscode-manifest.json')), 180);
+      '', 300);
   end;
 end;
 
