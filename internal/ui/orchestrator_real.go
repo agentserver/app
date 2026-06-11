@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
@@ -174,6 +175,10 @@ func (r *realOrchestrator) PollModelserverLogin(ctx context.Context) (modelserve
 			r.cleanupMS()
 			return modelserver.APIKey{}, err
 		}
+		if strings.TrimSpace(tok.RefreshToken) == "" {
+			r.cleanupMS()
+			return modelserver.APIKey{}, fmt.Errorf("modelserver login did not return refresh_token; please reconnect and allow offline access")
+		}
 		r.msToken = tok
 
 		// Keep the PKCE access_token in local secrets. Codex uses a stable local
@@ -306,6 +311,9 @@ func (r *realOrchestrator) PollAgentserverLogin(ctx context.Context) (agentserve
 		s.Onboarding.AddCompleted("agentserver_login")
 		return nil
 	}); err != nil {
+		return agentserver.WorkspaceAPIKey{}, err
+	}
+	if err := r.configureLoomDriver(); err != nil {
 		return agentserver.WorkspaceAPIKey{}, err
 	}
 	return key, nil
@@ -460,28 +468,23 @@ func (r *realOrchestrator) configureLoomDriver() error {
 	if serverURL == "" {
 		serverURL = "https://agent.cs.ac.cn"
 	}
-	codexBin := r.d.CodexDesktopCodexPath
-	if codexBin == "" {
-		codexBin = r.d.CodexAbsPath
-	}
-	if codexBin == "" {
-		codexBin = "codex"
-	}
+	codexBin := r.loomDriverCodexBin(st)
 	serverName := "driver-" + lastN(st.InstallID, 8)
 	if st.Agentserver.ShortID != "" {
 		serverName = "driver-" + st.Agentserver.ShortID
 	}
 	if err := loom.WriteDriverConfig(r.d.LoomConfigPath, loom.DriverConfig{
-		ServerURL:   serverURL,
-		ServerName:  serverName,
-		SandboxID:   st.Agentserver.SandboxID,
-		TunnelToken: tunnelToken,
-		ProxyToken:  proxyToken,
-		WorkspaceID: st.Agentserver.WorkspaceID,
-		ShortID:     st.Agentserver.ShortID,
-		DisplayName: "星池指挥官",
-		Description: "星池指挥官本地协作驱动。",
-		CodexBin:    codexBin,
+		ServerURL:     serverURL,
+		ServerName:    serverName,
+		SandboxID:     st.Agentserver.SandboxID,
+		TunnelToken:   tunnelToken,
+		ProxyToken:    proxyToken,
+		WorkspaceID:   st.Agentserver.WorkspaceID,
+		WorkspaceName: st.Agentserver.WorkspaceName,
+		ShortID:       st.Agentserver.ShortID,
+		DisplayName:   "星池指挥官",
+		Description:   "星池指挥官本地协作驱动。",
+		CodexBin:      codexBin,
 		CodexWorkDir: func() string {
 			if home, err := os.UserHomeDir(); err == nil {
 				return home
@@ -498,6 +501,20 @@ func (r *realOrchestrator) configureLoomDriver() error {
 		return fmt.Errorf("configure codex mcp driver: %w", err)
 	}
 	return nil
+}
+
+func (r *realOrchestrator) loomDriverCodexBin(st *state.State) string {
+	if state.NormalizeFrontendMode(st.FrontendMode) == state.FrontendModeMinimalVSCode {
+		if r.d.CodexAbsPath != "" {
+			return r.d.CodexAbsPath
+		}
+		return "codex"
+	}
+	if r.d.CodexDesktopCodexPath != "" {
+		return r.d.CodexDesktopCodexPath
+	}
+	// Codex Desktop provides the CLI runtime for its own driver workflow.
+	return "codex"
 }
 
 func (r *realOrchestrator) ConfigureCodexDesktop(ctx context.Context) error {

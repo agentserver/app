@@ -5,13 +5,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
+	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 )
@@ -311,6 +314,220 @@ func TestControllerStateMarksModelserverReconnectWhenRefreshTokenMissing(t *test
 	}
 }
 
+func TestControllerStateMarksAgentserverReconnectWhenWhoamiUnauthorized(t *testing.T) {
+	as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent/whoami" {
+			t.Fatalf("agentserver unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer revoked-proxy-token" {
+			t.Fatalf("agentserver Authorization=%q", r.Header.Get("Authorization"))
+		}
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	}))
+	defer as.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"agentserver_login"}
+		s.Agentserver.WorkspaceID = "ws-cached"
+		s.Agentserver.WorkspaceName = "嘿嘿"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	if err := sec.Set("agentserver_ws_api_key", "revoked-proxy-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewController(Deps{
+		State: store, Secrets: sec, AS: agentserver.New(as.URL),
+	}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Agentserver.WorkspaceName != "嘿嘿" {
+		t.Fatalf("cached workspace name should remain visible: %+v", got.Agentserver)
+	}
+	if !got.Agentserver.ReconnectRequired {
+		t.Fatalf("agentserver reconnect should be required: %+v", got.Agentserver)
+	}
+	if got.Agentserver.AuthMessage != "星池工作区连接已失效，请重新连接。" {
+		t.Fatalf("AuthMessage=%q", got.Agentserver.AuthMessage)
+	}
+}
+
+func TestControllerStateRefreshesExpiredModelserverTokenBeforeQuota(t *testing.T) {
+	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage" {
+			t.Fatalf("modelserver unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer refreshed-token" {
+			t.Fatalf("Authorization=%q", r.Header.Get("Authorization"))
+		}
+		w.Write([]byte(`{"credit_usage":[{"window":"5h","percentage":30}]}`))
+	}))
+	defer ms.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	for key, value := range map[string]string{
+		tokenrefresh.AccessTokenKey:          "expired-token",
+		tokenrefresh.RefreshTokenKey:         "refresh-token",
+		tokenrefresh.AccessTokenExpiresAtKey: "2026-06-08T12:00:00Z",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refreshes := 0
+	c := NewController(Deps{
+		State:   store,
+		Secrets: sec,
+		MS:      modelserver.New(ms.URL),
+		Now:     func() time.Time { return time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC) },
+		RefreshModelserverToken: func(context.Context) error {
+			refreshes++
+			if err := sec.Set(tokenrefresh.AccessTokenKey, "refreshed-token"); err != nil {
+				return err
+			}
+			return sec.Set(tokenrefresh.AccessTokenExpiresAtKey, "2026-06-09T13:00:00Z")
+		},
+	})
+
+	got, err := c.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshes != 1 {
+		t.Fatalf("refreshes=%d", refreshes)
+	}
+	if got.Modelserver.ReconnectRequired || got.QuotaError != "" || len(got.Quotas) != 1 {
+		t.Fatalf("state=%+v", got)
+	}
+}
+
+func TestControllerStateRetriesQuotaAfterRefreshingStaleModelserverToken(t *testing.T) {
+	usageCalls := 0
+	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage" {
+			t.Fatalf("modelserver unexpected path %s", r.URL.Path)
+		}
+		usageCalls++
+		if usageCalls == 1 {
+			if r.Header.Get("Authorization") != "Bearer stale-token" {
+				t.Fatalf("first Authorization=%q", r.Header.Get("Authorization"))
+			}
+			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer refreshed-token" {
+			t.Fatalf("retry Authorization=%q", r.Header.Get("Authorization"))
+		}
+		w.Write([]byte(`{"credit_usage":[{"window":"5h","percentage":40}]}`))
+	}))
+	defer ms.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	for key, value := range map[string]string{
+		tokenrefresh.AccessTokenKey:          "stale-token",
+		tokenrefresh.RefreshTokenKey:         "refresh-token",
+		tokenrefresh.AccessTokenExpiresAtKey: "2026-06-09T13:00:00Z",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refreshes := 0
+	got, err := NewController(Deps{
+		State:   store,
+		Secrets: sec,
+		MS:      modelserver.New(ms.URL),
+		Now:     func() time.Time { return time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC) },
+		RefreshModelserverToken: func(context.Context) error {
+			refreshes++
+			if err := sec.Set(tokenrefresh.AccessTokenKey, "refreshed-token"); err != nil {
+				return err
+			}
+			return sec.Set(tokenrefresh.AccessTokenExpiresAtKey, "2026-06-09T13:00:00Z")
+		},
+	}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshes != 1 || usageCalls != 2 {
+		t.Fatalf("refreshes=%d usageCalls=%d", refreshes, usageCalls)
+	}
+	if got.Modelserver.ReconnectRequired || got.QuotaError != "" || len(got.Quotas) != 1 {
+		t.Fatalf("state=%+v", got)
+	}
+}
+
+func TestControllerStateMarksReconnectWhenRefreshRetryIsInvalidGrant(t *testing.T) {
+	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage" {
+			t.Fatalf("modelserver unexpected path %s", r.URL.Path)
+		}
+		http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+	}))
+	defer ms.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	for key, value := range map[string]string{
+		tokenrefresh.AccessTokenKey:          "stale-token",
+		tokenrefresh.RefreshTokenKey:         "refresh-token",
+		tokenrefresh.AccessTokenExpiresAtKey: "2026-06-09T13:00:00Z",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := NewController(Deps{
+		State:   store,
+		Secrets: sec,
+		MS:      modelserver.New(ms.URL),
+		Now:     func() time.Time { return time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC) },
+		RefreshModelserverToken: func(context.Context) error {
+			return oauth.ErrInvalidGrant
+		},
+	}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Modelserver.ReconnectRequired {
+		t.Fatalf("modelserver reconnect should be required: %+v", got.Modelserver)
+	}
+}
+
 func TestControllerStateMarksModelserverReconnectWhenRefreshFailed(t *testing.T) {
 	dir := t.TempDir()
 	store := state.NewStore(filepath.Join(dir, "state.json"))
@@ -491,6 +708,221 @@ func TestControllerActionsInvokeCallbacks(t *testing.T) {
 	}
 }
 
+func TestControllerListsAndControlsSlaves(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	runner := &testSlaveRunner{pid: 1111, authURL: "https://agent.cs.ac.cn/device?user_code=ABCD"}
+	manager := slave.NewManager(slave.ManagerDeps{
+		Machines:  slave.NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:  slave.NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:    runner,
+		SlaveExe:  filepath.Join(dir, "slave-agent.exe"),
+		ServerURL: "https://agent.cs.ac.cn",
+		CodexBin:  "codex",
+	})
+	if _, err := manager.Machines.Ensure("PC"); err != nil {
+		t.Fatal(err)
+	}
+	c := NewController(Deps{Slaves: manager})
+
+	created, err := c.CreateSlave(context.Background(), slave.CreateInput{Folder: folder, Name: "worker"})
+	if err != nil {
+		t.Fatalf("CreateSlave: %v", err)
+	}
+	if created.Status != slave.StatusAuthRequired || created.PID != 1111 || created.AuthURL != runner.authURL {
+		t.Fatalf("created slave=%+v", created)
+	}
+
+	machine, slaves, err := c.Slaves(context.Background())
+	if err != nil {
+		t.Fatalf("Slaves: %v", err)
+	}
+	if machine.ComputerName != "PC" {
+		t.Fatalf("machine=%+v", machine)
+	}
+	if len(slaves) != 1 || slaves[0].ID != created.ID {
+		t.Fatalf("slaves=%+v", slaves)
+	}
+
+	paused, err := c.PauseSlave(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("PauseSlave: %v", err)
+	}
+	if paused.Status != slave.StatusPaused || paused.PID != 0 || !runner.stopped[1111] {
+		t.Fatalf("paused=%+v stopped=%+v", paused, runner.stopped)
+	}
+
+	runner.pid = 2222
+	runner.authURL = ""
+	restarted, err := c.RestartSlave(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("RestartSlave: %v", err)
+	}
+	if restarted.Status != slave.StatusStarting || restarted.PID != 2222 {
+		t.Fatalf("restarted=%+v", restarted)
+	}
+
+	if err := c.DeleteSlave(context.Background(), created.ID); err != nil {
+		t.Fatalf("DeleteSlave: %v", err)
+	}
+	_, slaves, err = c.Slaves(context.Background())
+	if err != nil {
+		t.Fatalf("Slaves after delete: %v", err)
+	}
+	if len(slaves) != 0 {
+		t.Fatalf("slaves after delete=%+v", slaves)
+	}
+}
+
+func TestControllerOpenSlaveRemoteOpensSandboxPageFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	manager := slave.NewManager(slave.ManagerDeps{
+		Machines:  slave.NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:  slave.NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:    &testSlaveRunner{pid: 1111},
+		SlaveExe:  filepath.Join(dir, "slave-agent.exe"),
+		ServerURL: "https://agent.example/",
+	})
+	if _, err := manager.Machines.Ensure("PC"); err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.CreateAndStart(context.Background(), slave.CreateInput{Folder: folder, Name: "worker"})
+	if err != nil {
+		t.Fatalf("CreateSlave: %v", err)
+	}
+	writeConsoleSlaveConfig(t, created.ConfigPath, "https://agent.example/", "workspace-1", "sandbox-1")
+	var openedURL string
+	c := NewController(Deps{
+		Slaves: manager,
+		OpenURL: func(url string) error {
+			openedURL = url
+			return nil
+		},
+	})
+
+	got, err := c.OpenSlaveRemote(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("OpenSlaveRemote: %v", err)
+	}
+	if got.State != "opened" || openedURL != "https://agent.example/w/workspace-1/sandboxes/sandbox-1" {
+		t.Fatalf("result=%+v openedURL=%q", got, openedURL)
+	}
+}
+
+func TestControllerOpenSlaveRemoteFallsBackToStateWorkspaceID(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Agentserver.WorkspaceID = "workspace-from-state"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manager := slave.NewManager(slave.ManagerDeps{
+		Machines:  slave.NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:  slave.NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:    &testSlaveRunner{pid: 1111},
+		SlaveExe:  filepath.Join(dir, "slave-agent.exe"),
+		ServerURL: "https://agent.example",
+	})
+	if _, err := manager.Machines.Ensure("PC"); err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.CreateAndStart(context.Background(), slave.CreateInput{Folder: folder, Name: "worker"})
+	if err != nil {
+		t.Fatalf("CreateSlave: %v", err)
+	}
+	writeConsoleSlaveConfig(t, created.ConfigPath, "https://agent.example", "", "sandbox-1")
+	var openedURL string
+	c := NewController(Deps{
+		State:  store,
+		Slaves: manager,
+		OpenURL: func(url string) error {
+			openedURL = url
+			return nil
+		},
+	})
+
+	got, err := c.OpenSlaveRemote(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("OpenSlaveRemote: %v", err)
+	}
+	if got.State != "opened" || openedURL != "https://agent.example/w/workspace-from-state/sandboxes/sandbox-1" {
+		t.Fatalf("result=%+v openedURL=%q", got, openedURL)
+	}
+}
+
+func TestControllerOpenSlaveRemoteReturnsUnavailableBeforeAuthentication(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	manager := slave.NewManager(slave.ManagerDeps{
+		Machines: slave.NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry: slave.NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:   &testSlaveRunner{pid: 1111},
+		SlaveExe: filepath.Join(dir, "slave-agent.exe"),
+	})
+	if _, err := manager.Machines.Ensure("PC"); err != nil {
+		t.Fatal(err)
+	}
+	created, err := manager.CreateAndStart(context.Background(), slave.CreateInput{Folder: folder, Name: "worker"})
+	if err != nil {
+		t.Fatalf("CreateSlave: %v", err)
+	}
+	var openedURL string
+	c := NewController(Deps{
+		Slaves: manager,
+		OpenURL: func(url string) error {
+			openedURL = url
+			return nil
+		},
+	})
+
+	got, err := c.OpenSlaveRemote(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("OpenSlaveRemote: %v", err)
+	}
+	if got.State != "unavailable" || openedURL != "" {
+		t.Fatalf("result=%+v openedURL=%q", got, openedURL)
+	}
+}
+
+func TestControllerSlaveMethodsRequireManager(t *testing.T) {
+	c := NewController(Deps{})
+	ctx := context.Background()
+	if _, _, err := c.Slaves(ctx); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("Slaves err=%v", err)
+	}
+	if _, err := c.CreateSlave(ctx, slave.CreateInput{}); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("CreateSlave err=%v", err)
+	}
+	if _, err := c.RestartSlave(ctx, "slave-1"); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("RestartSlave err=%v", err)
+	}
+	if _, err := c.PauseSlave(ctx, "slave-1"); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("PauseSlave err=%v", err)
+	}
+	if err := c.DeleteSlave(ctx, "slave-1"); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("DeleteSlave err=%v", err)
+	}
+	if _, err := c.OpenSlaveRemote(ctx, "slave-1"); err == nil || err.Error() != "console: slave manager unavailable" {
+		t.Fatalf("OpenSlaveRemote err=%v", err)
+	}
+}
+
 func TestControllerOpenSubscriptionFallsBackToProjectsWhenProjectIDMissing(t *testing.T) {
 	dir := t.TempDir()
 	var openedURL string
@@ -527,6 +959,40 @@ func TestQuotaWindowsRoundsRemainingAndClampsAtZero(t *testing.T) {
 	if got[1].RemainingPercentage != 0 {
 		t.Fatalf("second quota=%+v", got[1])
 	}
+}
+
+type testSlaveRunner struct {
+	pid           int
+	authURL       string
+	startedConfig string
+	stopped       map[int]bool
+}
+
+func writeConsoleSlaveConfig(t *testing.T, path, serverURL, workspaceID, sandboxID string) {
+	t.Helper()
+	body := []byte("server:\n  url: " + serverURL + "\ncredentials:\n  sandbox_id: " + sandboxID + "\n  workspace_id: " + workspaceID + "\n")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("write slave config: %v", err)
+	}
+}
+
+func (r *testSlaveRunner) Start(context.Context, slave.StartRequest) (slave.StartResult, error) {
+	if r.stopped == nil {
+		r.stopped = map[int]bool{}
+	}
+	return slave.StartResult{PID: r.pid, AuthURL: r.authURL}, nil
+}
+
+func (r *testSlaveRunner) Stop(_ context.Context, pid int) error {
+	if r.stopped == nil {
+		r.stopped = map[int]bool{}
+	}
+	r.stopped[pid] = true
+	return nil
+}
+
+func mkdir(path string) error {
+	return os.MkdirAll(path, 0o755)
 }
 
 type testSecrets struct {

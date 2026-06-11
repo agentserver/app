@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/agentserver/agentserver-pkg/internal/branding"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
@@ -29,9 +31,14 @@ func runUninstall(args []string) {
 	}
 
 	sec := secrets.New(p.SecretsFile)
+	appDir := ""
+	if exe, err := os.Executable(); err == nil {
+		appDir = filepath.Dir(exe)
+	}
 	if err := uninstall.Run(uninstall.Options{
 		Paths:   p,
 		Secrets: sec,
+		AppDir:  appDir,
 	}); err != nil {
 		fmt.Println("warning:", err)
 	}

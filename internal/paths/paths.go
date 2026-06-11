@@ -18,6 +18,9 @@ type Paths struct {
 	CacheDir                 string
 	ConsolePortFile          string
 	ConsoleNotificationsFile string
+	MachineFile              string
+	SlavesFile               string
+	SlavesDir                string
 	VSCodeUserDataDir        string
 	VSCodeExtDir             string
 
@@ -47,6 +50,9 @@ func Default() (Paths, error) {
 		CacheDir:                          filepath.Join(root, "cache"),
 		ConsolePortFile:                   filepath.Join(root, "console-port.json"),
 		ConsoleNotificationsFile:          filepath.Join(root, "console-notifications.json"),
+		MachineFile:                       filepath.Join(root, "machine.json"),
+		SlavesFile:                        filepath.Join(root, "slaves.json"),
+		SlavesDir:                         filepath.Join(root, "slaves"),
 		VSCodeUserDataDir:                 filepath.Join(root, "vscode-data"),
 		VSCodeExtDir:                      filepath.Join(root, "vscode-extensions"),
 		CodexDir:                          codex,

@@ -4,26 +4,32 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 )
 
 type Deps struct {
-	State                 secretsStateStore
-	Secrets               secrets.Store
-	MS                    *modelserver.Client
-	MSProxy               *modelserver.Client
-	AS                    *agentserver.Client
-	ModelserverWebBaseURL string
-	OpenFrontend          func(context.Context) error
-	OpenURL               func(string) error
-	Quit                  func()
+	State                   secretsStateStore
+	Secrets                 secrets.Store
+	MS                      *modelserver.Client
+	MSProxy                 *modelserver.Client
+	AS                      *agentserver.Client
+	Slaves                  *slave.Manager
+	ModelserverWebBaseURL   string
+	RefreshModelserverToken func(context.Context) error
+	OpenFrontend            func(context.Context) error
+	OpenURL                 func(string) error
+	SelectFolder            func(context.Context) (string, error)
+	Quit                    func()
+	Now                     func() time.Time
 }
 
 type secretsStateStore interface {
@@ -51,8 +57,15 @@ type ModelserverView struct {
 }
 
 type AgentserverView struct {
-	WorkspaceID   string `json:"workspace_id,omitempty"`
-	WorkspaceName string `json:"workspace_name,omitempty"`
+	WorkspaceID       string `json:"workspace_id,omitempty"`
+	WorkspaceName     string `json:"workspace_name,omitempty"`
+	ReconnectRequired bool   `json:"reconnect_required,omitempty"`
+	AuthMessage       string `json:"auth_message,omitempty"`
+}
+
+type SlaveRemoteOpenResult struct {
+	State string `json:"state"`
+	URL   string `json:"url,omitempty"`
 }
 
 type QuotaWindow struct {
@@ -93,9 +106,15 @@ func (c *Controller) State(ctx context.Context) (State, error) {
 	}
 	out.SubscriptionURL = modelserverSubscriptionURL(c.d.ModelserverWebBaseURL, out.Modelserver.ProjectID)
 
-	msToken := c.secret("modelserver_api_key")
+	msToken := c.secret(tokenrefresh.AccessTokenKey)
+	preRefreshErr := c.refreshExpiredModelserverToken(ctx, st, msToken)
+	msToken = c.secret(tokenrefresh.AccessTokenKey)
 	asToken := c.secret("agentserver_ws_api_key")
 	c.applyModelserverAuthState(st, msToken, &out)
+	c.applyAgentserverAuthState(st, asToken, &out)
+	if tokenrefresh.ReauthRequired(preRefreshErr) {
+		markModelserverReconnect(&out)
+	}
 	if (c.d.MS != nil || c.d.MSProxy != nil) && msToken != "" {
 		if c.d.MS != nil && out.Modelserver.ProjectID != "" {
 			projects, err := c.d.MS.ListProjects(ctx, msToken)
@@ -112,15 +131,20 @@ func (c *Controller) State(ctx context.Context) (State, error) {
 		if usageClient == nil {
 			usageClient = c.d.MS
 		}
-		usage, err := usageClient.ProxyUsage(ctx, msToken)
-		if err != nil {
-			if c.d.MS != nil && out.Modelserver.ProjectID != "" {
-				usage, err = c.d.MS.SubscriptionUsage(ctx, msToken, out.Modelserver.ProjectID)
+		usage, err := c.modelserverUsage(ctx, usageClient, msToken, out.Modelserver.ProjectID)
+		if err != nil && isModelserverAuthError(err) && c.canRefreshModelserverToken(st) {
+			if refreshErr := c.refreshModelserverToken(ctx); refreshErr != nil {
+				if tokenrefresh.ReauthRequired(refreshErr) {
+					markModelserverReconnect(&out)
+				}
+			} else if refreshedToken := c.secret(tokenrefresh.AccessTokenKey); refreshedToken != "" {
+				msToken = refreshedToken
+				usage, err = c.modelserverUsage(ctx, usageClient, msToken, out.Modelserver.ProjectID)
 			}
 		}
 		if err != nil {
 			out.QuotaError = err.Error()
-			if isModelserverAuthError(err) {
+			if isModelserverAuthError(err) && !c.canRefreshModelserverToken(st) {
 				markModelserverReconnect(&out)
 			}
 		} else {
@@ -134,6 +158,8 @@ func (c *Controller) State(ctx context.Context) (State, error) {
 				out.Agentserver.WorkspaceID = identity.Workspace.ID
 			}
 			out.Agentserver.WorkspaceName = identity.Workspace.Name
+		} else if isAgentserverAuthError(err) {
+			markAgentserverReconnect(&out)
 		}
 	}
 
@@ -142,6 +168,75 @@ func (c *Controller) State(ctx context.Context) (State, error) {
 
 func (c *Controller) Refresh(ctx context.Context) (State, error) {
 	return c.State(ctx)
+}
+
+func (c *Controller) Slaves(ctx context.Context) (slave.Machine, []slave.Slave, error) {
+	if c.d.Slaves == nil {
+		return slave.Machine{}, nil, errors.New("console: slave manager unavailable")
+	}
+	return c.d.Slaves.List(ctx)
+}
+
+func (c *Controller) CreateSlave(ctx context.Context, in slave.CreateInput) (slave.Slave, error) {
+	if c.d.Slaves == nil {
+		return slave.Slave{}, errors.New("console: slave manager unavailable")
+	}
+	return c.d.Slaves.CreateAndStart(ctx, in)
+}
+
+func (c *Controller) SelectFolder(ctx context.Context) (string, error) {
+	if c.d.SelectFolder == nil {
+		return "", errors.New("console: folder picker unavailable")
+	}
+	return c.d.SelectFolder(ctx)
+}
+
+func (c *Controller) RestartSlave(ctx context.Context, id string) (slave.Slave, error) {
+	if c.d.Slaves == nil {
+		return slave.Slave{}, errors.New("console: slave manager unavailable")
+	}
+	return c.d.Slaves.Restart(ctx, id)
+}
+
+func (c *Controller) PauseSlave(ctx context.Context, id string) (slave.Slave, error) {
+	if c.d.Slaves == nil {
+		return slave.Slave{}, errors.New("console: slave manager unavailable")
+	}
+	return c.d.Slaves.Pause(ctx, id)
+}
+
+func (c *Controller) DeleteSlave(ctx context.Context, id string) error {
+	if c.d.Slaves == nil {
+		return errors.New("console: slave manager unavailable")
+	}
+	return c.d.Slaves.Delete(ctx, id)
+}
+
+func (c *Controller) OpenSlaveRemote(ctx context.Context, id string) (SlaveRemoteOpenResult, error) {
+	if c.d.Slaves == nil {
+		return SlaveRemoteOpenResult{}, errors.New("console: slave manager unavailable")
+	}
+	identity, err := c.d.Slaves.RemoteIdentity(ctx, id)
+	if errors.Is(err, slave.ErrRemoteIdentityUnavailable) {
+		return SlaveRemoteOpenResult{State: "unavailable"}, nil
+	}
+	if err != nil {
+		return SlaveRemoteOpenResult{}, err
+	}
+	workspaceID := strings.TrimSpace(identity.WorkspaceID)
+	if workspaceID == "" {
+		workspaceID = c.agentserverWorkspaceID()
+	}
+	if workspaceID == "" || strings.TrimSpace(identity.SandboxID) == "" {
+		return SlaveRemoteOpenResult{State: "unavailable"}, nil
+	}
+	remoteURL := slaveRemoteURL(identity.ServerURL, workspaceID, identity.SandboxID)
+	if c.d.OpenURL != nil {
+		if err := c.d.OpenURL(remoteURL); err != nil {
+			return SlaveRemoteOpenResult{}, err
+		}
+	}
+	return SlaveRemoteOpenResult{State: "opened", URL: remoteURL}, nil
 }
 
 func (c *Controller) Healthy(context.Context) bool {
@@ -214,6 +309,69 @@ func (c *Controller) secret(key string) string {
 	return v
 }
 
+func (c *Controller) modelserverUsage(ctx context.Context, usageClient *modelserver.Client, token, projectID string) ([]modelserver.SubscriptionUsageWindow, error) {
+	usage, err := usageClient.ProxyUsage(ctx, token)
+	if err == nil {
+		return usage, nil
+	}
+	if c.d.MS != nil && projectID != "" {
+		return c.d.MS.SubscriptionUsage(ctx, token, projectID)
+	}
+	return nil, err
+}
+
+func (c *Controller) refreshExpiredModelserverToken(ctx context.Context, st *state.State, msToken string) error {
+	if !c.canRefreshModelserverToken(st) {
+		return nil
+	}
+	if !c.modelserverAccessTokenNeedsRefresh(msToken) {
+		return nil
+	}
+	return c.refreshModelserverToken(ctx)
+}
+
+func (c *Controller) canRefreshModelserverToken(st *state.State) bool {
+	if st == nil || !st.Onboarding.HasCompleted("modelserver_login") {
+		return false
+	}
+	if c.d.RefreshModelserverToken == nil {
+		return false
+	}
+	if c.secret(tokenrefresh.ReauthRequiredKey) == "true" {
+		return false
+	}
+	return c.secret(tokenrefresh.RefreshTokenKey) != ""
+}
+
+func (c *Controller) modelserverAccessTokenNeedsRefresh(msToken string) bool {
+	if msToken == "" {
+		return true
+	}
+	raw := c.secret(tokenrefresh.AccessTokenExpiresAtKey)
+	if raw == "" {
+		return true
+	}
+	expiresAt, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return true
+	}
+	return !expiresAt.After(c.now().Add(2 * time.Minute))
+}
+
+func (c *Controller) refreshModelserverToken(ctx context.Context) error {
+	if c.d.RefreshModelserverToken == nil {
+		return errors.New("console: modelserver token refresh unavailable")
+	}
+	return c.d.RefreshModelserverToken(ctx)
+}
+
+func (c *Controller) now() time.Time {
+	if c.d.Now != nil {
+		return c.d.Now()
+	}
+	return time.Now().UTC()
+}
+
 func (c *Controller) applyModelserverAuthState(st *state.State, msToken string, out *State) {
 	if st == nil || out == nil || !st.Onboarding.HasCompleted("modelserver_login") {
 		return
@@ -232,7 +390,29 @@ func markModelserverReconnect(out *State) {
 	out.Modelserver.AuthMessage = "大模型连接已失效，请重新连接。"
 }
 
+func (c *Controller) applyAgentserverAuthState(st *state.State, asToken string, out *State) {
+	if st == nil || out == nil || !st.Onboarding.HasCompleted("agentserver_login") {
+		return
+	}
+	if asToken == "" {
+		markAgentserverReconnect(out)
+	}
+}
+
+func markAgentserverReconnect(out *State) {
+	out.Agentserver.ReconnectRequired = true
+	out.Agentserver.AuthMessage = "星池工作区连接已失效，请重新连接。"
+}
+
 func isModelserverAuthError(err error) bool {
+	return isAuthError(err)
+}
+
+func isAgentserverAuthError(err error) bool {
+	return isAuthError(err)
+}
+
+func isAuthError(err error) bool {
 	if err == nil {
 		return false
 	}
@@ -261,6 +441,22 @@ func frontendName(mode state.FrontendMode) string {
 		return "极简界面"
 	}
 	return "Codex Desktop"
+}
+
+func (c *Controller) agentserverWorkspaceID() string {
+	if c.d.State == nil {
+		return ""
+	}
+	st, err := c.d.State.Load()
+	if err != nil || st == nil {
+		return ""
+	}
+	return strings.TrimSpace(st.Agentserver.WorkspaceID)
+}
+
+func slaveRemoteURL(baseURL, workspaceID, sandboxID string) string {
+	base := strings.TrimRight(defaultString(strings.TrimSpace(baseURL), slave.DefaultServerURL), "/")
+	return base + "/w/" + url.PathEscape(workspaceID) + "/sandboxes/" + url.PathEscape(sandboxID)
 }
 
 func defaultString(v, fallback string) string {

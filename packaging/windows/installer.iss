@@ -45,10 +45,15 @@ Source: "..\..\dist\windows\agentctl.exe";          DestDir: "{app}"; Flags: ign
 Source: "..\..\dist\windows\open-folder.exe";       DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\uninstall.exe";         DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\token-refresher.exe";   DestDir: "{app}"; Flags: ignoreversion
-Source: "..\..\dist\windows\driver-agent.exe";      DestDir: "{app}"; Flags: ignoreversion
 ; Bundled offline payloads
+Source: "..\..\dist\cache\loom\v0.0.3\driver-agent.windows-amd64.exe"; \
+    DestDir: "{app}"; DestName: "driver-agent.exe"; Flags: ignoreversion
+Source: "..\..\dist\cache\loom\v0.0.3\slave-agent.windows-amd64.exe"; \
+    DestDir: "{app}"; DestName: "slave-agent.exe"; Flags: ignoreversion
 Source: "..\..\dist\cache\rust-v0.136.0\codex-x86_64-pc-windows-msvc.exe"; \
     DestDir: "{app}"; DestName: "codex.exe"; Flags: ignoreversion
+Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
+    DestDir: "{app}"; DestName: "codex-desktop-installer.exe"; Flags: ignoreversion
 Source: "..\..\dist\cache\vscode\1.96.0\VSCodeUserSetup-x64-1.96.0.exe"; \
     DestDir: "{app}"; DestName: "vscode-installer.exe"; Flags: ignoreversion
 ; Bundled VS Code extension
@@ -63,6 +68,7 @@ Source: "install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-vscode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "write-install-mode.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "machine.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "vscode-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -77,15 +83,106 @@ Filename: "{app}\{#MyAppExeName}"; \
     Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+var
+  ComputerNamePage: TInputQueryWizardPage;
+
 function ShouldInstallCodexDesktop(): Boolean;
 begin
   Result := not WizardIsTaskSelected('minimalvscode');
+end;
+
+function GetMachinePath(): String;
+var
+  UserProfile: String;
+begin
+  UserProfile := GetEnv('USERPROFILE');
+  if UserProfile = '' then begin
+    UserProfile := ExpandConstant('{userappdata}');
+  end;
+  Result := AddBackslash(UserProfile) + '.agentserver-vscode\machine.json';
+end;
+
+function JsonStringValue(Source, Key: String): String;
+var
+  Marker: String;
+  Rest: String;
+  P: Integer;
+  Q: Integer;
+begin
+  Result := '';
+  Marker := '"' + Key + '"';
+  P := Pos(Marker, Source);
+  if P = 0 then begin
+    Exit;
+  end;
+  Rest := Copy(Source, P + Length(Marker), Length(Source));
+  P := Pos(':', Rest);
+  if P = 0 then begin
+    Exit;
+  end;
+  Rest := Copy(Rest, P + 1, Length(Rest));
+  P := Pos('"', Rest);
+  if P = 0 then begin
+    Exit;
+  end;
+  Rest := Copy(Rest, P + 1, Length(Rest));
+  Q := Pos('"', Rest);
+  if Q = 0 then begin
+    Exit;
+  end;
+  Result := Copy(Rest, 1, Q - 1);
+  StringChangeEx(Result, '\"', '"', True);
+end;
+
+function GetExistingComputerName(): String;
+var
+  Lines: TArrayOfString;
+  Body: String;
+  I: Integer;
+begin
+  Result := '';
+  if LoadStringsFromFile(GetMachinePath(), Lines) then begin
+    Body := '';
+    for I := 0 to GetArrayLength(Lines) - 1 do begin
+      Body := Body + Lines[I];
+    end;
+    Result := Trim(JsonStringValue(Body, 'computer_name'));
+  end;
+end;
+
+function GetInitialComputerName(): String;
+begin
+  Result := GetExistingComputerName();
+  if Result = '' then begin
+    Result := Trim(GetEnv('COMPUTERNAME'));
+  end;
+end;
+
+function GetChosenComputerName(): String;
+begin
+  if WizardSilent then begin
+    Result := GetInitialComputerName();
+  end else begin
+    Result := Trim(ComputerNamePage.Values[0]);
+    if Result = '' then begin
+      Result := GetInitialComputerName();
+    end;
+  end;
 end;
 
 function PowerShellQuote(Value: String): String;
 begin
   StringChangeEx(Value, '''', '''''', True);
   Result := '''' + Value + '''';
+end;
+
+function SaveUTF8Text(Path, Text: String): Boolean;
+var
+  Lines: TArrayOfString;
+begin
+  SetArrayLength(Lines, 1);
+  Lines[0] := Text;
+  Result := SaveStringsToUTF8FileWithoutBOM(Path, Lines, False);
 end;
 
 function FormatDuration(Seconds: Integer): String;
@@ -222,9 +319,18 @@ begin
   ScriptBody :=
     '$ErrorActionPreference = ''Stop''' + #13#10 +
     '$installDir = ' + PowerShellQuote(ExpandConstant('{app}')) + #13#10 +
-    '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''codex.exe'')' + #13#10 +
+    '$installRoot = [System.IO.Path]::GetFullPath($installDir).TrimEnd(''\'')' + #13#10 +
+    'if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {' + #13#10 +
+    '  $localAppDataRoot = ' + PowerShellQuote(ExpandConstant('{localappdata}\agentserver-vscode')) + #13#10 +
+    '} else {' + #13#10 +
+    '  $localAppDataRoot = Join-Path $env:LOCALAPPDATA ''agentserver-vscode''' + #13#10 +
+    '}' + #13#10 +
+    '$codexBin = Join-Path $localAppDataRoot ''bin\codex.exe''' + #13#10 +
+    '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''slave-agent.exe'', ''codex.exe'')' + #13#10 +
     '$filter = {' + #13#10 +
-    '  $_.ExecutablePath -and ($names -contains $_.Name) -and $_.ExecutablePath -like ($installDir + ''*'')' + #13#10 +
+    '  if (-not $_.ExecutablePath) { return $false }' + #13#10 +
+    '  $exe = [System.IO.Path]::GetFullPath($_.ExecutablePath)' + #13#10 +
+    '  (($names -contains $_.Name) -and $exe.StartsWith($installRoot + ''\'', [System.StringComparison]::OrdinalIgnoreCase)) -or (($_.Name -eq ''codex.exe'') -and ($exe -ieq $codexBin))' + #13#10 +
     '}' + #13#10 +
     '$procs = @(Get-CimInstance Win32_Process | Where-Object $filter)' + #13#10 +
     'foreach ($p in $procs) {' + #13#10 +
@@ -254,20 +360,82 @@ begin
   end;
 end;
 
+procedure StageBundledCodexForLocalSlaves();
+var
+  LocalAppData: String;
+  CodexBinDir: String;
+  CodexSrc: String;
+  CodexDst: String;
+begin
+  LocalAppData := GetEnv('LOCALAPPDATA');
+  if LocalAppData = '' then begin
+    LocalAppData := ExpandConstant('{localappdata}');
+  end;
+
+  CodexSrc := ExpandConstant('{app}\codex.exe');
+  CodexBinDir := AddBackslash(LocalAppData) + 'agentserver-vscode\bin';
+  CodexDst := AddBackslash(CodexBinDir) + 'codex.exe';
+
+  if not FileExists(CodexSrc) then begin
+    RaiseException('缺少 codex.exe，无法准备本地 slave。');
+  end;
+  if not ForceDirectories(CodexBinDir) then begin
+    RaiseException('无法创建 codex.exe 目录：' + CodexBinDir);
+  end;
+  if not FileCopy(CodexSrc, CodexDst, False) then begin
+    RaiseException('无法复制 codex.exe 到：' + CodexDst);
+  end;
+end;
+
+procedure InitializeWizard();
+begin
+  ComputerNamePage := CreateInputQueryPage(
+    wpSelectDir,
+    '电脑名称',
+    '设置这台电脑在星池指挥官中的名称',
+    '默认读取已有电脑名称；安装时可修改，machine_id 会保持不变。');
+  ComputerNamePage.Add('电脑名称:', False);
+  ComputerNamePage.Values[0] := GetInitialComputerName();
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if (CurPageID = ComputerNamePage.ID) and (Trim(ComputerNamePage.Values[0]) = '') then begin
+    MsgBox('电脑名称不能为空。', mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ModePath: String;
+  MachinePath: String;
+  ComputerName: String;
+  ComputerNamePath: String;
 begin
   if CurStep <> ssPostInstall then begin
     Exit;
   end;
 
+  MachinePath := GetMachinePath();
+  ComputerName := GetChosenComputerName();
+  ComputerNamePath := ExpandConstant('{tmp}\agentserver-machine-name.txt');
+  DeleteFile(ComputerNamePath);
+  if not SaveUTF8Text(ComputerNamePath, ComputerName) then begin
+    RaiseException('无法保存电脑名称。');
+  end;
+  RunEstimatedPowerShellStep('machine', '正在初始化电脑名称...', 'machine.ps1',
+    '-MachinePath ' + PowerShellQuote(MachinePath) + ' -ComputerNamePath ' + PowerShellQuote(ComputerNamePath), 10);
+
+  StageBundledCodexForLocalSlaves();
+
   ModePath := ExpandConstant('{app}\install-mode.json');
   if ShouldInstallCodexDesktop then begin
     RunEstimatedPowerShellStep('codex-mode', '正在准备 Codex Desktop 模式...', 'write-install-mode.ps1',
       '-Mode ' + PowerShellQuote('codex_desktop') + ' -Path ' + PowerShellQuote(ModePath), 10);
-    RunEstimatedPowerShellStep('codex-install', '正在安装 Codex Desktop（通过 Microsoft Store，可能需要几分钟，请勿关闭）...', 'ensure-codex-desktop.ps1',
-      '', 240);
+    RunEstimatedPowerShellStep('codex-install', '正在安装 Codex Desktop（请在弹出的安装器中完成安装，请勿关闭）...', 'ensure-codex-desktop.ps1',
+      '', 900);
   end else begin
     RunEstimatedPowerShellStep('vscode-mode', '正在准备极简风模式...', 'write-install-mode.ps1',
       '-Mode ' + PowerShellQuote('minimal_vscode') + ' -Path ' + PowerShellQuote(ModePath), 10);

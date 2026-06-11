@@ -17,6 +17,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
@@ -25,14 +27,17 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/env"
+	"github.com/agentserver/agentserver-pkg/internal/folderpicker"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/launchprep"
+	"github.com/agentserver/agentserver-pkg/internal/loom"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/process"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 	"github.com/agentserver/agentserver-pkg/internal/tray"
@@ -184,6 +189,10 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	if openBrowser == nil {
 		openBrowser = browser.Open
 	}
+	slaveManager, err := newCompletedSlaveManager(in)
+	if err != nil {
+		return err
+	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -196,14 +205,24 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		MS:                    modelserver.New("https://codeapi.cs.ac.cn"),
 		MSProxy:               modelserver.New("https://code.ai.cs.ac.cn"),
 		AS:                    agentserver.New("https://agent.cs.ac.cn"),
+		Slaves:                slaveManager,
 		ModelserverWebBaseURL: "https://code.cs.ac.cn",
-		OpenURL:               openBrowser,
+		RefreshModelserverToken: func(ctx context.Context) error {
+			_, err := tokenrefresh.RefreshOnce(ctx, tokenrefresh.Options{
+				Secrets: sec,
+				OAuth:   modelserver.OAuthConfig(),
+			})
+			return err
+		},
+		OpenURL:      openBrowser,
+		SelectFolder: folderpicker.Select,
 		OpenFrontend: func(ctx context.Context) error {
 			current, err := in.State.Load()
 			if err != nil {
 				return err
 			}
 			return launchCompletedFrontend(ctx, current, in.Paths, sec,
+				in.InstallDir,
 				joinExe(in.InstallDir, "token-refresher.exe"),
 				joinExe(in.InstallDir, "agentserver-vscode.vsix"),
 				nil)
@@ -215,6 +234,8 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	srv.Handler = ui.NewServerWithConsole(newCompletedConsoleOrchestrator(completedOrchestratorInput{
 		State:                 in.State,
 		Secrets:               sec,
+		Paths:                 in.Paths,
+		InstallDir:            in.InstallDir,
 		MSOAuth:               modelserver.OAuthConfig(),
 		OpenBrowser:           func(url string) { _ = openBrowser(url) },
 		TokenRefresherExePath: joinExe(in.InstallDir, "token-refresher.exe"),
@@ -283,6 +304,43 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		return nil
 	}
 	return err
+}
+
+func newCompletedSlaveManager(in completedServeInput) (*slave.Manager, error) {
+	deps, err := completedSlaveManagerDeps(in)
+	if err != nil {
+		return nil, err
+	}
+	return slave.NewManager(deps), nil
+}
+
+func completedSlaveManagerDeps(in completedServeInput) (slave.ManagerDeps, error) {
+	machines := slave.NewMachineStore(in.Paths.MachineFile)
+	if _, err := machines.Ensure(completedComputerName()); err != nil {
+		return slave.ManagerDeps{}, fmt.Errorf("ensure machine identity: %w", err)
+	}
+	return slave.ManagerDeps{
+		Machines:  machines,
+		Registry:  slave.NewRegistry(in.Paths.SlavesFile, in.Paths.SlavesDir),
+		SlaveExe:  joinExe(in.InstallDir, "slave-agent.exe"),
+		ServerURL: "https://agent.cs.ac.cn",
+		CodexBin:  in.Paths.CodexExePath,
+		OpenAuthURL: func(url string) {
+			_ = browser.Open(url)
+		},
+	}, nil
+}
+
+func completedComputerName() string {
+	if name := strings.TrimSpace(os.Getenv("COMPUTERNAME")); name != "" {
+		return name
+	}
+	if hostname, err := os.Hostname(); err == nil {
+		if name := strings.TrimSpace(hostname); name != "" {
+			return name
+		}
+	}
+	return "local-computer"
 }
 
 const trayShutdownTimeout = 2 * time.Second
@@ -371,20 +429,56 @@ type completedStateOrchestrator struct {
 type completedOrchestratorInput struct {
 	State                 *state.Store
 	Secrets               secrets.Store
+	Paths                 paths.Paths
+	InstallDir            string
 	MSOAuth               oauth.AuthCodeConfig
+	ASOAuth               oauth.Config
 	OpenBrowser           func(string)
 	TokenRefresherExePath string
 }
 
 func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestrator {
+	asBaseURL := completedAgentserverBaseURL(in.State)
+	asOAuth := in.ASOAuth
+	if asOAuth.Endpoint == "" {
+		asOAuth = defaultAgentserverOAuthConfig(asBaseURL)
+	}
+	loomDriverPath := ""
+	if in.InstallDir != "" {
+		loomDriverPath = joinExe(in.InstallDir, "driver-agent.exe")
+	}
+	loomConfigPath := ""
+	if in.Paths.UserHome != "" {
+		loomConfigPath = filepath.Join(in.Paths.UserHome, ".config", "multi-agent", "driver.yaml")
+	}
 	return ui.NewRealOrchestrator(ui.Deps{
-		State:                 in.State,
-		Secrets:               in.Secrets,
-		MS:                    modelserver.New("https://codeapi.cs.ac.cn"),
-		MSOAuth:               in.MSOAuth,
-		OpenBrowser:           in.OpenBrowser,
-		TokenRefresherExePath: in.TokenRefresherExePath,
+		State:                             in.State,
+		Secrets:                           in.Secrets,
+		MS:                                modelserver.New("https://codeapi.cs.ac.cn"),
+		AS:                                agentserver.New(asBaseURL),
+		MSOAuth:                           in.MSOAuth,
+		ASOAuth:                           asOAuth,
+		CodexConfigPath:                   in.Paths.CodexConfigFile,
+		CodexDesktopGlobalStatePath:       in.Paths.CodexDesktopGlobalStateFile,
+		CodexDesktopComputerUseConfigPath: in.Paths.CodexDesktopComputerUseConfigFile,
+		CodexAbsPath:                      in.Paths.CodexExePath,
+		LoomDriverPath:                    loomDriverPath,
+		LoomConfigPath:                    loomConfigPath,
+		OpenBrowser:                       in.OpenBrowser,
+		TokenRefresherExePath:             in.TokenRefresherExePath,
 	})
+}
+
+func completedAgentserverBaseURL(store *state.Store) string {
+	const fallback = "https://agent.cs.ac.cn"
+	if store == nil {
+		return fallback
+	}
+	st, err := store.Load()
+	if err != nil || strings.TrimSpace(st.Agentserver.BaseURL) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(st.Agentserver.BaseURL)
 }
 
 func newCompletedStateOrchestrator(store *state.Store) ui.Orchestrator {
@@ -469,13 +563,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	// to Hydra. The CLI client `agentserver-agent-cli` is pre-registered
 	// by the Helm chart with grant=device_code, public (no secret),
 	// scopes=openid profile agent:register.
-	asOAuth := oauth.Config{
-		Endpoint:  "https://agent.cs.ac.cn",
-		AuthPath:  "/api/oauth2/device/auth",
-		TokenPath: "/api/oauth2/token",
-		ClientID:  "agentserver-agent-cli",
-		Scope:     "openid profile agent:register",
-	}
+	asOAuth := defaultAgentserverOAuthConfig("https://agent.cs.ac.cn")
 
 	installDir, err := os.Executable()
 	if err != nil {
@@ -545,6 +633,19 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	return err
 }
 
+func defaultAgentserverOAuthConfig(endpoint string) oauth.Config {
+	if strings.TrimSpace(endpoint) == "" {
+		endpoint = "https://agent.cs.ac.cn"
+	}
+	return oauth.Config{
+		Endpoint:  strings.TrimRight(strings.TrimSpace(endpoint), "/"),
+		AuthPath:  "/api/oauth2/device/auth",
+		TokenPath: "/api/oauth2/token",
+		ClientID:  "agentserver-agent-cli",
+		Scope:     "openid profile agent:register",
+	}
+}
+
 func launchCompletedInstall(ctx context.Context, codeExe string, p paths.Paths, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string) error {
 	if err := launchprep.PrepareVSCode(ctx, launchprep.Input{
 		CodeExe:          codeExe,
@@ -570,17 +671,20 @@ func startCompletedConsole(ctx context.Context, launcherExe string) error {
 	return cmd.Start()
 }
 
-func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string, codexOpen codexdesktop.Opener) error {
+func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, embeddedVSIXPath string, codexOpen codexdesktop.Opener) error {
 	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeMinimalVSCode {
 		if s.VSCode.Path == "" {
 			return fmt.Errorf("VS Code path unknown; rerun onboarding")
 		}
+		if err := configureCompletedLoomDriver(p, s, sec, installDir); err != nil {
+			return err
+		}
 		return launchCompletedInstall(ctx, s.VSCode.Path, p, sec, tokenRefresherExe, embeddedVSIXPath)
 	}
-	return launchCompletedCodexDesktop(ctx, p, sec, tokenRefresherExe, codexOpen)
+	return launchCompletedCodexDesktop(ctx, s, p, sec, installDir, tokenRefresherExe, codexOpen)
 }
 
-func launchCompletedCodexDesktop(ctx context.Context, p paths.Paths, sec secrets.Store, tokenRefresherExe string, opener codexdesktop.Opener) error {
+func launchCompletedCodexDesktop(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, opener codexdesktop.Opener) error {
 	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
 		return err
 	}
@@ -593,10 +697,145 @@ func launchCompletedCodexDesktop(ctx context.Context, p paths.Paths, sec secrets
 	); err != nil {
 		return err
 	}
+	if err := configureCompletedLoomDriver(p, s, sec, installDir); err != nil {
+		return err
+	}
 	if tokenRefresherExe != "" {
 		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
 	}
 	return codexdesktop.Launch(ctx, "", opener)
+}
+
+func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Store, installDir string) error {
+	if p.UserHome == "" || s == nil || sec == nil || installDir == "" {
+		return nil
+	}
+	driverPath := joinExe(installDir, "driver-agent.exe")
+	if _, err := os.Stat(driverPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat loom driver: %w", err)
+	}
+	loomConfigPath := filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml")
+	proxyToken := getSecretIfPresent(sec, "agentserver_ws_api_key")
+	tunnelToken := getSecretIfPresent(sec, "agentserver_tunnel_token")
+	if proxyToken == "" || tunnelToken == "" {
+		fallbackProxyToken, fallbackTunnelToken := readExistingLoomTokens(loomConfigPath)
+		if proxyToken == "" {
+			proxyToken = fallbackProxyToken
+		}
+		if tunnelToken == "" {
+			tunnelToken = fallbackTunnelToken
+		}
+	}
+	if proxyToken == "" || tunnelToken == "" {
+		return nil
+	}
+	serverURL := s.Agentserver.BaseURL
+	if serverURL == "" {
+		serverURL = "https://agent.cs.ac.cn"
+	}
+	serverName := "driver-local"
+	if s.InstallID != "" {
+		serverName = "driver-" + lastN(s.InstallID, 8)
+	}
+	if s.Agentserver.ShortID != "" {
+		serverName = "driver-" + s.Agentserver.ShortID
+	}
+	codexBin := completedDriverCodexBin(p, s)
+	if err := loom.WriteDriverConfig(loomConfigPath, loom.DriverConfig{
+		ServerURL:     serverURL,
+		ServerName:    serverName,
+		SandboxID:     s.Agentserver.SandboxID,
+		TunnelToken:   tunnelToken,
+		ProxyToken:    proxyToken,
+		WorkspaceID:   s.Agentserver.WorkspaceID,
+		WorkspaceName: s.Agentserver.WorkspaceName,
+		ShortID:       s.Agentserver.ShortID,
+		DisplayName:   "星池指挥官",
+		Description:   "星池指挥官本地协作驱动。",
+		CodexBin:      codexBin,
+		CodexWorkDir:  p.UserHome,
+	}); err != nil {
+		return fmt.Errorf("configure loom driver: %w", err)
+	}
+	if p.CodexConfigFile != "" {
+		if err := codex.UpdateMCPServer(p.CodexConfigFile, "driver", codex.MCPServer{
+			Command: driverPath,
+			Args:    []string{"serve-mcp", "--config", loomConfigPath},
+		}); err != nil {
+			return fmt.Errorf("configure codex mcp driver: %w", err)
+		}
+	}
+	return nil
+}
+
+func completedDriverCodexBin(p paths.Paths, s *state.State) string {
+	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeMinimalVSCode {
+		if p.CodexExePath != "" {
+			return p.CodexExePath
+		}
+		return "codex"
+	}
+	// Codex Desktop owns its CLI runtime; do not point the driver at the
+	// VS Code helper codex.exe staged under agentserver-vscode.
+	return "codex"
+}
+
+func getSecretIfPresent(sec secrets.Store, key string) string {
+	value, err := sec.Get(key)
+	if err != nil {
+		return ""
+	}
+	return value
+}
+
+func readExistingLoomTokens(path string) (proxyToken, tunnelToken string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		key, value, ok := parseSimpleYAMLScalar(line)
+		if !ok {
+			continue
+		}
+		switch key {
+		case "proxy_token":
+			proxyToken = value
+		case "tunnel_token":
+			tunnelToken = value
+		}
+	}
+	return proxyToken, tunnelToken
+}
+
+func parseSimpleYAMLScalar(line string) (key, value string, ok bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", "", false
+	}
+	parts := strings.SplitN(line, ":", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	key = strings.TrimSpace(parts[0])
+	raw := strings.TrimSpace(parts[1])
+	if key == "" || raw == "" {
+		return "", "", false
+	}
+	if unquoted, err := strconv.Unquote(raw); err == nil {
+		return key, unquoted, true
+	}
+	return key, raw, true
+}
+
+func lastN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
 }
 
 func execVSCode(codeExe string, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string) error {

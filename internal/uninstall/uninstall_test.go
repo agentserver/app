@@ -1,12 +1,17 @@
 package uninstall
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 )
 
 func TestRunRemovesProjectStateSecretsAndOpenAIEnv(t *testing.T) {
@@ -68,7 +73,177 @@ func TestRunRemovesProjectStateSecretsAndOpenAIEnv(t *testing.T) {
 	}
 }
 
+func TestRunStopsLocalSlaveAndInstallProcessesBeforeRemovingState(t *testing.T) {
+	dir := t.TempDir()
+	appDir := filepath.Join(dir, "app")
+	p := paths.Paths{
+		InstallRoot:      filepath.Join(dir, ".agentserver-vscode"),
+		SecretsFile:      filepath.Join(dir, ".agentserver-vscode", "secrets.json"),
+		SlavesFile:       filepath.Join(dir, ".agentserver-vscode", "slaves.json"),
+		SlavesDir:        filepath.Join(dir, ".agentserver-vscode", "slaves"),
+		LocalAppDataRoot: filepath.Join(dir, "local-appdata", "agentserver-vscode"),
+	}
+	if err := os.MkdirAll(filepath.Dir(p.SlavesFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	created := time.Unix(1, 0).UTC()
+	registry := []slave.Slave{
+		{ID: "running", Status: slave.StatusRunning, PID: 4242, CreatedAt: created, UpdatedAt: created},
+		{ID: "stopped", Status: slave.StatusStopped, CreatedAt: created, UpdatedAt: created},
+	}
+	writeJSONFile(t, p.SlavesFile, registry)
+
+	var stopped []struct {
+		pid int
+		exe string
+	}
+	var fallbackCalls []fallbackStopCall
+	var removed []string
+	err := Run(Options{
+		Paths:   p,
+		Secrets: secrets.New(p.SecretsFile),
+		AppDir:  appDir,
+		StopProcess: func(_ context.Context, pid int, expectedExe string) error {
+			stopped = append(stopped, struct {
+				pid int
+				exe string
+			}{pid: pid, exe: expectedExe})
+			if len(removed) > 0 {
+				t.Fatalf("stop process called after removal started: removed=%v", removed)
+			}
+			return nil
+		},
+		StopInstallProcesses: func(_ context.Context, dir string, names []string) error {
+			fallbackCalls = append(fallbackCalls, fallbackStopCall{dir: dir, names: append([]string(nil), names...)})
+			if len(removed) > 0 {
+				t.Fatalf("fallback stop called after removal started: removed=%v", removed)
+			}
+			return nil
+		},
+		DeleteEnv: func(string) error { return nil },
+		RemoveAll: func(path string) error {
+			removed = append(removed, path)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(stopped) != 1 {
+		t.Fatalf("stopped=%+v, want exactly one running slave PID", stopped)
+	}
+	if stopped[0].pid != 4242 || stopped[0].exe != filepath.Join(appDir, "slave-agent.exe") {
+		t.Fatalf("stopped=%+v", stopped)
+	}
+	appCall, ok := findFallbackCall(fallbackCalls, appDir)
+	if !ok {
+		t.Fatalf("fallback calls=%+v, want app dir %s", fallbackCalls, appDir)
+	}
+	for _, want := range []string{"slave-agent.exe", "driver-agent.exe", "token-refresher.exe"} {
+		if !containsString(appCall.names, want) {
+			t.Fatalf("fallback process names missing %q: %v", want, appCall.names)
+		}
+	}
+	localCall, ok := findFallbackCall(fallbackCalls, p.LocalAppDataRoot)
+	if !ok || !containsString(localCall.names, "codex.exe") {
+		t.Fatalf("fallback calls=%+v, want local codex stop under %s", fallbackCalls, p.LocalAppDataRoot)
+	}
+}
+
+func TestRunStopsLocalAppDataCodexBeforeRemovingState(t *testing.T) {
+	dir := t.TempDir()
+	appDir := filepath.Join(dir, "app")
+	localRoot := filepath.Join(dir, "local-appdata", "agentserver-vscode")
+	p := paths.Paths{
+		InstallRoot:      filepath.Join(dir, ".agentserver-vscode"),
+		SecretsFile:      filepath.Join(dir, ".agentserver-vscode", "secrets.json"),
+		LocalAppDataRoot: localRoot,
+	}
+	var fallbackCalls []fallbackStopCall
+	var removed []string
+
+	err := Run(Options{
+		Paths:   p,
+		Secrets: secrets.New(p.SecretsFile),
+		AppDir:  appDir,
+		StopInstallProcesses: func(_ context.Context, dir string, names []string) error {
+			fallbackCalls = append(fallbackCalls, fallbackStopCall{dir: dir, names: append([]string(nil), names...)})
+			if len(removed) > 0 {
+				t.Fatalf("fallback stop called after removal started: removed=%v", removed)
+			}
+			return nil
+		},
+		DeleteEnv: func(string) error { return nil },
+		RemoveAll: func(path string) error {
+			removed = append(removed, path)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, call := range fallbackCalls {
+		if call.dir == localRoot && containsString(call.names, "codex.exe") {
+			return
+		}
+	}
+	t.Fatalf("fallback calls=%+v, want codex.exe stopped under %s", fallbackCalls, localRoot)
+}
+
+func TestWindowsFallbackStopWaitsForProcessesToExit(t *testing.T) {
+	body, err := os.ReadFile("process_stop_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"Wait-Process",
+		"$deadline = (Get-Date).AddSeconds(",
+		"Get-CimInstance Win32_Process | Where-Object $filter",
+		"} while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline)",
+		"if ($remaining.Count -gt 0)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("Windows fallback stop should wait for orphan install processes to exit; missing %q in:\n%s", want, s)
+		}
+	}
+}
+
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func writeJSONFile(t *testing.T, path string, v any) {
+	t.Helper()
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, got := range values {
+		if got == want {
+			return true
+		}
+	}
+	return false
+}
+
+type fallbackStopCall struct {
+	dir   string
+	names []string
+}
+
+func findFallbackCall(calls []fallbackStopCall, dir string) (fallbackStopCall, bool) {
+	for _, call := range calls {
+		if call.dir == dir {
+			return call, true
+		}
+	}
+	return fallbackStopCall{}, false
 }

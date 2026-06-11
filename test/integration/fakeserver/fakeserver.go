@@ -5,6 +5,7 @@
 package fakeserver
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -46,6 +47,8 @@ func Start() *Server {
 	mux.HandleFunc("/oauth2/token", s.handlePKCETokenSwap) // PKCE: POST authorization_code
 
 	// ---- agentserver routes ----
+	mux.HandleFunc("/api/agent/register", s.handleAgentRegister)
+	mux.HandleFunc("/api/agent/whoami", s.handleAgentWhoami)
 	mux.HandleFunc("/api/workspaces", s.handleWorkspaces)
 	mux.HandleFunc("/api/workspaces/", s.handleWorkspacesSub) // .../api-keys
 
@@ -88,6 +91,31 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"access_token": "fake-access", "token_type": "Bearer", "expires_in": 3600,
+	})
+}
+
+func (s *Server) handleAgentRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"sandbox_id":   "sandbox-1",
+		"tunnel_token": "tunnel-token",
+		"proxy_token":  "sandbox-proxy-token",
+		"workspace_id": "ws-1",
+		"short_id":     "short-1",
+	})
+}
+
+func (s *Server) handleAgentWhoami(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"workspace_id":   "ws-1",
+		"workspace_name": "Default workspace",
 	})
 }
 
@@ -218,11 +246,16 @@ func (s *Server) handlePKCETokenSwap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{
-		"access_token":  "fake-pkce-at",
+		"access_token":  fakeJWT(map[string]any{"project_id": "proj-1"}),
 		"token_type":    "Bearer",
 		"expires_in":    3600,
 		"refresh_token": "fake-pkce-rt",
 	})
+}
+
+func fakeJWT(claims map[string]any) string {
+	payload, _ := json.Marshal(claims)
+	return "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

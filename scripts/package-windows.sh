@@ -7,6 +7,18 @@ CODEX_RELEASE="rust-v0.136.0"
 CODEX_ASSET="codex-x86_64-pc-windows-msvc.exe"
 CODEX_URL="https://github.com/openai/codex/releases/download/$CODEX_RELEASE/$CODEX_ASSET"
 CODEX_CACHE="dist/cache/$CODEX_RELEASE/$CODEX_ASSET"
+CODEX_DESKTOP_PRODUCT_ID="9PLM9XGG6VKS"
+CODEX_DESKTOP_ASSET="Codex Installer.exe"
+CODEX_DESKTOP_URL="https://get.microsoft.com/installer/download/$CODEX_DESKTOP_PRODUCT_ID?cid=website_cta_psi"
+CODEX_DESKTOP_CACHE="dist/cache/codex-desktop/$CODEX_DESKTOP_PRODUCT_ID/$CODEX_DESKTOP_ASSET"
+LOOM_RELEASE="v0.0.3"
+LOOM_BASE_URL="https://github.com/agentserver/loom/releases/download/$LOOM_RELEASE"
+LOOM_DRIVER_ASSET="driver-agent.windows-amd64.exe"
+LOOM_DRIVER_SHA256="502d356c37b63a9f17e7ab147000b7e1e6bfa0dd4893a50997c59c69ac5ad021"
+LOOM_DRIVER_CACHE="dist/cache/loom/$LOOM_RELEASE/$LOOM_DRIVER_ASSET"
+LOOM_SLAVE_ASSET="slave-agent.windows-amd64.exe"
+LOOM_SLAVE_SHA256="965197e9a78ef61efb7d26da1bebe570fdf5e4f6743ca810c16f21fde369af46"
+LOOM_SLAVE_CACHE="dist/cache/loom/$LOOM_RELEASE/$LOOM_SLAVE_ASSET"
 VSCODE_MANIFEST="packaging/windows/vscode-manifest.json"
 
 eval "$(
@@ -43,6 +55,44 @@ verify_vscode_cache() {
   local sum
   sum=$(sha256sum "$VSCODE_CACHE" | awk '{print $1}')
   [[ "$sum" == "$VSCODE_SHA256" ]]
+}
+
+verify_sha256() {
+  local path expected sum
+  path="$1"
+  expected="$2"
+  [[ -f "$path" ]] || return 1
+  sum=$(sha256sum "$path" | awk '{print $1}')
+  [[ "$sum" == "$expected" ]]
+}
+
+download_loom_asset() {
+  local asset cache expected url sum
+  asset="$1"
+  cache="$2"
+  expected="$3"
+  url="$LOOM_BASE_URL/$asset"
+  if verify_sha256 "$cache" "$expected"; then
+    echo "$asset: $(stat -c%s "$cache") bytes (cached)"
+    return 0
+  fi
+  mkdir -p "$(dirname "$cache")"
+  rm -f "$cache" "$cache.part"
+  echo "Fetching loom $asset ..."
+  echo "  URL: $url"
+  if ! curl --fail --location --retry 2 --retry-delay 2 --output "$cache.part" "$url"; then
+    rm -f "$cache.part"
+    echo "ERROR: failed to download loom $asset" >&2
+    exit 2
+  fi
+  sum=$(sha256sum "$cache.part" | awk '{print $1}')
+  if [[ "$sum" != "$expected" ]]; then
+    rm -f "$cache.part"
+    echo "ERROR: loom $asset SHA256 mismatch: got $sum want $expected" >&2
+    exit 2
+  fi
+  mv "$cache.part" "$cache"
+  echo "$asset: $(stat -c%s "$cache") bytes (cached)"
 }
 
 download_vscode_installer() {
@@ -87,6 +137,23 @@ fi
 codex_size=$(stat -c%s "$CODEX_CACHE")
 echo "codex.exe: $codex_size bytes (cached)"
 
+if [[ ! -f "$CODEX_DESKTOP_CACHE" ]]; then
+  mkdir -p "$(dirname "$CODEX_DESKTOP_CACHE")"
+  echo "Fetching Codex Desktop installer ..."
+  echo "  URL: $CODEX_DESKTOP_URL"
+  if ! curl --fail --location --retry 2 --retry-delay 2 --output "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_URL"; then
+    rm -f "$CODEX_DESKTOP_CACHE.part"
+    echo "ERROR: failed to download Codex Desktop installer" >&2
+    exit 2
+  fi
+  mv "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_CACHE"
+fi
+codex_desktop_size=$(stat -c%s "$CODEX_DESKTOP_CACHE")
+echo "Codex Desktop installer: $codex_desktop_size bytes (cached)"
+
+download_loom_asset "$LOOM_DRIVER_ASSET" "$LOOM_DRIVER_CACHE" "$LOOM_DRIVER_SHA256"
+download_loom_asset "$LOOM_SLAVE_ASSET" "$LOOM_SLAVE_CACHE" "$LOOM_SLAVE_SHA256"
+
 if ! verify_vscode_cache; then
   mkdir -p "$(dirname "$VSCODE_CACHE")"
   rm -f "$VSCODE_CACHE"
@@ -124,18 +191,21 @@ echo "vscode installer: $vscode_size bytes (cached)"
 for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          dist/windows/agentctl.exe dist/windows/open-folder.exe \
          dist/windows/uninstall.exe dist/windows/token-refresher.exe \
-         dist/windows/driver-agent.exe \
          extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \
          internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
          packaging/windows/ensure-vscode.ps1 \
          packaging/windows/ensure-codex-desktop.ps1 \
          packaging/windows/write-install-mode.ps1 \
+         packaging/windows/machine.ps1 \
          packaging/windows/vscode-manifest.json \
          packaging/windows/ChineseSimplified.isl \
          packaging/windows/icon.ico \
          packaging/windows/LICENSE.zh.txt \
          "$VSCODE_CACHE" \
+         "$CODEX_DESKTOP_CACHE" \
+         "$LOOM_DRIVER_CACHE" \
+         "$LOOM_SLAVE_CACHE" \
          "$CODEX_CACHE"; do
   if [[ ! -e "$f" ]]; then
     echo "missing: $f"

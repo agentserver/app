@@ -11,5 +11,8 @@ func OAuthConfig() oauth.AuthCodeConfig {
 		Scope:        "project:inference offline_access",
 		CallbackPath: "/oauth/modelserver/callback",
 		Ports:        []int{53428, 53429, 53430, 53431, 53432, 53433, 53434, 53435},
+		ExtraAuthParams: map[string]string{
+			"prompt": "consent",
+		},
 	}
 }

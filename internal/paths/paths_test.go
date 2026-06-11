@@ -34,6 +34,22 @@ func TestPathsIncludesConsoleRuntimeFiles(t *testing.T) {
 	}
 }
 
+func TestPathsIncludesSlaveManagementFiles(t *testing.T) {
+	p, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.MachineFile != filepath.Join(p.InstallRoot, "machine.json") {
+		t.Fatalf("MachineFile=%q", p.MachineFile)
+	}
+	if p.SlavesFile != filepath.Join(p.InstallRoot, "slaves.json") {
+		t.Fatalf("SlavesFile=%q", p.SlavesFile)
+	}
+	if p.SlavesDir != filepath.Join(p.InstallRoot, "slaves") {
+		t.Fatalf("SlavesDir=%q", p.SlavesDir)
+	}
+}
+
 func TestPathsIncludesCodexDesktopLocaleFiles(t *testing.T) {
 	p, err := Default()
 	if err != nil {

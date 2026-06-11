@@ -98,6 +98,50 @@ function Remove-RegistrySubKeyTree([string]$SubKey) {
     }
 }
 
+function Stop-RunningAgentserverProcesses {
+    Write-Step "Stopping running $AppDisplayName processes..."
+
+    $names = @(
+        'launcher.exe',
+        'onboarding-server.exe',
+        'agentctl.exe',
+        'open-folder.exe',
+        'token-refresher.exe',
+        'driver-agent.exe',
+        'slave-agent.exe',
+        'codex.exe'
+    )
+    $installRoot = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $localAppDataRoot = Join-Path $env:USERPROFILE 'AppData\Local\agentserver-vscode'
+    } else {
+        $localAppDataRoot = Join-Path $env:LOCALAPPDATA 'agentserver-vscode'
+    }
+    $codexBin = Join-Path $localAppDataRoot 'bin\codex.exe'
+    $filter = {
+        if (-not $_.ExecutablePath) { return $false }
+        $exe = [System.IO.Path]::GetFullPath($_.ExecutablePath)
+        $inInstallDir = ($names -contains $_.Name) -and $exe.StartsWith($installRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)
+        $isLocalCodex = ($_.Name -eq 'codex.exe') -and ($exe -ieq $codexBin)
+        return $inInstallDir -or $isLocalCodex
+    }
+
+    $procs = @(Get-CimInstance Win32_Process | Where-Object $filter)
+    foreach ($p in $procs) {
+        Stop-Process -Id $p.ProcessId -Force -PassThru -ErrorAction SilentlyContinue |
+            Wait-Process -Timeout 2 -ErrorAction SilentlyContinue
+    }
+    $deadline = (Get-Date).AddSeconds(8)
+    do {
+        Start-Sleep -Milliseconds 250
+        $remaining = @(Get-CimInstance Win32_Process | Where-Object $filter)
+    } while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline)
+    if ($remaining.Count -gt 0) {
+        $ids = ($remaining | ForEach-Object { $_.ProcessId }) -join ', '
+        throw "Timed out waiting for running $AppDisplayName processes to exit: $ids"
+    }
+}
+
 function Do-Uninstall {
     Write-Step "Uninstalling $AppDisplayName..."
 
@@ -156,10 +200,13 @@ $required = @(
     'uninstall.exe',
     'token-refresher.exe',
     'driver-agent.exe',
+    'slave-agent.exe',
+    'codex-desktop-installer.exe',
     'agentserver-vscode.vsix',
     'ensure-vscode.ps1',
     'ensure-codex-desktop.ps1',
     'write-install-mode.ps1',
+    'machine.ps1',
     'vscode-manifest.json',
     'icon.ico'
 )
@@ -168,6 +215,8 @@ foreach ($f in $required) {
         throw "Missing payload file: $f (expected in $srcDir)"
     }
 }
+
+Stop-RunningAgentserverProcesses
 
 # Mkdir + copy
 if (-not (Test-Path $InstallDir)) {
@@ -192,24 +241,48 @@ try {
     $ShellIconPath = $IconPath
 }
 
-if ($MinimalVSCode) {
-    # Bundled codex.exe — copy into the expected per-user bin dir so
-    # ConfigureVSCode finds it and skips the 246MB GitHub download.
-    $codexSrc = Join-Path $srcDir 'codex.exe'
-    $codexBinDir = Join-Path $env:LOCALAPPDATA "agentserver-vscode\bin"
-    $codexDst = Join-Path $codexBinDir 'codex.exe'
-    if (Test-Path $codexSrc) {
-        if (-not (Test-Path $codexBinDir)) {
-            New-Item -ItemType Directory -Force -Path $codexBinDir | Out-Null
+$MachinePath = Join-Path $env:USERPROFILE '.agentserver-vscode\machine.json'
+$InitialComputerName = $env:COMPUTERNAME
+if (Test-Path -LiteralPath $MachinePath) {
+    try {
+        $existing = Get-Content -Raw -LiteralPath $MachinePath | ConvertFrom-Json
+        $existingComputerName = [string]$existing.computer_name
+        if (-not [string]::IsNullOrWhiteSpace($existingComputerName)) {
+            $InitialComputerName = $existingComputerName.Trim()
         }
-        Write-Step "Staging bundled codex.exe to $codexDst ..."
-        Copy-Item $codexSrc $codexDst -Force
-        $sz = (Get-Item $codexDst).Length
-        Write-Step ("codex.exe copied ({0:N0} bytes, {1:N1} MB)" -f $sz, ($sz / 1MB))
-    } else {
-        Write-Host "Note: codex.exe NOT bundled in this zip; first launch will fetch from GitHub."
+    } catch {
+        Write-Host "Note: failed to inspect existing machine.json; using Windows computer name as default."
     }
+}
+if (-not $Silent) {
+    $machinePrompt = "Computer name [$InitialComputerName]"
+    $machineInput = Read-Host $machinePrompt
+    if (-not [string]::IsNullOrWhiteSpace($machineInput)) {
+        $InitialComputerName = $machineInput.Trim()
+    }
+}
 
+Write-Step "Initializing computer name..."
+& (Join-Path $InstallDir 'machine.ps1') -MachinePath $MachinePath -ComputerName $InitialComputerName
+
+# Bundled codex.exe - copy into the expected per-user bin dir. Minimal VS Code
+# and local slave configs use this stable path in every frontend mode.
+$codexSrc = Join-Path $srcDir 'codex.exe'
+$codexBinDir = Join-Path $env:LOCALAPPDATA "agentserver-vscode\bin"
+$codexDst = Join-Path $codexBinDir 'codex.exe'
+if (Test-Path $codexSrc) {
+    if (-not (Test-Path $codexBinDir)) {
+        New-Item -ItemType Directory -Force -Path $codexBinDir | Out-Null
+    }
+    Write-Step "Staging bundled codex.exe to $codexDst ..."
+    Copy-Item $codexSrc $codexDst -Force
+    $sz = (Get-Item $codexDst).Length
+    Write-Step ("codex.exe copied ({0:N0} bytes, {1:N1} MB)" -f $sz, ($sz / 1MB))
+} else {
+    Write-Host "Note: codex.exe NOT bundled in this zip; first launch will fetch from GitHub."
+}
+
+if ($MinimalVSCode) {
     Write-Step "Writing install mode minimal_vscode..."
     & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'minimal_vscode' -Path (Join-Path $InstallDir 'install-mode.json')
     Write-Step "Ensuring VS Code is installed..."
@@ -218,19 +291,27 @@ if ($MinimalVSCode) {
     Write-Step "Writing install mode codex_desktop..."
     & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'codex_desktop' -Path (Join-Path $InstallDir 'install-mode.json')
     Write-Step "Ensuring Codex Desktop is installed..."
-    & (Join-Path $InstallDir 'ensure-codex-desktop.ps1')
+    & (Join-Path $InstallDir 'ensure-codex-desktop.ps1') -LocalInstallerPath (Join-Path $srcDir 'codex-desktop-installer.exe')
 }
 
 # Desktop shortcut
 Write-Step "Creating desktop shortcut..."
-$wsh = New-Object -ComObject WScript.Shell
-$shortcut = $wsh.CreateShortcut($DesktopLnk)
-$shortcut.TargetPath       = Join-Path $InstallDir 'launcher.exe'
-$shortcut.IconLocation     = $ShellIconPath + ',0'
-$shortcut.WorkingDirectory = $env:USERPROFILE
-$shortcut.Description      = '星池指挥官一键启动'
-$shortcut.Save()
-if (Test-Path $LegacyDesktopLnk) { Remove-Item $LegacyDesktopLnk -Force -ErrorAction SilentlyContinue }
+try {
+    $desktopDir = Split-Path -Parent $DesktopLnk
+    if (-not [string]::IsNullOrWhiteSpace($desktopDir) -and -not (Test-Path -LiteralPath $desktopDir)) {
+        New-Item -ItemType Directory -Force -Path $desktopDir | Out-Null
+    }
+    $wsh = New-Object -ComObject WScript.Shell
+    $shortcut = $wsh.CreateShortcut($DesktopLnk)
+    $shortcut.TargetPath       = Join-Path $InstallDir 'launcher.exe'
+    $shortcut.IconLocation     = $ShellIconPath + ',0'
+    $shortcut.WorkingDirectory = $env:USERPROFILE
+    $shortcut.Description      = '星池指挥官一键启动'
+    $shortcut.Save()
+    if (Test-Path $LegacyDesktopLnk) { Remove-Item $LegacyDesktopLnk -Force -ErrorAction SilentlyContinue }
+} catch {
+    Write-Host "Note: failed to create desktop shortcut: $($_.Exception.Message)" -ForegroundColor Yellow
+}
 
 # File/folder context menu (right-click on a file, folder, or folder background)
 Write-Step "Registering file and folder context menus..."

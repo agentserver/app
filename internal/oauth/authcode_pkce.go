@@ -22,14 +22,15 @@ var ErrInvalidGrant = errors.New("oauth: invalid_grant")
 // because the two flows share only the Token type — mixing them in one
 // struct invites silent misuse.
 type AuthCodeConfig struct {
-	Endpoint     string        // "https://codeapi.cs.ac.cn"
-	AuthPath     string        // "/oauth2/auth"
-	TokenPath    string        // "/oauth2/token"
-	ClientID     string        // "5321f7e6-3d79-4ac9-a742-04809dbf9025"
-	Scope        string        // "project:inference offline_access"
-	CallbackPath string        // "/oauth/modelserver/callback"
-	Ports        []int         // [53428..53435]
-	LoginTimeout time.Duration // upper bound on a single login (default 10m, set by StartListening)
+	Endpoint        string        // "https://codeapi.cs.ac.cn"
+	AuthPath        string        // "/oauth2/auth"
+	TokenPath       string        // "/oauth2/token"
+	ClientID        string        // "5321f7e6-3d79-4ac9-a742-04809dbf9025"
+	Scope           string        // "project:inference offline_access"
+	CallbackPath    string        // "/oauth/modelserver/callback"
+	Ports           []int         // [53428..53435]
+	LoginTimeout    time.Duration // upper bound on a single login (default 10m, set by StartListening)
+	ExtraAuthParams map[string]string
 }
 
 func (c AuthCodeConfig) AuthURL() string  { return joinURL(c.Endpoint, c.AuthPath) }
@@ -81,6 +82,14 @@ func buildAuthURL(cfg AuthCodeConfig, sess *PKCESession) string {
 	q.Set("state", sess.State)
 	q.Set("code_challenge", sess.Challenge)
 	q.Set("code_challenge_method", "S256")
+	for k, v := range cfg.ExtraAuthParams {
+		if k == "" || v == "" {
+			continue
+		}
+		if q.Get(k) == "" {
+			q.Set(k, v)
+		}
+	}
 	return cfg.AuthURL() + "?" + q.Encode()
 }
 

@@ -1,0 +1,49 @@
+//go:build windows
+
+package uninstall
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"strings"
+
+	"github.com/agentserver/agentserver-pkg/internal/process"
+)
+
+func stopInstallProcesses(ctx context.Context, appDir string, names []string) error {
+	if appDir == "" || len(names) == 0 {
+		return nil
+	}
+	script := `$ErrorActionPreference = 'Stop'
+$installDir = [System.IO.Path]::GetFullPath($env:AGENTSERVER_UNINSTALL_APP_DIR).TrimEnd('\')
+$names = @($env:AGENTSERVER_UNINSTALL_PROCESS_NAMES -split ';' | Where-Object { $_ })
+$filter = {
+  if (-not $_.ExecutablePath) { return $false }
+  if ($names -notcontains $_.Name) { return $false }
+  $exe = [System.IO.Path]::GetFullPath($_.ExecutablePath)
+  return $exe.StartsWith($installDir + '\', [System.StringComparison]::OrdinalIgnoreCase)
+}
+$procs = @(Get-CimInstance Win32_Process | Where-Object $filter)
+foreach ($p in $procs) {
+  Stop-Process -Id $p.ProcessId -Force -PassThru -ErrorAction SilentlyContinue |
+    Wait-Process -Timeout 2 -ErrorAction SilentlyContinue
+}
+$deadline = (Get-Date).AddSeconds(8)
+do {
+  Start-Sleep -Milliseconds 250
+  $remaining = @(Get-CimInstance Win32_Process | Where-Object $filter)
+} while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline)
+if ($remaining.Count -gt 0) {
+  $ids = ($remaining | ForEach-Object { $_.ProcessId }) -join ', '
+  throw "Timed out waiting for install processes to exit: $ids"
+}
+`
+	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
+	cmd.Env = append(os.Environ(),
+		"AGENTSERVER_UNINSTALL_APP_DIR="+appDir,
+		"AGENTSERVER_UNINSTALL_PROCESS_NAMES="+strings.Join(names, ";"),
+	)
+	process.HideWindow(cmd)
+	return cmd.Run()
+}

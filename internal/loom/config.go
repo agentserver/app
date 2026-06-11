@@ -8,27 +8,35 @@ import (
 	"strings"
 )
 
+const DefaultObserverURL = "https://loom.nj.cs.ac.cn:10062/"
+
 type DriverConfig struct {
-	ServerURL     string
-	ServerName    string
-	SandboxID     string
-	TunnelToken   string
-	ProxyToken    string
-	WorkspaceID   string
-	ShortID       string
-	DisplayName   string
-	Description   string
-	CodexBin      string
-	CodexWorkDir  string
-	AuditLogDir   string
-	TargetDisplay string
+	ServerURL              string
+	ServerName             string
+	SandboxID              string
+	TunnelToken            string
+	ProxyToken             string
+	WorkspaceID            string
+	WorkspaceName          string
+	ShortID                string
+	DisplayName            string
+	Description            string
+	CodexBin               string
+	CodexWorkDir           string
+	AuditLogDir            string
+	TargetDisplay          string
+	ObserverURL            string
+	ObserverAgentID        string
+	ObserverAPIKey         string
+	ObserverTokenStatePath string
 }
 
 func WriteDriverConfig(path string, cfg DriverConfig) error {
 	if err := cfg.validate(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	configDir := filepath.Dir(path)
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return fmt.Errorf("mkdir loom config dir: %w", err)
 	}
 	if cfg.DisplayName == "" {
@@ -39,6 +47,27 @@ func WriteDriverConfig(path string, cfg DriverConfig) error {
 	}
 	if cfg.CodexBin == "" {
 		cfg.CodexBin = "codex"
+	}
+	observerURL := cfg.ObserverURL
+	if observerURL == "" {
+		observerURL = DefaultObserverURL
+	}
+	observerAgentID := cfg.ObserverAgentID
+	if observerAgentID == "" {
+		observerAgentID = cfg.ServerName
+	}
+	observerAPIKey := cfg.ObserverAPIKey
+	if observerAPIKey == "" {
+		observerAPIKey = cfg.ProxyToken
+	}
+	observerTokenStatePath := cfg.ObserverTokenStatePath
+	if observerTokenStatePath == "" {
+		observerTokenStatePath = filepath.Join(configDir, "observer.token")
+	}
+	if !filepath.IsAbs(observerTokenStatePath) {
+		if abs, err := filepath.Abs(observerTokenStatePath); err == nil {
+			observerTokenStatePath = abs
+		}
 	}
 	body := strings.Join([]string{
 		"server:",
@@ -75,8 +104,13 @@ func WriteDriverConfig(path string, cfg DriverConfig) error {
 		"    timeout_sec: 900",
 		"",
 		"observer:",
-		"  enabled: false",
-		"  telemetry_enabled: false",
+		"  enabled: true",
+		"  url: " + quote(observerURL),
+		"  workspace_id: " + quote(cfg.WorkspaceID),
+		"  workspace_name: " + quote(cfg.WorkspaceName),
+		"  agent_id: " + quote(observerAgentID),
+		"  api_key: " + quote(observerAPIKey),
+		"  token_state_path: " + quote(filepath.ToSlash(observerTokenStatePath)),
 		"",
 		"driver_defaults:",
 		"  target_display_name: " + quote(cfg.TargetDisplay),
