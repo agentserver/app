@@ -98,11 +98,8 @@ func recordTestVSCodeInstall(s *state.State, p paths.Paths, det vscode.Detected,
 	s.Onboarding.AddCompleted("vscode_installed")
 }
 
-// runTestDownloadCodex fetches codex.exe to the configured bin path. Idempotent.
+// runTestDownloadCodex fetches the Codex runtime to the configured bin path. Idempotent.
 func runTestDownloadCodex() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
 	p, err := paths.Default()
 	if err != nil {
 		die(err)
@@ -111,32 +108,11 @@ func runTestDownloadCodex() {
 		fmt.Printf("codex.exe already at %s\n", p.CodexExePath)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(p.CodexExePath), 0o755); err != nil {
+	exe, _ := os.Executable()
+	manifest := filepath.Join(filepath.Dir(exe), "codex-manifest.json")
+	if err := runInstallCodex([]string{"--manifest", manifest}); err != nil {
 		die(err)
 	}
-	url := "https://github.com/openai/codex/releases/download/rust-v0.136.0/" +
-		"codex-x86_64-pc-windows-msvc.exe"
-	fmt.Printf("Downloading codex.exe from %s ...\n", url)
-	progress := make(chan download.ProgressEvent, 16)
-	done := make(chan struct{})
-	go func() {
-		var last time.Time
-		for ev := range progress {
-			if time.Since(last) < 2*time.Second {
-				continue
-			}
-			last = time.Now()
-			fmt.Printf("  %s\n", ev.String())
-		}
-		close(done)
-	}()
-	if err := download.DownloadResumable(ctx, url, p.CodexExePath, "", progress); err != nil {
-		die(fmt.Errorf("download codex: %w", err))
-	}
-	close(progress)
-	<-done
-	info, _ := os.Stat(p.CodexExePath)
-	fmt.Printf("codex.exe downloaded to %s (%d bytes)\n", p.CodexExePath, info.Size())
 }
 
 // runTestConfigure writes settings.json, config.toml, local proxy env, and installs extensions.

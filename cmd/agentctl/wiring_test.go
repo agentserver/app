@@ -11,6 +11,7 @@ func TestRunnersCompile(t *testing.T) {
 	// Just reference each func so a missing import fails the build.
 	_ = runTestInstallVSCode
 	_ = runTestDownloadCodex
+	_ = runInstallCodex
 	_ = runTestConfigure
 	_ = runTestOpenFolder
 	_ = runTestMarkComplete
