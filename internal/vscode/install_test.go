@@ -1026,6 +1026,67 @@ func TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback(t *tes
 	}
 }
 
+func TestEnsureCodexDesktopScriptFallsBackToWingetWhenBundledInstallerFails(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-codex-desktop.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	if strings.Contains(s, "$p.ExitCode -eq 1612") {
+		t.Fatal("ensure-codex-desktop.ps1 must not treat exit code 1612 as a successful Microsoft Store handoff")
+	}
+	for _, want := range []string{
+		"try {",
+		"Start-Process -FilePath $LocalInstallerPath -Wait -PassThru",
+		"} catch {",
+		"Bundled Codex Desktop installer failed to start",
+		"Bundled Codex Desktop installer failed with exit code",
+		"falling back to winget",
+		"return $false",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-codex-desktop.ps1 missing %q", want)
+		}
+	}
+}
+
+func TestWindowsPackageScriptsRefreshCodexDesktopInstallerEveryBuild(t *testing.T) {
+	for _, path := range []string{
+		"../../scripts/package-windows.sh",
+		"../../scripts/package-windows-zip.sh",
+	} {
+		t.Run(path, func(t *testing.T) {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := string(body)
+			fetch := strings.Index(s, "Fetching Codex Desktop installer")
+			if fetch < 0 {
+				t.Fatalf("%s missing Codex Desktop installer download block", path)
+			}
+			if strings.Contains(s[:fetch], `if [[ ! -f "$CODEX_DESKTOP_CACHE" ]]`) {
+				t.Fatalf("%s must refresh the Codex Desktop installer every build, not skip download when cache exists", path)
+			}
+			for _, want := range []string{
+				`CODEX_DESKTOP_MIN_SIZE=`,
+				`verify_codex_desktop_installer()`,
+				`head -c 2 "$path"`,
+				`[[ "$magic" == "MZ" ]]`,
+				`rm -f "$CODEX_DESKTOP_CACHE" "$CODEX_DESKTOP_CACHE.part"`,
+				`curl --fail --location --retry 2 --retry-delay 2 --output "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_URL"`,
+				`if ! verify_codex_desktop_installer "$CODEX_DESKTOP_CACHE.part"; then`,
+				`ERROR: invalid Codex Desktop installer download`,
+				`mv "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_CACHE"`,
+			} {
+				if !strings.Contains(s, want) {
+					t.Fatalf("%s should refresh Codex Desktop installer; missing %q", path, want)
+				}
+			}
+		})
+	}
+}
+
 func TestWindowsInnoInstallerScriptUsesUTF8BOM(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
