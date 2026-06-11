@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEnsureInstallsPinnedRuntimeFromFirstGoodMirror(t *testing.T) {
@@ -98,6 +99,92 @@ func TestEnsureFallsBackToLatestWhenPinnedReturns404(t *testing.T) {
 	}
 	if res.Version != "0.139.0-win32-x64" || res.Source != "latest" {
 		t.Fatalf("result=%+v", res)
+	}
+}
+
+func TestEnsureTriesSecondPinnedMirrorAfterFirstHTTPError(t *testing.T) {
+	pkg := runtimePackage(t, "codex-from-second")
+	integrity := npmIntegrity(pkg)
+	firstHits := 0
+	secondHits := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/first.tgz", func(w http.ResponseWriter, r *http.Request) {
+		firstHits++
+		http.Error(w, "mirror error", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/second.tgz", func(w http.ResponseWriter, r *http.Request) {
+		secondHits++
+		w.Write(pkg)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	manifestPath := writeManifest(t, dir, Manifest{
+		Package:       "@openai/codex",
+		Platform:      "win32-x64",
+		PinnedVersion: "0.136.0-win32-x64",
+		StripPrefix:   "vendor/x86_64-pc-windows-msvc/",
+		CodexExe:      "bin/codex.exe",
+		RequiredFiles: requiredRuntimeFiles(),
+		Pinned: PinnedPackage{
+			Integrity: integrity,
+			URLs:      []string{srv.URL + "/first.tgz", srv.URL + "/second.tgz"},
+		},
+	})
+	res, err := Ensure(context.Background(), Options{
+		ManifestPath: manifestPath,
+		DestRoot:     filepath.Join(dir, "root"),
+		CacheDir:     filepath.Join(dir, "cache"),
+		VersionCommand: func(context.Context, string) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Source != "pinned" || firstHits != 1 || secondHits != 1 {
+		t.Fatalf("result=%+v firstHits=%d secondHits=%d", res, firstHits, secondHits)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "root", "bin", "codex.exe")); err != nil || string(got) != "codex-from-second" {
+		t.Fatalf("codex.exe=%q err=%v", got, err)
+	}
+}
+
+func TestEnsureAbortsStalledDownloadAfterIdleTimeout(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	dir := t.TempDir()
+	manifestPath := writeManifest(t, dir, Manifest{
+		Package:       "@openai/codex",
+		Platform:      "win32-x64",
+		PinnedVersion: "0.136.0-win32-x64",
+		StripPrefix:   "vendor/x86_64-pc-windows-msvc/",
+		CodexExe:      "bin/codex.exe",
+		RequiredFiles: requiredRuntimeFiles(),
+		Pinned:        PinnedPackage{Integrity: "sha512-unused", URLs: []string{srv.URL + "/stalled.tgz"}},
+	})
+	_, err := Ensure(context.Background(), Options{
+		ManifestPath:        manifestPath,
+		DestRoot:            filepath.Join(dir, "root"),
+		CacheDir:            filepath.Join(dir, "cache"),
+		DownloadIdleTimeout: 20 * time.Millisecond,
+		VersionCommand:      func(context.Context, string) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "download idle timeout") {
+		t.Fatalf("err=%v, want download idle timeout", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "cache", "codex-0.136.0-win32-x64.tgz.part")); !os.IsNotExist(statErr) {
+		t.Fatalf("stale partial should be removed after timeout, stat err=%v", statErr)
 	}
 }
 

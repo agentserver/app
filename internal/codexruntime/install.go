@@ -9,14 +9,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync/atomic"
+	"time"
 )
 
 type Options struct {
-	ManifestPath   string
-	DestRoot       string
-	CacheDir       string
-	Client         *http.Client
-	VersionCommand func(context.Context, string) error
+	ManifestPath        string
+	DestRoot            string
+	CacheDir            string
+	Client              *http.Client
+	DownloadIdleTimeout time.Duration
+	VersionCommand      func(context.Context, string) error
 }
 
 type InstallResult struct {
@@ -49,8 +52,8 @@ func Ensure(ctx context.Context, opts Options) (InstallResult, error) {
 	if err := os.MkdirAll(opts.CacheDir, 0o755); err != nil {
 		return InstallResult{}, err
 	}
-	var lastErr error
 	allPinnedUnavailable := true
+	var lastErr error
 	for _, candidate := range PinnedCandidates(m) {
 		res, err := installCandidate(ctx, opts, m, candidate)
 		if err == nil {
@@ -59,7 +62,6 @@ func Ensure(ctx context.Context, opts Options) (InstallResult, error) {
 		lastErr = err
 		if !IsUnavailable(err) {
 			allPinnedUnavailable = false
-			break
 		}
 	}
 	if allPinnedUnavailable {
@@ -74,7 +76,7 @@ func Ensure(ctx context.Context, opts Options) (InstallResult, error) {
 
 func installCandidate(ctx context.Context, opts Options, m Manifest, c PackageCandidate) (InstallResult, error) {
 	cachePath := filepath.Join(opts.CacheDir, "codex-"+c.Version+".tgz")
-	if err := downloadPackage(ctx, opts.Client, c.URL, cachePath); err != nil {
+	if err := downloadPackage(ctx, opts.Client, c.URL, cachePath, opts.downloadIdleTimeout()); err != nil {
 		return InstallResult{}, err
 	}
 	if err := VerifyNPMIntegrity(cachePath, c.Integrity); err != nil {
@@ -98,7 +100,16 @@ func installCandidate(ctx context.Context, opts Options, m Manifest, c PackageCa
 	return InstallResult{Version: c.Version, Source: c.Source, CodexExe: codexExe}, nil
 }
 
-func downloadPackage(ctx context.Context, client *http.Client, url, dst string) error {
+const defaultDownloadIdleTimeout = 30 * time.Second
+
+func (opts Options) downloadIdleTimeout() time.Duration {
+	if opts.DownloadIdleTimeout > 0 {
+		return opts.DownloadIdleTimeout
+	}
+	return defaultDownloadIdleTimeout
+}
+
+func downloadPackage(ctx context.Context, client *http.Client, url, dst string, idleTimeout time.Duration) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -122,14 +133,76 @@ func downloadPackage(ctx context.Context, client *http.Client, url, dst string) 
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, resp.Body); err != nil {
+	wrote := false
+	defer func() {
+		if !wrote {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := copyWithIdleTimeout(ctx, out, resp.Body, idleTimeout); err != nil {
 		out.Close()
 		return err
 	}
 	if err := out.Close(); err != nil {
 		return err
 	}
+	wrote = true
 	return os.Rename(tmp, dst)
+}
+
+type progressWriter struct {
+	dst      io.Writer
+	lastNano *atomic.Int64
+}
+
+func (w progressWriter) Write(p []byte) (int, error) {
+	n, err := w.dst.Write(p)
+	if n > 0 {
+		w.lastNano.Store(time.Now().UnixNano())
+	}
+	return n, err
+}
+
+func copyWithIdleTimeout(ctx context.Context, dst io.Writer, src io.ReadCloser, idleTimeout time.Duration) error {
+	if idleTimeout <= 0 {
+		_, err := io.Copy(dst, src)
+		return err
+	}
+
+	var lastNano atomic.Int64
+	var timedOut atomic.Bool
+	lastNano.Store(time.Now().UnixNano())
+	done := make(chan struct{})
+	interval := idleTimeout / 2
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				last := time.Unix(0, lastNano.Load())
+				if time.Since(last) > idleTimeout {
+					timedOut.Store(true)
+					_ = src.Close()
+					return
+				}
+			}
+		}
+	}()
+
+	_, err := io.Copy(progressWriter{dst: dst, lastNano: &lastNano}, src)
+	close(done)
+	if timedOut.Load() {
+		return fmt.Errorf("download idle timeout after %s", idleTimeout)
+	}
+	return err
 }
 
 func runtimeComplete(root string, required []string) bool {
