@@ -608,11 +608,15 @@ func TestWindowsInnoInstallerStopsRunningAppProcessesBeforeReplacingFiles(t *tes
 		"onboarding-server",
 		"open-folder",
 		"Stop-Process -Id",
-		"$_.ExecutablePath -like ($installDir + ''*'')",
+		"$installRoot = [System.IO.Path]::GetFullPath($installDir).TrimEnd(''\\'')",
+		"$exe.StartsWith($installRoot + ''\\'', [System.StringComparison]::OrdinalIgnoreCase)",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("installer.iss should stop running app processes before replacing files; missing %q", want)
 		}
+	}
+	if strings.Contains(s, "$_.ExecutablePath -like ($installDir + ''*'')") {
+		t.Fatal("installer.iss must not match install processes using an unsafe string prefix")
 	}
 }
 
