@@ -4,68 +4,72 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
-	"reflect"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestPlanInstall_Windows(t *testing.T) {
+func TestPlanInstall_WindowsUsesStoreBootstrapper(t *testing.T) {
 	p := planInstallFor("windows", "amd64")
-	if p.URL == "" || p.SHA256 == "" {
-		t.Errorf("missing URL/sha: %+v", p)
+	if p.BootstrapperURL == "" {
+		t.Fatalf("missing BootstrapperURL: %+v", p)
 	}
-	if p.InstallerType != "InnoSetup" {
-		t.Errorf("type %q", p.InstallerType)
+	if !strings.Contains(p.BootstrapperURL, "get.microsoft.com/installer/download") {
+		t.Fatalf("BootstrapperURL=%q", p.BootstrapperURL)
 	}
-	if len(p.SilentArgs) == 0 {
-		t.Errorf("silent args empty")
+	if p.StoreProductID != "XP9KHM4BK9FZ7Q" {
+		t.Fatalf("StoreProductID=%q", p.StoreProductID)
 	}
-	if len(p.URLs) < 2 {
-		t.Errorf("expected at least 2 mirror URLs (prss + update.code), got %v", p.URLs)
+	if p.FileExt != ".exe" {
+		t.Fatalf("FileExt=%q", p.FileExt)
 	}
-	if p.URL != p.URLs[0] {
-		t.Errorf("URL should equal URLs[0] for back-compat: got URL=%q URLs[0]=%q", p.URL, p.URLs[0])
-	}
-	// prss CDN URL should be tried first (fastest in CN per P13.4 measurements)
-	if !strings.Contains(p.URLs[0], "prss.microsoft.com") {
-		t.Errorf("expected prss URL first, got %q", p.URLs[0])
+	if p.SHA256 != "" {
+		t.Fatalf("Store bootstrapper should not use locked VS Code installer sha, got %q", p.SHA256)
 	}
 }
 
-func TestWindowsPackagingManifestMatchesPlanInstall(t *testing.T) {
-	var manifest struct {
-		Version      string   `json:"version"`
-		SHA256       string   `json:"sha256"`
-		ExpectedSize int64    `json:"expected_size"`
-		URLs         []string `json:"urls"`
-		SilentArgs   []string `json:"silent_args"`
+func TestWindowsDetectCandidatesIncludeStoreAliases(t *testing.T) {
+	got := detectCandidatesWindows(`C:\Users\me\AppData\Local`, `C:\Program Files`, `C:\Program Files (x86)`)
+	joined := strings.Join(got, "\n")
+	for _, want := range []string{
+		`C:\Users\me\AppData\Local\Microsoft\WindowsApps\code.exe`,
+		`C:\Users\me\AppData\Local\Microsoft\WindowsApps\code.cmd`,
+		`C:\Users\me\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("detect candidates missing %q:\n%s", want, joined)
+		}
 	}
-	b, err := os.ReadFile("../../packaging/windows/vscode-manifest.json")
+}
+
+func TestDownloadBootstrapperUsesGETBecauseMicrosoftEndpointRejectsHEAD(t *testing.T) {
+	body := []byte("bootstrapper")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Method != http.MethodGet {
+			t.Fatalf("method=%s", r.Method)
+		}
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	dst := filepath.Join(t.TempDir(), "vscode-store-bootstrapper.exe")
+	if err := DownloadBootstrapper(context.Background(), srv.URL, dst, http.DefaultClient); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(dst)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(b, &manifest); err != nil {
-		t.Fatal(err)
-	}
-
-	plan := planInstallFor("windows", "amd64")
-	if manifest.Version != LockedVersion {
-		t.Fatalf("manifest version %q != LockedVersion %q", manifest.Version, LockedVersion)
-	}
-	if manifest.SHA256 != plan.SHA256 {
-		t.Fatalf("manifest sha %q != plan sha %q", manifest.SHA256, plan.SHA256)
-	}
-	if manifest.ExpectedSize <= 0 {
-		t.Fatalf("manifest expected_size should be set so truncated downloads are detected")
-	}
-	if !reflect.DeepEqual(manifest.URLs, plan.URLs) {
-		t.Fatalf("manifest URLs %#v != plan URLs %#v", manifest.URLs, plan.URLs)
-	}
-	if !reflect.DeepEqual(manifest.SilentArgs, plan.SilentArgs) {
-		t.Fatalf("manifest silent args %#v != plan silent args %#v", manifest.SilentArgs, plan.SilentArgs)
+	if string(got) != string(body) {
+		t.Fatalf("body=%q", got)
 	}
 }
 

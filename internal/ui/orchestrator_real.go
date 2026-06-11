@@ -395,10 +395,12 @@ func (r *realOrchestrator) EnsureVSCode(ctx context.Context, ch chan<- ProgressE
 	}
 	plan := vscode.PlanInstall()
 	cache := filepath.Join(r.d.VSCodeUserDataDir, "..", "cache",
-		"vscode-"+vscode.LockedVersion+plan.FileExt)
-	if err := download.DownloadResumable(ctx, plan.URL, cache, plan.SHA256,
-		downloadAdapter(ch)); err != nil {
-		return fmt.Errorf("download VS Code: %w", err)
+		"vscode-store-bootstrapper"+plan.FileExt)
+	if ch != nil {
+		ch <- ProgressEvent{Stage: "download", Msg: "正在下载 VS Code 微软商店引导器..."}
+	}
+	if err := vscode.DownloadBootstrapper(ctx, plan.BootstrapperURL, cache, nil); err != nil {
+		return fmt.Errorf("download VS Code Microsoft Store bootstrapper: %w", err)
 	}
 	det2, err := vscode.InstallAndDetect(ctx, cache, plan, vscode.SilentInstall, vscode.Detect)
 	if err != nil {

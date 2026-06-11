@@ -17,7 +17,6 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
-	"github.com/agentserver/agentserver-pkg/internal/download"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
@@ -50,30 +49,15 @@ func runTestInstallVSCode() {
 		return
 	}
 	plan := vscode.PlanInstall()
-	cache := filepath.Join(p.CacheDir, "vscode-"+vscode.LockedVersion+plan.FileExt)
+	cache := filepath.Join(p.CacheDir, "vscode-store-bootstrapper"+plan.FileExt)
 	if err := os.MkdirAll(p.CacheDir, 0o755); err != nil {
 		die(err)
 	}
-	fmt.Printf("Downloading VS Code %s from %s ...\n", vscode.LockedVersion, plan.URL)
-	progress := make(chan download.ProgressEvent, 16)
-	done := make(chan struct{})
-	go func() {
-		var last time.Time
-		for ev := range progress {
-			if time.Since(last) < 2*time.Second {
-				continue
-			}
-			last = time.Now()
-			fmt.Printf("  %s\n", ev.String())
-		}
-		close(done)
-	}()
-	if err := download.DownloadResumable(ctx, plan.URL, cache, plan.SHA256, progress); err != nil {
-		die(fmt.Errorf("download: %w", err))
+	fmt.Printf("Downloading VS Code Microsoft Store bootstrapper from %s ...\n", plan.BootstrapperURL)
+	if err := vscode.DownloadBootstrapper(ctx, plan.BootstrapperURL, cache, nil); err != nil {
+		die(fmt.Errorf("download bootstrapper: %w", err))
 	}
-	close(progress)
-	<-done
-	fmt.Println("Download done, running installer...")
+	fmt.Println("Download done, running Microsoft Store bootstrapper...")
 	det2, err := vscode.InstallAndDetect(ctx, cache, plan, vscode.SilentInstall, vscode.Detect)
 	if err != nil {
 		die(fmt.Errorf("install: %w", err))

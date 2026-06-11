@@ -18,15 +18,9 @@ func detectPlatform() (Detected, error) {
 			}
 		}
 	}
-	// 2. Standard user-install location.
-	candidates := []string{
-		filepath.Join(os.Getenv("LOCALAPPDATA"),
-			"Programs", "Microsoft VS Code", "bin", "code.cmd"),
-		filepath.Join(os.Getenv("ProgramFiles"),
-			"Microsoft VS Code", "bin", "code.cmd"),
-		filepath.Join(os.Getenv("ProgramFiles(x86)"),
-			"Microsoft VS Code", "bin", "code.cmd"),
-	}
+	// 2. Microsoft Store aliases + standard install locations.
+	candidates := detectCandidatesWindows(os.Getenv("LOCALAPPDATA"),
+		os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"))
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
 			if det, err := detectAt(c); err == nil {

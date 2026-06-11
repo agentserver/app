@@ -3,20 +3,24 @@ package vscode
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
 )
 
 type InstallPlan struct {
 	// URLs is the ordered list of mirrors to try; first reachable wins.
 	// Callers should iterate in order and break on first 200/206 response.
-	URLs          []string
-	// URL is URLs[0] — kept for backwards compatibility with existing
-	// download.DownloadResumable callers that take a single URL.
-	URL           string
-	SHA256        string
-	InstallerType string   // "InnoSetup"
-	FileExt       string   // ".exe"
-	SilentArgs    []string // e.g. ["/VERYSILENT", "/MERGETASKS=!runcode,addtopath"]
+	URLs            []string
+	URL             string
+	BootstrapperURL string
+	StoreProductID  string
+	SHA256          string
+	InstallerType   string
+	FileExt         string
+	SilentArgs      []string
 }
 
 // LockedVersion is the VS Code version we ship. Bumping requires updating
@@ -33,6 +37,9 @@ const lockedCommitWin64User = "138f619c86f1199955d53b4166bef66ef252935c"
 //	curl -s 'https://update.code.visualstudio.com/api/versions/1.96.0/win32-x64-user/stable' | jq -r .sha256hash
 const lockedSHA256Win64User = "3b445b7031069b527c16202107baa56ad5f8b5e09e43d688dc71d099c8e1cad1"
 
+const StoreProductID = "XP9KHM4BK9FZ7Q"
+const StoreBootstrapperURL = "https://get.microsoft.com/installer/download/" + StoreProductID + "?cid=website_cta_psi"
+
 func PlanInstall() InstallPlan {
 	return planInstallFor(runtime.GOOS, runtime.GOARCH)
 }
@@ -41,29 +48,48 @@ func planInstallFor(goos, goarch string) InstallPlan {
 	if goos != "windows" || goarch != "amd64" {
 		panic(fmt.Sprintf("vscode install: unsupported %s/%s in v1", goos, goarch))
 	}
-	// Mirror selection: tried in order, first that responds wins.
-	// prss is the direct CDN that update.code.visualstudio.com redirects to;
-	// using it directly skips a 302 hop and was 170ms vs 1029ms on the
-	// test machine in CN (see docs/superpowers/notes/2026-06-03-p13-4-findings.md).
-	urls := []string{
-		"https://vscode.download.prss.microsoft.com/dbazure/download/stable/" +
-			lockedCommitWin64User + "/VSCodeUserSetup-x64-" + LockedVersion + ".exe",
-		"https://update.code.visualstudio.com/" + LockedVersion +
-			"/win32-x64-user/stable",
-	}
 	return InstallPlan{
-		URLs:          urls,
-		URL:           urls[0],
-		SHA256:        lockedSHA256Win64User,
-		InstallerType: "InnoSetup",
-		FileExt:       ".exe",
-		SilentArgs: []string{
-			"/VERYSILENT",
-			"/MERGETASKS=!runcode,addtopath",
-			"/SUPPRESSMSGBOXES",
-			"/NORESTART",
-		},
+		URLs:            []string{StoreBootstrapperURL},
+		URL:             StoreBootstrapperURL,
+		BootstrapperURL: StoreBootstrapperURL,
+		StoreProductID:  StoreProductID,
+		InstallerType:   "MicrosoftStoreBootstrapper",
+		FileExt:         ".exe",
 	}
+}
+
+func DownloadBootstrapper(ctx context.Context, url, dst string, client *http.Client) error {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("download VS Code Microsoft Store bootstrapper: status %d", resp.StatusCode)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	tmp := dst + ".part"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
 
 // SilentInstall runs the downloaded installer with platform-appropriate args.
@@ -99,7 +125,7 @@ func InstallAndDetect(
 		return det, nil
 	}
 	// installer reported failure — last chance: did it actually install?
-	if detErr == nil && det.Installed && det.Version == LockedVersion {
+	if detErr == nil && det.Installed && det.Version != "" {
 		return det, nil
 	}
 	return Detected{}, fmt.Errorf("install failed and post-install detect didn't find VS Code %s: install err=%w; detect err=%v",
