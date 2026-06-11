@@ -348,6 +348,13 @@ begin
   Result := Exec(PowerShellExe, '-NoProfile -ExecutionPolicy Bypass -File "' + RunnerPath + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
 end;
 
+procedure DeleteObsoleteBundledPayloads();
+begin
+  DeleteFile(ExpandConstant('{app}\codex.exe'));
+  DeleteFile(ExpandConstant('{app}\vscode-installer' + '.exe'));
+  DeleteFile(ExpandConstant('{app}\vscode-manifest' + '.json'));
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   if StopRunningAgentserverProcesses() then begin
@@ -387,6 +394,8 @@ begin
   if CurStep <> ssPostInstall then begin
     Exit;
   end;
+
+  DeleteObsoleteBundledPayloads();
 
   MachinePath := GetMachinePath();
   ComputerName := GetChosenComputerName();

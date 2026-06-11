@@ -312,6 +312,43 @@ func TestWindowsPackagingIncludesCodexRuntimeEnsure(t *testing.T) {
 	}
 }
 
+func TestWindowsInstallersDeleteObsoleteBundledPayloads(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{
+			path: "../../packaging/windows/install.ps1",
+			want: []string{
+				"$obsoletePayloads = @(",
+				"'codex.exe'",
+				"'vscode-installer' + '.exe'",
+				"'vscode-manifest' + '.json'",
+				"Remove-Item -LiteralPath $obsoletePath -Force",
+			},
+		},
+		{
+			path: "../../packaging/windows/installer.iss",
+			want: []string{
+				"procedure DeleteObsoleteBundledPayloads();",
+				"DeleteFile(ExpandConstant('{app}\\codex.exe'))",
+				"DeleteFile(ExpandConstant('{app}\\vscode-installer' + '.exe'))",
+				"DeleteFile(ExpandConstant('{app}\\vscode-manifest' + '.json'))",
+			},
+		},
+	} {
+		body, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(string(body), want) {
+				t.Fatalf("%s missing %q", tc.path, want)
+			}
+		}
+	}
+}
+
 func TestWindowsEnsureCodexScriptCallsAgentctlInstallCodex(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/ensure-codex.ps1")
 	if err != nil {

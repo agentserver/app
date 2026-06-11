@@ -223,6 +223,17 @@ Stop-RunningAgentserverProcesses
 if (-not (Test-Path $InstallDir)) {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 }
+$obsoletePayloads = @(
+    'codex.exe',
+    'vscode-installer' + '.exe',
+    'vscode-manifest' + '.json'
+)
+foreach ($obsolete in $obsoletePayloads) {
+    $obsoletePath = Join-Path $InstallDir $obsolete
+    if (Test-Path -LiteralPath $obsoletePath) {
+        Remove-Item -LiteralPath $obsoletePath -Force
+    }
+}
 foreach ($f in $required) {
     Copy-Item (Join-Path $srcDir $f) (Join-Path $InstallDir $f) -Force
 }
