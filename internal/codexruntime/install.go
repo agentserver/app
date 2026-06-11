@@ -192,41 +192,37 @@ func copyWithIdleTimeout(ctx context.Context, cancel context.CancelFunc, dst io.
 	}
 
 	var lastNano atomic.Int64
-	var timedOut atomic.Bool
 	lastNano.Store(time.Now().UnixNano())
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	interval := idleTimeout / 2
 	if interval < time.Millisecond {
 		interval = time.Millisecond
 	}
 	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-done:
-				return
-			case <-ctx.Done():
-				_ = src.Close()
-				return
-			case <-ticker.C:
-				last := time.Unix(0, lastNano.Load())
-				if time.Since(last) > idleTimeout {
-					timedOut.Store(true)
-					cancel()
-					_ = src.Close()
-					return
-				}
-			}
-		}
+		_, err := io.Copy(progressWriter{dst: dst, lastNano: &lastNano}, src)
+		done <- err
 	}()
 
-	_, err := io.Copy(progressWriter{dst: dst, lastNano: &lastNano}, src)
-	close(done)
-	if timedOut.Load() {
-		return fmt.Errorf("download idle timeout after %s", idleTimeout)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	defer cancel()
+
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ctx.Done():
+			_ = src.Close()
+			return ctx.Err()
+		case <-ticker.C:
+			last := time.Unix(0, lastNano.Load())
+			if time.Since(last) > idleTimeout {
+				cancel()
+				_ = src.Close()
+				return fmt.Errorf("download idle timeout after %s", idleTimeout)
+			}
+		}
 	}
-	return err
 }
 
 func runtimeComplete(root string, required []string) bool {
