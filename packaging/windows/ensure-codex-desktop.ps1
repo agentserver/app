@@ -58,7 +58,12 @@ function Invoke-CodexDesktopLocalInstaller {
     }
     Write-Step "Running bundled Codex Desktop installer..."
     Write-Step $LocalInstallerPath
-    $p = Start-Process -FilePath $LocalInstallerPath -Wait -PassThru
+    try {
+        $p = Start-Process -FilePath $LocalInstallerPath -Wait -PassThru
+    } catch {
+        Write-Warning "Bundled Codex Desktop installer failed to start: $($_.Exception.Message); falling back to winget."
+        return $false
+    }
     if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0) {
         Write-Warning "Bundled Codex Desktop installer failed with exit code $($p.ExitCode); falling back to winget."
         return $false
