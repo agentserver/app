@@ -238,6 +238,98 @@ func TestInstallDriverSupportDoesNotOverwriteExistingSkillFiles(t *testing.T) {
 	}
 }
 
+func TestInstallDriverSupportUpdatesUnmodifiedManagedSkillFiles(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	v1Archive := filepath.Join(dir, "driver-skills-v1.tar.gz")
+	writeTarGz(t, v1Archive, map[string]string{
+		"multiagent/SKILL.md":          "managed v1\n",
+		"multiagent/references/one.md": "one v1\n",
+	})
+	if err := InstallDriverSupport(DriverSupportInput{
+		UserHome:          home,
+		SkillsArchivePath: v1Archive,
+	}); err != nil {
+		t.Fatalf("InstallDriverSupport v1: %v", err)
+	}
+
+	v2Archive := filepath.Join(dir, "driver-skills-v2.tar.gz")
+	writeTarGz(t, v2Archive, map[string]string{
+		"multiagent/SKILL.md":          "managed v2\n",
+		"multiagent/references/one.md": "one v2\n",
+		"multiagent/references/two.md": "two v2\n",
+	})
+	if err := InstallDriverSupport(DriverSupportInput{
+		UserHome:          home,
+		SkillsArchivePath: v2Archive,
+	}); err != nil {
+		t.Fatalf("InstallDriverSupport v2: %v", err)
+	}
+
+	for _, root := range []string{".agents", ".codex"} {
+		skill := filepath.Join(home, root, "skills", "multiagent", "SKILL.md")
+		if got := readFile(t, skill); got != "managed v2\n" {
+			t.Fatalf("%s was not upgraded:\n%s", skill, got)
+		}
+		ref := filepath.Join(home, root, "skills", "multiagent", "references", "one.md")
+		if got := readFile(t, ref); got != "one v2\n" {
+			t.Fatalf("%s was not upgraded:\n%s", ref, got)
+		}
+		if got := readFile(t, filepath.Join(home, root, "skills", "multiagent", "references", "two.md")); got != "two v2\n" {
+			t.Fatalf("new managed file missing in %s:\n%s", root, got)
+		}
+		manifest := filepath.Join(home, root, ".agentserver-managed-skills.json")
+		if body := readFile(t, manifest); !strings.Contains(body, "multiagent/SKILL.md") || !strings.Contains(body, "sha256") {
+			t.Fatalf("managed skills manifest missing expected entry:\n%s", body)
+		}
+	}
+}
+
+func TestInstallDriverSupportSkipsModifiedManagedSkillFiles(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	v1Archive := filepath.Join(dir, "driver-skills-v1.tar.gz")
+	writeTarGz(t, v1Archive, map[string]string{
+		"multiagent/SKILL.md": "managed v1\n",
+	})
+	if err := InstallDriverSupport(DriverSupportInput{
+		UserHome:          home,
+		SkillsArchivePath: v1Archive,
+	}); err != nil {
+		t.Fatalf("InstallDriverSupport v1: %v", err)
+	}
+	codexSkill := filepath.Join(home, ".codex", "skills", "multiagent", "SKILL.md")
+	if err := os.WriteFile(codexSkill, []byte("user edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	v2Archive := filepath.Join(dir, "driver-skills-v2.tar.gz")
+	writeTarGz(t, v2Archive, map[string]string{
+		"multiagent/SKILL.md":           "managed v2\n",
+		"multiagent/references/new.md":  "new v2\n",
+		"using-superpowers/SKILL.md":    "superpower v2\n",
+		"using-superpowers/README.md":   "readme v2\n",
+		"test-driven-development/IN.md": "tdd v2\n",
+	})
+	if err := InstallDriverSupport(DriverSupportInput{
+		UserHome:          home,
+		SkillsArchivePath: v2Archive,
+	}); err != nil {
+		t.Fatalf("InstallDriverSupport v2: %v", err)
+	}
+
+	if got := readFile(t, codexSkill); got != "user edit\n" {
+		t.Fatalf("modified managed skill file was overwritten:\n%s", got)
+	}
+	agentsSkill := filepath.Join(home, ".agents", "skills", "multiagent", "SKILL.md")
+	if got := readFile(t, agentsSkill); got != "managed v2\n" {
+		t.Fatalf("unmodified managed skill file was not upgraded:\n%s", got)
+	}
+	if got := readFile(t, filepath.Join(home, ".codex", "skills", "multiagent", "references", "new.md")); got != "new v2\n" {
+		t.Fatalf("new file alongside modified managed file was not installed:\n%s", got)
+	}
+}
+
 func TestInstallDriverSupportUsesCodexPromptArchiveContent(t *testing.T) {
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")

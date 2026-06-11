@@ -3,12 +3,16 @@ package loom
 import (
 	"archive/tar"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -22,6 +26,16 @@ type DriverSupportInput struct {
 	SkillsArchivePath           string
 	SuperpowerSkillsArchivePath string
 	CodexPromptsArchivePath     string
+}
+
+type skillsManifest struct {
+	Version int                  `json:"version"`
+	Files   []skillsManifestFile `json:"files"`
+}
+
+type skillsManifestFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
 }
 
 func InstallDriverSupport(in DriverSupportInput) error {
@@ -78,7 +92,11 @@ func installSkillsArchive(userHome, archivePath string) error {
 }
 
 func extractSkillsArchive(archivePath, destRoot string) error {
-	return walkTarGz(archivePath, func(h *tar.Header, r io.Reader) error {
+	manifest, err := loadSkillsManifest(destRoot)
+	if err != nil {
+		return err
+	}
+	if err := walkTarGz(archivePath, func(h *tar.Header, r io.Reader) error {
 		cleanName, err := cleanTarName(h.Name)
 		if err != nil {
 			return err
@@ -101,11 +119,18 @@ func extractSkillsArchive(archivePath, destRoot string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			return writeFileFromReader(target, r, h.FileInfo().Mode().Perm())
+			data, err := io.ReadAll(r)
+			if err != nil {
+				return fmt.Errorf("read tar entry %s: %w", h.Name, err)
+			}
+			return installManagedSkillFile(target, rel, data, h.FileInfo().Mode().Perm(), manifest)
 		default:
 			return fmt.Errorf("unsupported tar entry %s type %d", h.Name, h.Typeflag)
 		}
-	})
+	}); err != nil {
+		return err
+	}
+	return saveSkillsManifest(destRoot, manifest)
 }
 
 func fileExists(path string) (bool, error) {
@@ -209,18 +234,93 @@ func safeJoin(root, rel string) (string, error) {
 	return target, nil
 }
 
-func writeFileFromReader(path string, r io.Reader, mode os.FileMode) error {
+func skillsManifestPath(destRoot string) string {
+	return filepath.Join(filepath.Dir(destRoot), ".agentserver-managed-skills.json")
+}
+
+func loadSkillsManifest(destRoot string) (map[string]string, error) {
+	out := map[string]string{}
+	b, err := os.ReadFile(skillsManifestPath(destRoot))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, nil
+		}
+		return nil, err
+	}
+	var manifest skillsManifest
+	if err := json.Unmarshal(b, &manifest); err != nil {
+		return nil, fmt.Errorf("read managed skills manifest: %w", err)
+	}
+	for _, f := range manifest.Files {
+		rel := strings.TrimSpace(filepath.ToSlash(f.Path))
+		sum := strings.ToLower(strings.TrimSpace(f.SHA256))
+		if rel != "" && sum != "" {
+			out[rel] = sum
+		}
+	}
+	return out, nil
+}
+
+func saveSkillsManifest(destRoot string, files map[string]string) error {
+	path := skillsManifestPath(destRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(files))
+	for k := range files {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	manifest := skillsManifest{Version: 1, Files: make([]skillsManifestFile, 0, len(keys))}
+	for _, k := range keys {
+		manifest.Files = append(manifest.Files, skillsManifestFile{Path: k, SHA256: files[k]})
+	}
+	b, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	return os.WriteFile(path, b, 0o644)
+}
+
+func installManagedSkillFile(path, rel string, data []byte, mode os.FileMode, manifest map[string]string) error {
+	rel = filepath.ToSlash(rel)
+	nextHash := sha256Hex(data)
+	current, err := os.ReadFile(path)
+	if err == nil {
+		currentHash := sha256Hex(current)
+		oldHash := manifest[rel]
+		if oldHash == "" && currentHash == nextHash {
+			manifest[rel] = nextHash
+			return nil
+		}
+		if oldHash == "" || currentHash != oldHash {
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := writeFile(path, data, mode); err != nil {
+		return err
+	}
+	manifest[rel] = nextHash
+	return nil
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func writeFile(path string, data []byte, mode os.FileMode) error {
 	if mode == 0 {
 		mode = 0o644
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return nil
-		}
 		return err
 	}
-	_, copyErr := io.Copy(f, r)
+	_, copyErr := f.Write(data)
 	closeErr := f.Close()
 	return errors.Join(copyErr, closeErr)
 }

@@ -17,6 +17,71 @@ function Write-TextFileUtf8NoBom([string]$Path, [string]$Content) {
     [System.IO.File]::WriteAllText($Path, $Content, $utf8)
 }
 
+function Get-SkillsManifestPath([string]$DestRoot) {
+    return (Join-Path (Split-Path -Parent $DestRoot) '.agentserver-managed-skills.json')
+}
+
+function Read-SkillsManifest([string]$DestRoot) {
+    $manifestPath = Get-SkillsManifestPath $DestRoot
+    $map = @{}
+    if (-not (Test-Path $manifestPath)) {
+        return $map
+    }
+    $raw = [System.IO.File]::ReadAllText($manifestPath)
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $map
+    }
+    $parsed = $raw | ConvertFrom-Json
+    foreach ($file in @($parsed.files)) {
+        if ($file.path -and $file.sha256) {
+            $map[[string]$file.path] = ([string]$file.sha256).ToLowerInvariant()
+        }
+    }
+    return $map
+}
+
+function Write-SkillsManifest([string]$DestRoot, [hashtable]$Manifest) {
+    $manifestPath = Get-SkillsManifestPath $DestRoot
+    $files = @()
+    foreach ($path in ($Manifest.Keys | Sort-Object)) {
+        $files += [PSCustomObject]@{
+            path = [string]$path
+            sha256 = [string]$Manifest[$path]
+        }
+    }
+    $obj = [PSCustomObject]@{
+        version = 1
+        files = $files
+    }
+    Write-TextFileUtf8NoBom $manifestPath (($obj | ConvertTo-Json -Depth 5) + "`n")
+}
+
+function Get-FileSHA256Lower([string]$Path) {
+    return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
+}
+
+function Install-ManagedSkillFile([string]$Source, [string]$Dest, [string]$Rel, [hashtable]$Manifest) {
+    $relKey = $Rel.Replace('\', '/')
+    $nextHash = Get-FileSHA256Lower $Source
+    if (Test-Path $Dest) {
+        $currentHash = Get-FileSHA256Lower $Dest
+        $oldHash = $Manifest[$relKey]
+        if ((-not $oldHash) -and ($currentHash -eq $nextHash)) {
+            $Manifest[$relKey] = $nextHash
+            return
+        }
+        if (-not ($oldHash -and ($currentHash -eq $oldHash))) {
+            return
+        }
+    }
+    $parent = Split-Path -Parent $Dest
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path $parent)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    Copy-Item -LiteralPath $Source -Destination $Dest -Force
+    $Manifest[$relKey] = $nextHash
+}
+
 function Expand-SkillsArchive([string]$ArchivePath, [string]$DestRoot) {
     if (-not (Test-Path $ArchivePath)) {
         return
@@ -30,6 +95,7 @@ function Expand-SkillsArchive([string]$ArchivePath, [string]$DestRoot) {
     $tmp = Join-Path $env:TEMP ("agentserver-skills-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     try {
+        $manifest = Read-SkillsManifest $DestRoot
         & tar.exe -xzf $ArchivePath -C $tmp
         if ($LASTEXITCODE -ne 0) {
             throw "tar.exe failed to extract $ArchivePath with exit code $LASTEXITCODE"
@@ -54,13 +120,9 @@ function Expand-SkillsArchive([string]$ArchivePath, [string]$DestRoot) {
                 }
                 continue
             }
-            if (Test-Path $dest) { continue }
-            $parent = Split-Path -Parent $dest
-            if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path $parent)) {
-                New-Item -ItemType Directory -Force -Path $parent | Out-Null
-            }
-            Copy-Item -LiteralPath $item.FullName -Destination $dest
+            Install-ManagedSkillFile $item.FullName $dest $rel $manifest
         }
+        Write-SkillsManifest $DestRoot $manifest
     } finally {
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }

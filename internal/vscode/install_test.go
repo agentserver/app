@@ -328,11 +328,16 @@ func TestWindowsDriverSupportScriptInstallsSkillsAndConcisePrompt(t *testing.T) 
 	s := string(body)
 	for _, want := range []string{
 		"function Expand-SkillsArchive",
+		"function Read-SkillsManifest",
+		"function Write-SkillsManifest",
+		"function Install-ManagedSkillFile",
 		"function Read-DriverCodexPrompt",
 		"function Merge-DriverCodexAgentsPrompt",
 		"driver-superpower-skills.tar.gz",
+		".agentserver-managed-skills.json",
+		"Get-FileHash -Algorithm SHA256",
+		"$oldHash -and ($currentHash -eq $oldHash)",
 		"prompts-codex\\AGENTS.md",
-		"Test-Path $dest",
 		"ReadAllText($promptPath)",
 		"agentserver-app loom driver prompt:start",
 		"tar.exe -xzf",
