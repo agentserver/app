@@ -322,8 +322,8 @@ func TestWindowsInstallersDeleteObsoleteBundledPayloads(t *testing.T) {
 			want: []string{
 				"$obsoletePayloads = @(",
 				"'codex.exe'",
-				"'vscode-installer' + '.exe'",
-				"'vscode-manifest' + '.json'",
+				"('vscode-installer' + '.exe')",
+				"('vscode-manifest' + '.json')",
 				"Remove-Item -LiteralPath $obsoletePath -Force",
 			},
 		},
