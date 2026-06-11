@@ -26,7 +26,7 @@ func TestPrepareVSCodeMigratesSettingsAndRefreshesVSIX(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(settingsPath, []byte(`{
-	  "agentserverVscode.panel.allowed": ["terminal", "output"],
+	  "agentserverApp.panel.allowed": ["terminal", "output"],
 	  "custom.key": "keep me"
 	}`), 0o644); err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func TestPrepareVSCodeMigratesSettingsAndRefreshesVSIX(t *testing.T) {
 	}
 	t.Cleanup(func() { installExtensions = oldInstallExtensions })
 
-	vsixPath := filepath.Join(dir, "agentserver-vscode.vsix")
+	vsixPath := filepath.Join(dir, "agentserver-app.vsix")
 	if err := PrepareVSCode(context.Background(), Input{
 		CodeExe:          filepath.Join(dir, "Code.exe"),
 		Paths:            p,
@@ -57,11 +57,11 @@ func TestPrepareVSCodeMigratesSettingsAndRefreshesVSIX(t *testing.T) {
 	if err := json.Unmarshal(b, &settings); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := settings["agentserverVscode.panel.allowed"]; ok {
-		t.Fatalf("agentserverVscode.panel.allowed should be removed")
+	if _, ok := settings["agentserverApp.panel.allowed"]; ok {
+		t.Fatalf("agentserverApp.panel.allowed should be removed")
 	}
-	if _, ok := settings["agentserverVscode.panel.hideViews"]; !ok {
-		t.Fatalf("agentserverVscode.panel.hideViews should be written")
+	if _, ok := settings["agentserverApp.panel.hideViews"]; !ok {
+		t.Fatalf("agentserverApp.panel.hideViews should be written")
 	}
 	if settings["custom.key"] != "keep me" {
 		t.Fatalf("custom.key=%v, want keep me", settings["custom.key"])

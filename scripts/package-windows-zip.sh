@@ -3,11 +3,11 @@
 # This is the Inno-Setup-free alternative used when no .exe-building
 # toolchain is available on the dev host.
 #
-# Output: dist/agentserver-vscode-<ver>-portable.zip containing:
+# Output: dist/agentserver-app-<ver>-portable.zip containing:
 #   launcher.exe, onboarding-server.exe, agentctl.exe, open-folder.exe
 #   uninstall.exe, token-refresher.exe
 #   driver-agent.exe, slave-agent.exe
-#   agentserver-vscode.vsix
+#   agentserver-app.vsix
 #   vscode-installer.exe (bundled to avoid Microsoft CDN download during install)
 #   codex-desktop-installer.exe (bundled to avoid winget Store execution during install)
 #   codex.exe  (246MB, bundled to avoid GitHub download from CN)
@@ -28,8 +28,8 @@ cd "$(dirname "$0")/.."
 
 VERSION="0.1.0"
 OUT="dist"
-STAGE="$OUT/agentserver-vscode-$VERSION-portable"
-ZIP="$OUT/agentserver-vscode-$VERSION-portable.zip"
+STAGE="$OUT/agentserver-app-$VERSION-portable"
+ZIP="$OUT/agentserver-app-$VERSION-portable.zip"
 
 CODEX_RELEASE="rust-v0.136.0"
 CODEX_ASSET="codex-x86_64-pc-windows-msvc.exe"
@@ -221,7 +221,7 @@ echo "vscode installer: $vscode_size bytes (cached)"
 for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          dist/windows/agentctl.exe dist/windows/open-folder.exe \
          dist/windows/uninstall.exe dist/windows/token-refresher.exe \
-         extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \
+         extensions/agentserver-app/agentserver-app-0.1.0.vsix \
          internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
          packaging/windows/ensure-vscode.ps1 \
@@ -241,7 +241,7 @@ for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
     case "$f" in
       internal/ui/assets/dist/*) echo "  hint: run 'make ui-build'" ;;
       dist/windows/*.exe)        echo "  hint: run 'make cross-windows'" ;;
-      */agentserver-vscode-*.vsix) echo "  hint: run 'make ext-build'" ;;
+      */agentserver-app-*.vsix) echo "  hint: run 'make ext-build'" ;;
     esac
     exit 1
   fi
@@ -270,8 +270,8 @@ cp "$CODEX_DESKTOP_CACHE" "$STAGE/codex-desktop-installer.exe"
 cp "$VSCODE_CACHE" "$STAGE/vscode-installer.exe"
 
 # VS Code extension
-cp extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \
-   "$STAGE/agentserver-vscode.vsix"
+cp extensions/agentserver-app/agentserver-app-0.1.0.vsix \
+   "$STAGE/agentserver-app.vsix"
 
 # Resources
 cp packaging/windows/install.ps1      "$STAGE/"
@@ -303,7 +303,7 @@ cat > "$STAGE/README.txt" <<'EOF'
 To uninstall:
    Open "Apps & features" → search "星池指挥官" → Uninstall.
    Or run:
-     "%LOCALAPPDATA%\Programs\agentserver-vscode\uninstall.exe" --silent
+     "%LOCALAPPDATA%\Programs\agentserver-app\uninstall.exe" --silent
 
 See LICENSE.zh.txt for what gets written to your machine.
 EOF

@@ -5,7 +5,7 @@ package shortcut
 import "errors"
 
 type DesktopInput struct {
-	Name      string // e.g. "agentserver-vscode"
+	Name      string // e.g. "agentserver-app"
 	TargetExe string // absolute path to launcher.exe
 	Args      string // launcher takes none by default
 	IconPath  string // absolute path to .ico
@@ -16,7 +16,7 @@ type ContextMenuInput struct {
 	MenuLabel         string // localized label, e.g. "用星池指挥官打开"
 	HandlerExe        string // absolute path to open-folder.exe
 	IconPath          string // absolute path to .ico
-	RegistryKeySuffix string // e.g. "AgentserverVscode"
+	RegistryKeySuffix string // e.g. "AgentserverApp"
 }
 
 func EnsureDesktopShortcut(in DesktopInput) error {

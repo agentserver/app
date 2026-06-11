@@ -11,7 +11,7 @@ import (
 type Paths struct {
 	UserHome string
 
-	// Per-install state root (~/.agentserver-vscode/)
+	// Per-install state root (~/.agentserver-app/)
 	InstallRoot              string
 	StateFile                string
 	SecretsFile              string
@@ -40,7 +40,7 @@ func Default() (Paths, error) {
 	if err != nil {
 		return Paths{}, fmt.Errorf("user home: %w", err)
 	}
-	root := filepath.Join(home, ".agentserver-vscode")
+	root := filepath.Join(home, ".agentserver-app")
 	codex := filepath.Join(home, ".codex")
 	p := Paths{
 		UserHome:                          home,
@@ -66,7 +66,7 @@ func Default() (Paths, error) {
 		if lad == "" {
 			lad = filepath.Join(home, "AppData", "Local")
 		}
-		p.LocalAppDataRoot = filepath.Join(lad, "agentserver-vscode")
+		p.LocalAppDataRoot = filepath.Join(lad, "agentserver-app")
 		p.CodexExePath = filepath.Join(p.LocalAppDataRoot, "bin", "codex.exe")
 	default:
 		p.LocalAppDataRoot = filepath.Join(root, "bin-root")

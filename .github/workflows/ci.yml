@@ -47,4 +47,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: cd extensions/agentserver-vscode && npm ci && npm test
+      - run: cd extensions/agentserver-app && npm ci && npm test

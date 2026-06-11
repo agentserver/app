@@ -224,7 +224,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 			return launchCompletedFrontend(ctx, current, in.Paths, sec,
 				in.InstallDir,
 				joinExe(in.InstallDir, "token-refresher.exe"),
-				joinExe(in.InstallDir, "agentserver-vscode.vsix"),
+				joinExe(in.InstallDir, "agentserver-app.vsix"),
 				nil)
 		},
 		Quit: func() {
@@ -589,7 +589,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		CodexDesktopComputerUseConfigPath: p.CodexDesktopComputerUseConfigFile,
 		VSCodeUserDataDir:                 p.VSCodeUserDataDir,
 		VSCodeExtDir:                      p.VSCodeExtDir,
-		EmbeddedVSIXPath:                  joinExe(installDir, "agentserver-vscode.vsix"),
+		EmbeddedVSIXPath:                  joinExe(installDir, "agentserver-app.vsix"),
 		CodexAbsPath:                      p.CodexExePath,
 		BundledCodexPath:                  joinExe(installDir, "codex.exe"),
 		LoomDriverPath:                    joinExe(installDir, "driver-agent.exe"),
@@ -779,7 +779,7 @@ func completedDriverCodexBin(p paths.Paths, s *state.State) string {
 		return "codex"
 	}
 	// Codex Desktop owns its CLI runtime; do not point the driver at the
-	// VS Code helper codex.exe staged under agentserver-vscode.
+	// VS Code helper codex.exe staged under agentserver-app.
 	return "codex"
 }
 

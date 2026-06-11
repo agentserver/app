@@ -36,11 +36,11 @@ suite('package manifest', () => {
     const manifest = readManifest();
     const byCommand = new Map(manifest.contributes.commands.map(c => [c.command, c.title]));
     assert.strictEqual(
-      byCommand.get('agentserverVscode.reopenCodexTerminal'),
+      byCommand.get('agentserverApp.reopenCodexTerminal'),
       '星池指挥官: 创建新的会话',
     );
     assert.strictEqual(
-      byCommand.get('agentserverVscode.doctor'),
+      byCommand.get('agentserverApp.doctor'),
       '星池指挥官: 诊断工具',
     );
     for (const title of byCommand.values()) {
@@ -53,12 +53,12 @@ suite('package manifest', () => {
     const manifest = readManifest();
     const byCommand = new Map(manifest.contributes.commands.map(c => [c.command, c.title]));
     assert.strictEqual(
-      byCommand.get('agentserverVscode.openWithSystem'),
+      byCommand.get('agentserverApp.openWithSystem'),
       '用系统应用打开',
     );
     const menus = manifest.contributes.menus;
     const explorerMenu = menus && menus['explorer/context'] ? menus['explorer/context'] : [];
-    const entry = explorerMenu.find(m => m.command === 'agentserverVscode.openWithSystem');
+    const entry = explorerMenu.find(m => m.command === 'agentserverApp.openWithSystem');
     assert.ok(entry, 'missing explorer/context menu entry for open-with-system');
     assert.strictEqual(entry.when, 'resourceScheme == file && !explorerResourceIsFolder');
   });
@@ -67,13 +67,13 @@ suite('package manifest', () => {
     const manifest = readManifest();
     const byCommand = new Map(manifest.contributes.commands.map(c => [c.command, c.title]));
     assert.strictEqual(
-      byCommand.get('agentserverVscode.showAdvancedInterface'),
+      byCommand.get('agentserverApp.showAdvancedInterface'),
       '星池指挥官: 显示高级界面',
     );
 
     const menus = manifest.contributes.menus ?? {};
     const commandPaletteEntry = (menus.commandPalette ?? [])
-      .find(m => m.command === 'agentserverVscode.showAdvancedInterface');
+      .find(m => m.command === 'agentserverApp.showAdvancedInterface');
     assert.ok(commandPaletteEntry, 'advanced interface command should be hidden from command palette');
     assert.strictEqual(commandPaletteEntry.when, 'false');
 
@@ -81,7 +81,7 @@ suite('package manifest', () => {
       .filter(([menu]) => menu !== 'commandPalette')
       .flatMap(([, entries]) => entries);
     assert.ok(
-      !menuEntries.some(m => m.command === 'agentserverVscode.showAdvancedInterface'),
+      !menuEntries.some(m => m.command === 'agentserverApp.showAdvancedInterface'),
       'advanced interface command should stay hidden from visible menus',
     );
   });
@@ -95,19 +95,19 @@ suite('package manifest', () => {
       '让 VS Code 作为星池指挥官的简洁文件夹和会话界面',
     );
     assert.strictEqual(
-      properties['agentserverVscode.startup.openFolderIfEmpty'].description,
+      properties['agentserverApp.startup.openFolderIfEmpty'].description,
       '启动时如果还没有打开文件夹，就提示用户选择一个文件夹。',
     );
     assert.strictEqual(
-      properties['agentserverVscode.terminal.respawnOnClose'].description,
+      properties['agentserverApp.terminal.respawnOnClose'].description,
       '关闭会话后自动创建新的会话。',
     );
     assert.strictEqual(
-      properties['agentserverVscode.terminal.profileName'].description,
+      properties['agentserverApp.terminal.profileName'].description,
       '用于后台会话的内部配置名称。',
     );
     assert.strictEqual(
-      properties['agentserverVscode.panel.hideViews'].description,
+      properties['agentserverApp.panel.hideViews'].description,
       '高级设置：需要隐藏的 VS Code 内部视图。',
     );
   });

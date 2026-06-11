@@ -94,7 +94,7 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"$AppDisplayName = '星池指挥官'",
 				"LegacyDesktopLnk",
 				"Desktop\\$AppDisplayName.lnk",
-				"Software\\Classes\\*\\shell\\AgentserverVscode",
+				"Software\\Classes\\*\\shell\\AgentserverApp",
 				"用星池指挥官打开",
 				"Join-Path $InstallDir 'uninstall.exe'",
 				"Set-ScriptOutputEncoding",
@@ -266,7 +266,7 @@ func TestWindowsMachineScriptCreatesStableMachineIDAndUpdatesComputerName(t *tes
 	s := string(body)
 	for _, want := range []string{
 		"param(",
-		`[string]$MachinePath = (Join-Path $env:USERPROFILE '.agentserver-vscode\machine.json')`,
+		`[string]$MachinePath = (Join-Path $env:USERPROFILE '.agentserver-app\machine.json')`,
 		`[string]$ComputerName = $env:COMPUTERNAME`,
 		`[string]$ComputerNamePath = ''`,
 		"ReadAllText($ComputerNamePath",
@@ -322,7 +322,7 @@ func TestWindowsPortableInstallerInitializesMachineBeforeFrontend(t *testing.T) 
 	}
 	s := string(body)
 	for _, want := range []string{
-		"$MachinePath = Join-Path $env:USERPROFILE '.agentserver-vscode\\machine.json'",
+		"$MachinePath = Join-Path $env:USERPROFILE '.agentserver-app\\machine.json'",
 		"$InitialComputerName = $env:COMPUTERNAME",
 		"$existing.computer_name",
 		"$InitialComputerName = $existingComputerName.Trim()",
@@ -366,7 +366,7 @@ func TestWindowsPortableInstallerStagesBundledCodexForAllModesBeforeFrontend(t *
 	s := string(body)
 	for _, want := range []string{
 		"$codexSrc = Join-Path $srcDir 'codex.exe'",
-		"$codexBinDir = Join-Path $env:LOCALAPPDATA \"agentserver-vscode\\bin\"",
+		"$codexBinDir = Join-Path $env:LOCALAPPDATA \"agentserver-app\\bin\"",
 		"$codexDst = Join-Path $codexBinDir 'codex.exe'",
 		"Copy-Item $codexSrc $codexDst -Force",
 	} {
@@ -446,7 +446,7 @@ func TestWindowsInnoInstallerStagesBundledCodexForAllModesBeforeFrontend(t *test
 	s := string(body)
 	for _, want := range []string{
 		"procedure StageBundledCodexForLocalSlaves();",
-		"CodexBinDir := AddBackslash(LocalAppData) + 'agentserver-vscode\\bin';",
+		"CodexBinDir := AddBackslash(LocalAppData) + 'agentserver-app\\bin';",
 		"CodexSrc := ExpandConstant('{app}\\codex.exe');",
 		"CodexDst := AddBackslash(CodexBinDir) + 'codex.exe';",
 		"FileCopy(CodexSrc, CodexDst, False)",
@@ -627,7 +627,7 @@ func TestWindowsInnoInstallerStopsLocalAppDataCodexBeforeReplacingFiles(t *testi
 	}
 	s := string(body)
 	for _, want := range []string{
-		"$localAppDataRoot = Join-Path $env:LOCALAPPDATA ''agentserver-vscode''",
+		"$localAppDataRoot = Join-Path $env:LOCALAPPDATA ''agentserver-app''",
 		"$codexBin = Join-Path $localAppDataRoot ''bin\\codex.exe''",
 		"$exe -ieq $codexBin",
 	} {
@@ -646,7 +646,7 @@ func TestWindowsPortableInstallerStopsRunningProcessesBeforeCopy(t *testing.T) {
 	for _, want := range []string{
 		"function Stop-RunningAgentserverProcesses",
 		"Get-CimInstance Win32_Process",
-		"$localAppDataRoot = Join-Path $env:LOCALAPPDATA 'agentserver-vscode'",
+		"$localAppDataRoot = Join-Path $env:LOCALAPPDATA 'agentserver-app'",
 		"$codexBin = Join-Path $localAppDataRoot 'bin\\codex.exe'",
 		"$exe -ieq $codexBin",
 		"\nStop-RunningAgentserverProcesses\n",

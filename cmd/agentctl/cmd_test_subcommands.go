@@ -171,7 +171,7 @@ func runTestConfigure() {
 	// .vsix sits next to the running agentctl.exe
 	exeDir, _ := os.Executable()
 	exeDir = filepath.Dir(exeDir)
-	vsixPath := filepath.Join(exeDir, "agentserver-vscode.vsix")
+	vsixPath := filepath.Join(exeDir, "agentserver-app.vsix")
 	fmt.Printf("Installing extensions (this can take ~30s each) ...\n")
 	if err := vscode.InstallExtensions(ctx, vscode.Installer{
 		CodeExe:       s.VSCode.Path,

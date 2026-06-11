@@ -53,7 +53,7 @@ P13.4 verification subcommands (skip the OAuth steps, exercise everything else):
   agentctl test-install-vscode   download + silently install VS Code 1.96.0
   agentctl test-install-codex-desktop
                                  install Codex Desktop with winget and persist state
-  agentctl test-download-codex   download codex.exe to %LOCALAPPDATA%\agentserver-vscode\bin\
+  agentctl test-download-codex   download codex.exe to %LOCALAPPDATA%\agentserver-app\bin\
 	  agentctl test-configure        write settings.json + config.toml + setx + install extensions
 	                                 (assumes VS Code already detected; uses local proxy key)
 	  agentctl test-configure-codex-desktop

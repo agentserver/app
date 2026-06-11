@@ -12,7 +12,7 @@ import (
 	"sync"
 )
 
-const serviceName = "agentserver-vscode"
+const serviceName = "agentserver-app"
 
 // ErrNotFound is returned by Get when the key does not exist.
 var ErrNotFound = errors.New("secret not found")

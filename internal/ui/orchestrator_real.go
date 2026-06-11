@@ -673,7 +673,7 @@ func (r *realOrchestrator) Finalize(ctx context.Context) error {
 			MenuLabel:         branding.ContextMenuLabel,
 			HandlerExe:        r.d.OpenFolderExePath,
 			IconPath:          r.d.IconPath,
-			RegistryKeySuffix: "AgentserverVscode",
+			RegistryKeySuffix: "AgentserverApp",
 		}); err != nil {
 			return err
 		}

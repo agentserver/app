@@ -58,7 +58,7 @@ lint:
 	staticcheck ./...
 
 ext-build:
-	cd extensions/agentserver-vscode && npm ci && npm run compile && npm run package
+	cd extensions/agentserver-app && npm ci && npm run compile && npm run package
 
 ui-build:
 	cd internal/ui/web && npm ci && npm run build

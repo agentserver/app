@@ -2,7 +2,7 @@
 ; Build: ISCC.exe installer.iss
 ;        (Linux: wine "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss)
 
-#define MyAppId "agentserver-vscode"
+#define MyAppId "agentserver-app"
 #define MyAppName "星池指挥官"
 #define MyAppVersion "0.1.0"
 #define MyAppPublisher "agentserver"
@@ -57,8 +57,8 @@ Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
 Source: "..\..\dist\cache\vscode\1.96.0\VSCodeUserSetup-x64-1.96.0.exe"; \
     DestDir: "{app}"; DestName: "vscode-installer.exe"; Flags: ignoreversion
 ; Bundled VS Code extension
-Source: "..\..\extensions\agentserver-vscode\agentserver-vscode-0.1.0.vsix"; \
-    DestDir: "{app}"; DestName: "agentserver-vscode.vsix"; Flags: ignoreversion
+Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.0.vsix"; \
+    DestDir: "{app}"; DestName: "agentserver-app.vsix"; Flags: ignoreversion
 ; Icon
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; License
@@ -99,7 +99,7 @@ begin
   if UserProfile = '' then begin
     UserProfile := ExpandConstant('{userappdata}');
   end;
-  Result := AddBackslash(UserProfile) + '.agentserver-vscode\machine.json';
+  Result := AddBackslash(UserProfile) + '.agentserver-app\machine.json';
 end;
 
 function JsonStringValue(Source, Key: String): String;
@@ -321,9 +321,9 @@ begin
     '$installDir = ' + PowerShellQuote(ExpandConstant('{app}')) + #13#10 +
     '$installRoot = [System.IO.Path]::GetFullPath($installDir).TrimEnd(''\'')' + #13#10 +
     'if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {' + #13#10 +
-    '  $localAppDataRoot = ' + PowerShellQuote(ExpandConstant('{localappdata}\agentserver-vscode')) + #13#10 +
+    '  $localAppDataRoot = ' + PowerShellQuote(ExpandConstant('{localappdata}\agentserver-app')) + #13#10 +
     '} else {' + #13#10 +
-    '  $localAppDataRoot = Join-Path $env:LOCALAPPDATA ''agentserver-vscode''' + #13#10 +
+    '  $localAppDataRoot = Join-Path $env:LOCALAPPDATA ''agentserver-app''' + #13#10 +
     '}' + #13#10 +
     '$codexBin = Join-Path $localAppDataRoot ''bin\codex.exe''' + #13#10 +
     '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''slave-agent.exe'', ''codex.exe'')' + #13#10 +
@@ -373,7 +373,7 @@ begin
   end;
 
   CodexSrc := ExpandConstant('{app}\codex.exe');
-  CodexBinDir := AddBackslash(LocalAppData) + 'agentserver-vscode\bin';
+  CodexBinDir := AddBackslash(LocalAppData) + 'agentserver-app\bin';
   CodexDst := AddBackslash(CodexBinDir) + 'codex.exe';
 
   if not FileExists(CodexSrc) then begin
@@ -447,4 +447,4 @@ end;
 [UninstallRun]
 ; Best-effort cleanup; ignored if exit non-zero
 Filename: "{app}\uninstall.exe"; Parameters: "--silent --keep-install-dir"; \
-    Flags: runhidden; RunOnceId: "agentserver-vscode-uninstall"
+    Flags: runhidden; RunOnceId: "agentserver-app-uninstall"

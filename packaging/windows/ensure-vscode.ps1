@@ -183,7 +183,7 @@ function Get-VSCodeInstaller([object]$Manifest) {
         Write-Host "  bundled VS Code installer is invalid: got $len bytes, want $($Manifest.ExpectedSize)" -ForegroundColor Yellow
     }
 
-    $cacheDir = Join-Path $env:LOCALAPPDATA 'agentserver-vscode\cache'
+    $cacheDir = Join-Path $env:LOCALAPPDATA 'agentserver-app\cache'
     if (-not (Test-Path $cacheDir)) {
         New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
     }

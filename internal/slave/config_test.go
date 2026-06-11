@@ -22,7 +22,7 @@ func TestWriteConfigPublishesMachineSourceInAgentserverCardFields(t *testing.T) 
 	if err := WriteConfig(sl, m, ConfigInput{
 		ServerURL:   "https://agent.cs.ac.cn",
 		ObserverURL: "https://loom.nj.cs.ac.cn:10062/",
-		CodexBin:    `C:\Users\61414\AppData\Local\agentserver-vscode\bin\codex.exe`,
+		CodexBin:    `C:\Users\61414\AppData\Local\agentserver-app\bin\codex.exe`,
 	}); err != nil {
 		t.Fatalf("WriteConfig: %v", err)
 	}
@@ -37,7 +37,7 @@ func TestWriteConfigPublishesMachineSourceInAgentserverCardFields(t *testing.T) 
 	if cfg.Agent.Kind != "codex" {
 		t.Fatalf("agent.kind=%q", cfg.Agent.Kind)
 	}
-	if cfg.Codex.Bin != `C:\Users\61414\AppData\Local\agentserver-vscode\bin\codex.exe` {
+	if cfg.Codex.Bin != `C:\Users\61414\AppData\Local\agentserver-app\bin\codex.exe` {
 		t.Fatalf("codex.bin=%q", cfg.Codex.Bin)
 	}
 	if cfg.Codex.WorkDir != `C:\Users\61414\project-a` {
@@ -62,7 +62,7 @@ func TestWriteConfigPublishesMachineSourceInAgentserverCardFields(t *testing.T) 
 	if !slices.Equal(cfg.Discovery.Skills, wantSkills) {
 		t.Fatalf("discovery.skills=%v", cfg.Discovery.Skills)
 	}
-	wantTags := []string{"agentserver-vscode-slave", "local-machine:machine-1", "host:61414-PC"}
+	wantTags := []string{"agentserver-app-slave", "local-machine:machine-1", "host:61414-PC"}
 	if !slices.Equal(cfg.Resources.Tags, wantTags) {
 		t.Fatalf("resources.tags=%v", cfg.Resources.Tags)
 	}

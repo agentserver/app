@@ -25,8 +25,8 @@ func TestWriteSettings_Empty(t *testing.T) {
 	if m["workbench.editor.languageDetection"] != false {
 		t.Errorf("languageDetection: %v", m["workbench.editor.languageDetection"])
 	}
-	if m["agentserverVscode.terminal.profileName"] != "codex" {
-		t.Errorf("profile: %v", m["agentserverVscode.terminal.profileName"])
+	if m["agentserverApp.terminal.profileName"] != "codex" {
+		t.Errorf("profile: %v", m["agentserverApp.terminal.profileName"])
 	}
 	profiles := m["terminal.integrated.profiles.windows"].(map[string]any)
 	codex := profiles["codex"].(map[string]any)
@@ -122,9 +122,9 @@ func TestWriteSettings_MinimalModeDefaults(t *testing.T) {
 		}
 	}
 
-	hideViews, ok := m["agentserverVscode.panel.hideViews"].([]any)
+	hideViews, ok := m["agentserverApp.panel.hideViews"].([]any)
 	if !ok {
-		t.Fatalf("agentserverVscode.panel.hideViews=%T, want array", m["agentserverVscode.panel.hideViews"])
+		t.Fatalf("agentserverApp.panel.hideViews=%T, want array", m["agentserverApp.panel.hideViews"])
 	}
 	wantHideViews := []string{
 		"workbench.panel.markers.view",
@@ -137,15 +137,15 @@ func TestWriteSettings_MinimalModeDefaults(t *testing.T) {
 		"timeline",
 	}
 	if len(hideViews) != len(wantHideViews) {
-		t.Fatalf("agentserverVscode.panel.hideViews len=%d, want %d", len(hideViews), len(wantHideViews))
+		t.Fatalf("agentserverApp.panel.hideViews len=%d, want %d", len(hideViews), len(wantHideViews))
 	}
 	for i, expected := range wantHideViews {
 		if hideViews[i] != expected {
-			t.Errorf("agentserverVscode.panel.hideViews[%d]=%v, want %v", i, hideViews[i], expected)
+			t.Errorf("agentserverApp.panel.hideViews[%d]=%v, want %v", i, hideViews[i], expected)
 		}
 	}
-	if _, ok := m["agentserverVscode.panel.allowed"]; ok {
-		t.Errorf("agentserverVscode.panel.allowed should not be written")
+	if _, ok := m["agentserverApp.panel.allowed"]; ok {
+		t.Errorf("agentserverApp.panel.allowed should not be written")
 	}
 
 	copilotEnable, ok := m["github.copilot.enable"].(map[string]any)
@@ -200,7 +200,7 @@ func TestWriteSettings_RemovesRetiredManagedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	prior := `{
-	  "agentserverVscode.panel.allowed": ["terminal", "output"],
+	  "agentserverApp.panel.allowed": ["terminal", "output"],
 	  "custom.key": "keep me"
 	}`
 	if err := os.WriteFile(path, []byte(prior), 0o644); err != nil {
@@ -210,13 +210,13 @@ func TestWriteSettings_RemovesRetiredManagedKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := readSettingsMap(t, path)
-	if _, ok := m["agentserverVscode.panel.allowed"]; ok {
-		t.Fatalf("agentserverVscode.panel.allowed should be removed")
+	if _, ok := m["agentserverApp.panel.allowed"]; ok {
+		t.Fatalf("agentserverApp.panel.allowed should be removed")
 	}
 	if m["custom.key"] != "keep me" {
 		t.Fatalf("custom.key=%v, want keep me", m["custom.key"])
 	}
-	if _, ok := m["agentserverVscode.panel.hideViews"]; !ok {
-		t.Fatalf("agentserverVscode.panel.hideViews should be written")
+	if _, ok := m["agentserverApp.panel.hideViews"]; !ok {
+		t.Fatalf("agentserverApp.panel.hideViews should be written")
 	}
 }

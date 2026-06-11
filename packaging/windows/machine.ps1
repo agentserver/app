@@ -1,7 +1,7 @@
 ﻿# Initializes the per-user machine identity for 星池指挥官.
 
 param(
-    [string]$MachinePath = (Join-Path $env:USERPROFILE '.agentserver-vscode\machine.json'),
+    [string]$MachinePath = (Join-Path $env:USERPROFILE '.agentserver-app\machine.json'),
     [string]$ComputerName = $env:COMPUTERNAME,
     [string]$ComputerNamePath = ''
 )

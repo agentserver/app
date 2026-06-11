@@ -191,7 +191,7 @@ echo "vscode installer: $vscode_size bytes (cached)"
 for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          dist/windows/agentctl.exe dist/windows/open-folder.exe \
          dist/windows/uninstall.exe dist/windows/token-refresher.exe \
-         extensions/agentserver-vscode/agentserver-vscode-0.1.0.vsix \
+         extensions/agentserver-app/agentserver-app-0.1.0.vsix \
          internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
          packaging/windows/ensure-vscode.ps1 \
@@ -212,7 +212,7 @@ for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
     case "$f" in
       internal/ui/assets/dist/*) echo "  hint: run 'make ui-build'" ;;
       dist/windows/*.exe)        echo "  hint: run 'make cross-windows'" ;;
-      */agentserver-vscode-*.vsix) echo "  hint: run 'make ext-build'" ;;
+      */agentserver-app-*.vsix) echo "  hint: run 'make ext-build'" ;;
     esac
     exit 1
   fi

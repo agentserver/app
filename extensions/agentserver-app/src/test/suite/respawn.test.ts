@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 suite('respawn', () => {
   test('closing codex terminal respawns one', async () => {
-    await vscode.extensions.getExtension('agentserver.agentserver-vscode')?.activate();
+    await vscode.extensions.getExtension('agentserver.agentserver-app')?.activate();
     await new Promise(r => setTimeout(r, 500));
     const t = vscode.window.terminals.find(t => t.name === 'codex');
     assert.ok(t, 'no codex terminal to close');

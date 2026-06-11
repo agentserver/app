@@ -42,7 +42,7 @@ func main() {
 		installDir := filepath.Dir(exe)
 		launcherExe = filepath.Join(installDir, "launcher.exe")
 		tokenRefresherExe = filepath.Join(installDir, "token-refresher.exe")
-		embeddedVSIXPath = filepath.Join(installDir, "agentserver-vscode.vsix")
+		embeddedVSIXPath = filepath.Join(installDir, "agentserver-app.vsix")
 		installModePath = installmode.PathForExecutable(exe)
 	}
 	_ = ensureConsoleBackground(context.Background(), consoleBackgroundDeps{

@@ -121,7 +121,7 @@ func TestUpdateMCPServerAddsDriverAndKeepsModelConfig(t *testing.T) {
 	}
 
 	if err := UpdateMCPServer(path, "driver", MCPServer{
-		Command: `C:\Users\61414\AppData\Local\Programs\agentserver-vscode\driver-agent.exe`,
+		Command: `C:\Users\61414\AppData\Local\Programs\agentserver-app\driver-agent.exe`,
 		Args:    []string{"serve-mcp", "--config", `C:\Users\61414\.config\multi-agent\driver.yaml`},
 	}); err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestUpdateMCPServerAddsDriverAndKeepsModelConfig(t *testing.T) {
 		`model_provider = "modelserver"`,
 		`[model_providers.modelserver]`,
 		`[mcp_servers.driver]`,
-		`command = "C:\\Users\\61414\\AppData\\Local\\Programs\\agentserver-vscode\\driver-agent.exe"`,
+		`command = "C:\\Users\\61414\\AppData\\Local\\Programs\\agentserver-app\\driver-agent.exe"`,
 		`args = ["serve-mcp", "--config", "C:\\Users\\61414\\.config\\multi-agent\\driver.yaml"]`,
 	} {
 		if !strings.Contains(s, want) {

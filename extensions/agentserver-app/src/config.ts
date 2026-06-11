@@ -8,7 +8,7 @@ export interface ExtConfig {
 }
 
 export function readConfig(): ExtConfig {
-  const c = vscode.workspace.getConfiguration('agentserverVscode');
+  const c = vscode.workspace.getConfiguration('agentserverApp');
   return {
     startupOpenFolderIfEmpty: c.get<boolean>('startup.openFolderIfEmpty', true),
     terminalRespawnOnClose:   c.get<boolean>('terminal.respawnOnClose', true),

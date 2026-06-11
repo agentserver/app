@@ -28,19 +28,19 @@ func TestWindowsE2E(t *testing.T) {
 
 	// 1. Locate locally-built setup .exe.
 	setupExe := filepath.Join("..", "..", "..", "packaging", "windows", "Output",
-		"agentserver-vscode-0.1.0-setup.exe")
+		"agentserver-app-0.1.0-setup.exe")
 	if _, err := os.Stat(setupExe); err != nil {
 		t.Fatalf("setup exe not built: %v", err)
 	}
 
 	// 2. Push installer.
-	remote := `C:\Users\61414\Downloads\agentserver-vscode-setup.exe`
+	remote := `C:\Users\61414\Downloads\agentserver-app-setup.exe`
 	if err := c.PutFile(setupExe, remote); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 
 	// 3. Best-effort uninstall residual.
-	out, _, _ := c.Pwsh(`& 'C:\Users\61414\AppData\Local\Programs\agentserver-vscode\agentctl.exe' uninstall --silent 2>$null; $LASTEXITCODE`)
+	out, _, _ := c.Pwsh(`& 'C:\Users\61414\AppData\Local\Programs\agentserver-app\agentctl.exe' uninstall --silent 2>$null; $LASTEXITCODE`)
 	t.Logf("pre-uninstall: %s", out)
 
 	// 4. Silent install.
@@ -50,7 +50,7 @@ func TestWindowsE2E(t *testing.T) {
 	}
 
 	// 5. Launch launcher (in background — it serves onboarding-server).
-	c.Pwsh(`Start-Process -FilePath "$env:LOCALAPPDATA\Programs\agentserver-vscode\launcher.exe"`)
+	c.Pwsh(`Start-Process -FilePath "$env:LOCALAPPDATA\Programs\agentserver-app\launcher.exe"`)
 
 	// 6. Discover onboarding port from launcher's stdout? In v1 we hardcode
 	//    a fixed port via env var. For now, look at netstat.
@@ -88,7 +88,7 @@ verify:
 	if !strings.Contains(out, `model_provider = "modelserver"`) {
 		t.Errorf("codex config wrong: %s", out)
 	}
-	out, _, _ = c.Pwsh(`Get-Content "$env:LOCALAPPDATA\Programs\agentserver-vscode\install-mode.json"`)
+	out, _, _ = c.Pwsh(`Get-Content "$env:LOCALAPPDATA\Programs\agentserver-app\install-mode.json"`)
 	if !strings.Contains(out, "codex_desktop") {
 		t.Errorf("install mode wrong: %s", out)
 	}
@@ -104,22 +104,22 @@ verify:
 	if strings.TrimSpace(out) != "True" {
 		t.Errorf("desktop shortcut missing: %s", out)
 	}
-	out, _, _ = c.Pwsh(`Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\AgentserverVscode'`)
+	out, _, _ = c.Pwsh(`Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\AgentserverApp'`)
 	if strings.TrimSpace(out) != "True" {
 		t.Errorf("registry key missing: %s", out)
 	}
-	out, _, _ = c.Pwsh(`(Get-Item 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\AgentserverVscode').GetValue('')`)
+	out, _, _ = c.Pwsh(`(Get-Item 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\AgentserverApp').GetValue('')`)
 	if strings.TrimSpace(out) != "用星池指挥官打开" {
 		t.Errorf("context menu label wrong: %s", out)
 	}
 
 	// 9. Right-click open simulation
 	c.Pwsh(`New-Item -ItemType Directory -Force "C:\tmp\e2e-test"`)
-	c.Pwsh(`& "$env:LOCALAPPDATA\Programs\agentserver-vscode\open-folder.exe" "C:\tmp\e2e-test"`)
+	c.Pwsh(`& "$env:LOCALAPPDATA\Programs\agentserver-app\open-folder.exe" "C:\tmp\e2e-test"`)
 	time.Sleep(3 * time.Second)
 
 	// 10. Cleanup
-	c.Pwsh(`& "$env:LOCALAPPDATA\Programs\agentserver-vscode\agentctl.exe" uninstall --silent`)
+	c.Pwsh(`& "$env:LOCALAPPDATA\Programs\agentserver-app\agentctl.exe" uninstall --silent`)
 	c.Pwsh(`Remove-Item -Recurse -Force "C:\tmp\e2e-test"`)
 }
 

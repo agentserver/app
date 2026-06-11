@@ -41,15 +41,15 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // 6. Commands
   registerAdvancedInterface(ctx);
   ctx.subscriptions.push(
-    vscode.commands.registerCommand('agentserverVscode.reopenCodexTerminal',
+    vscode.commands.registerCommand('agentserverApp.reopenCodexTerminal',
       () => openCodexTerminal(readConfig().terminalProfileName, { reveal: true, preserveFocus: false })),
-    vscode.commands.registerCommand('agentserverVscode.doctor', async () => {
+    vscode.commands.registerCommand('agentserverApp.doctor', async () => {
       const info = {
         terminals: vscode.window.terminals.map(t => t.name),
         workspace: vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath),
         language:  vscode.env.language,
       };
-      const channel = vscode.window.createOutputChannel('agentserver-vscode');
+      const channel = vscode.window.createOutputChannel('agentserver-app');
       channel.appendLine(JSON.stringify(info, null, 2));
       channel.show();
     }),

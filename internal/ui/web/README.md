@@ -1,6 +1,6 @@
 # onboarding-ui
 
-Vue 3 + Vite + Element Plus front-end for the agentserver-vscode onboarding flow.
+Vue 3 + Vite + Element Plus front-end for the agentserver-app onboarding flow.
 
 ## Quick start
 

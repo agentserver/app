@@ -1,11 +1,11 @@
 ﻿# 星池指挥官 v1 — portable installer (PowerShell alternative to Inno Setup)
 #
 # Usage:
-#   1. Unzip agentserver-vscode-<ver>-portable.zip somewhere
+#   1. Unzip agentserver-app-<ver>-portable.zip somewhere
 #   2. Right-click install.ps1 → "Run with PowerShell"
 #      (or: powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1)
 #
-# Installs to %LOCALAPPDATA%\Programs\agentserver-vscode, creates desktop
+# Installs to %LOCALAPPDATA%\Programs\agentserver-app, creates desktop
 # shortcut + folder context menu, and installs the selected frontend.
 # Default frontend is Codex Desktop; use -MinimalVSCode for simplified VS Code.
 # Launch the shortcut to onboard.
@@ -31,16 +31,16 @@ function Set-ScriptOutputEncoding {
 
 Set-ScriptOutputEncoding
 
-$AppName    = 'agentserver-vscode'
+$AppName    = 'agentserver-app'
 $AppDisplayName = '星池指挥官'
 $ContextMenuLabel = '用星池指挥官打开'
 $Version    = '0.1.0'
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
-$RegSubKeyFile = "Software\Classes\*\shell\AgentserverVscode"
-$RegSubKeyDir  = "Software\Classes\Directory\shell\AgentserverVscode"
-$RegSubKeyBg   = "Software\Classes\Directory\Background\shell\AgentserverVscode"
-$RegKey     = "HKCU:\Software\Classes\Directory\shell\AgentserverVscode"
-$RegKeyBg   = "HKCU:\Software\Classes\Directory\Background\shell\AgentserverVscode"
+$RegSubKeyFile = "Software\Classes\*\shell\AgentserverApp"
+$RegSubKeyDir  = "Software\Classes\Directory\shell\AgentserverApp"
+$RegSubKeyBg   = "Software\Classes\Directory\Background\shell\AgentserverApp"
+$RegKey     = "HKCU:\Software\Classes\Directory\shell\AgentserverApp"
+$RegKeyBg   = "HKCU:\Software\Classes\Directory\Background\shell\AgentserverApp"
 $DesktopLnk = Join-Path $env:USERPROFILE "Desktop\$AppDisplayName.lnk"
 $LegacyDesktopLnk = Join-Path $env:USERPROFILE "Desktop\$AppName.lnk"
 $UninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
@@ -113,9 +113,9 @@ function Stop-RunningAgentserverProcesses {
     )
     $installRoot = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-        $localAppDataRoot = Join-Path $env:USERPROFILE 'AppData\Local\agentserver-vscode'
+        $localAppDataRoot = Join-Path $env:USERPROFILE 'AppData\Local\agentserver-app'
     } else {
-        $localAppDataRoot = Join-Path $env:LOCALAPPDATA 'agentserver-vscode'
+        $localAppDataRoot = Join-Path $env:LOCALAPPDATA 'agentserver-app'
     }
     $codexBin = Join-Path $localAppDataRoot 'bin\codex.exe'
     $filter = {
@@ -202,7 +202,7 @@ $required = @(
     'driver-agent.exe',
     'slave-agent.exe',
     'codex-desktop-installer.exe',
-    'agentserver-vscode.vsix',
+    'agentserver-app.vsix',
     'ensure-vscode.ps1',
     'ensure-codex-desktop.ps1',
     'write-install-mode.ps1',
@@ -241,7 +241,7 @@ try {
     $ShellIconPath = $IconPath
 }
 
-$MachinePath = Join-Path $env:USERPROFILE '.agentserver-vscode\machine.json'
+$MachinePath = Join-Path $env:USERPROFILE '.agentserver-app\machine.json'
 $InitialComputerName = $env:COMPUTERNAME
 if (Test-Path -LiteralPath $MachinePath) {
     try {
@@ -268,7 +268,7 @@ Write-Step "Initializing computer name..."
 # Bundled codex.exe - copy into the expected per-user bin dir. Minimal VS Code
 # and local slave configs use this stable path in every frontend mode.
 $codexSrc = Join-Path $srcDir 'codex.exe'
-$codexBinDir = Join-Path $env:LOCALAPPDATA "agentserver-vscode\bin"
+$codexBinDir = Join-Path $env:LOCALAPPDATA "agentserver-app\bin"
 $codexDst = Join-Path $codexBinDir 'codex.exe'
 if (Test-Path $codexSrc) {
     if (-not (Test-Path $codexBinDir)) {

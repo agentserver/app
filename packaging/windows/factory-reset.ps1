@@ -6,7 +6,7 @@
 # Removes:
 #   - 星池指挥官 install dir + .lnk + registry + Apps&features entry
 #   - codex.exe + bin dir
-#   - %USERPROFILE%\.agentserver-vscode\ (state, vscode-data, vscode-extensions, cache)
+#   - %USERPROFILE%\.agentserver-app\ (state, vscode-data, vscode-extensions, cache)
 #   - %USERPROFILE%\.codex\config.toml + .bak files
 #   - HKCU\Environment OPENAI_API_KEY
 #   - VS Code (via its own uninstaller, both per-user and system installs)
@@ -61,7 +61,7 @@ Get-Process Code,launcher,agentctl,onboarding-server,'open-folder' -ErrorAction 
 Start-Sleep -Seconds 2
 
 # --- 2. Run 星池指挥官's own uninstaller if present ---
-$ourUninstall = "$env:LOCALAPPDATA\Programs\agentserver-vscode\install.ps1"
+$ourUninstall = "$env:LOCALAPPDATA\Programs\agentserver-app\install.ps1"
 if (Test-Path $ourUninstall) {
     Write-Step "Running 星池指挥官 uninstaller..."
     & powershell -NoProfile -ExecutionPolicy Bypass -File $ourUninstall -Uninstall -Silent
@@ -70,11 +70,11 @@ if (Test-Path $ourUninstall) {
 # --- 3. Belt-and-suspenders: nuke any leftovers ---
 Write-Step "Removing residual files..."
 $paths = @(
-    "$env:LOCALAPPDATA\Programs\agentserver-vscode",       # install dir
-    "$env:LOCALAPPDATA\agentserver-vscode",                 # codex bin + state cache
-    "$env:USERPROFILE\.agentserver-vscode",                 # state / vscode-data / extensions
+    "$env:LOCALAPPDATA\Programs\agentserver-app",       # install dir
+    "$env:LOCALAPPDATA\agentserver-app",                 # codex bin + state cache
+    "$env:USERPROFILE\.agentserver-app",                 # state / vscode-data / extensions
     "$env:USERPROFILE\Desktop\星池指挥官.lnk",               # desktop shortcut
-    "$env:USERPROFILE\Desktop\agentserver-vscode.lnk"       # desktop shortcut
+    "$env:USERPROFILE\Desktop\agentserver-app.lnk"       # desktop shortcut
 )
 foreach ($p in $paths) {
     if (Test-Path $p) {
@@ -93,15 +93,15 @@ if (Test-Path $codexConfig) {
 
 # Registry
 $regs = @(
-    "Software\Classes\*\shell\AgentserverVscode",
-    "Software\Classes\Directory\shell\AgentserverVscode",
-    "Software\Classes\Directory\Background\shell\AgentserverVscode"
+    "Software\Classes\*\shell\AgentserverApp",
+    "Software\Classes\Directory\shell\AgentserverApp",
+    "Software\Classes\Directory\Background\shell\AgentserverApp"
 )
 foreach ($r in $regs) {
     Remove-RegistrySubKeyTree $r
     Write-Host "  removed HKCU:\$r"
 }
-$uninstallReg = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\agentserver-vscode"
+$uninstallReg = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\agentserver-app"
 if (Test-Path $uninstallReg) {
     Remove-Item -Recurse -Force $uninstallReg -ErrorAction SilentlyContinue
     Write-Host "  removed $uninstallReg"
@@ -147,14 +147,14 @@ if (-not $KeepVSCode) {
 # --- 5. Report ---
 Write-Step "Verification:"
 $checks = @(
-    @{name="星池指挥官 install"; path="$env:LOCALAPPDATA\Programs\agentserver-vscode"},
-    @{name="codex bin dir"; path="$env:LOCALAPPDATA\agentserver-vscode"},
-    @{name="state dir"; path="$env:USERPROFILE\.agentserver-vscode"},
+    @{name="星池指挥官 install"; path="$env:LOCALAPPDATA\Programs\agentserver-app"},
+    @{name="codex bin dir"; path="$env:LOCALAPPDATA\agentserver-app"},
+    @{name="state dir"; path="$env:USERPROFILE\.agentserver-app"},
     @{name="desktop .lnk"; path="$env:USERPROFILE\Desktop\星池指挥官.lnk"},
-    @{name="legacy desktop .lnk"; path="$env:USERPROFILE\Desktop\agentserver-vscode.lnk"},
-    @{name="reg file shell"; path="Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\AgentserverVscode"},
-    @{name="reg shell"; path="HKCU:\Software\Classes\Directory\shell\AgentserverVscode"},
-    @{name="reg apps&features"; path="HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\agentserver-vscode"},
+    @{name="legacy desktop .lnk"; path="$env:USERPROFILE\Desktop\agentserver-app.lnk"},
+    @{name="reg file shell"; path="Registry::HKEY_CURRENT_USER\Software\Classes\*\shell\AgentserverApp"},
+    @{name="reg shell"; path="HKCU:\Software\Classes\Directory\shell\AgentserverApp"},
+    @{name="reg apps&features"; path="HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\agentserver-app"},
     @{name="VS Code (user)"; path="$env:LOCALAPPDATA\Programs\Microsoft VS Code"},
     @{name="VS Code (sys)"; path="${env:ProgramFiles}\Microsoft VS Code"}
 )

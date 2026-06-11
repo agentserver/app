@@ -162,8 +162,8 @@ func TestSyncStoreIfPresentPreservesExistingModeWhenFileMissing(t *testing.T) {
 }
 
 func TestPathForExecutable(t *testing.T) {
-	got := PathForExecutable(filepath.Join("C:", "Program Files", "agentserver-vscode", "launcher.exe"))
-	want := filepath.Join("C:", "Program Files", "agentserver-vscode", "install-mode.json")
+	got := PathForExecutable(filepath.Join("C:", "Program Files", "agentserver-app", "launcher.exe"))
+	want := filepath.Join("C:", "Program Files", "agentserver-app", "install-mode.json")
 	if got != want {
 		t.Fatalf("PathForExecutable() = %q, want %q", got, want)
 	}

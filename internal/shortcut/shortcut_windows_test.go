@@ -17,7 +17,7 @@ func TestEnsureDesktopShortcut_Windows(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := DesktopInput{
-		Name:      "agentserver-vscode-test",
+		Name:      "agentserver-app-test",
 		TargetExe: `C:\Windows\System32\notepad.exe`,
 		IconPath:  `C:\Windows\System32\notepad.exe`,
 		WorkDir:   dir,
@@ -25,7 +25,7 @@ func TestEnsureDesktopShortcut_Windows(t *testing.T) {
 	if err := EnsureDesktopShortcut(in); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(dir, "Desktop", "agentserver-vscode-test.lnk")
+	link := filepath.Join(dir, "Desktop", "agentserver-app-test.lnk")
 	if _, err := os.Stat(link); err != nil {
 		t.Errorf("expected .lnk at %s", link)
 	}
@@ -36,7 +36,7 @@ func TestInstallContextMenu_Windows(t *testing.T) {
 		MenuLabel:         "Test menu label",
 		HandlerExe:        `C:\Windows\System32\notepad.exe`,
 		IconPath:          `C:\Windows\System32\notepad.exe`,
-		RegistryKeySuffix: "AgentserverVscodeTest",
+		RegistryKeySuffix: "AgentserverAppTest",
 	}
 	if err := InstallContextMenu(in); err != nil {
 		t.Fatal(err)
@@ -44,20 +44,20 @@ func TestInstallContextMenu_Windows(t *testing.T) {
 	defer func() {
 		// Cleanup
 		registry.DeleteKey(registry.CURRENT_USER,
-			`Software\Classes\*\shell\AgentserverVscodeTest\command`)
+			`Software\Classes\*\shell\AgentserverAppTest\command`)
 		registry.DeleteKey(registry.CURRENT_USER,
-			`Software\Classes\*\shell\AgentserverVscodeTest`)
+			`Software\Classes\*\shell\AgentserverAppTest`)
 		registry.DeleteKey(registry.CURRENT_USER,
-			`Software\Classes\Directory\shell\AgentserverVscodeTest\command`)
+			`Software\Classes\Directory\shell\AgentserverAppTest\command`)
 		registry.DeleteKey(registry.CURRENT_USER,
-			`Software\Classes\Directory\shell\AgentserverVscodeTest`)
+			`Software\Classes\Directory\shell\AgentserverAppTest`)
 		registry.DeleteKey(registry.CURRENT_USER,
-			`Software\Classes\Directory\Background\shell\AgentserverVscodeTest\command`)
+			`Software\Classes\Directory\Background\shell\AgentserverAppTest\command`)
 		registry.DeleteKey(registry.CURRENT_USER,
-			`Software\Classes\Directory\Background\shell\AgentserverVscodeTest`)
+			`Software\Classes\Directory\Background\shell\AgentserverAppTest`)
 	}()
 	k, err := registry.OpenKey(registry.CURRENT_USER,
-		`Software\Classes\Directory\shell\AgentserverVscodeTest`, registry.QUERY_VALUE)
+		`Software\Classes\Directory\shell\AgentserverAppTest`, registry.QUERY_VALUE)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestInstallContextMenu_Windows(t *testing.T) {
 	}
 
 	fileCmd, err := registry.OpenKey(registry.CURRENT_USER,
-		`Software\Classes\*\shell\AgentserverVscodeTest\command`, registry.QUERY_VALUE)
+		`Software\Classes\*\shell\AgentserverAppTest\command`, registry.QUERY_VALUE)
 	if err != nil {
 		t.Fatal(err)
 	}

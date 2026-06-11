@@ -17,9 +17,9 @@ import (
 func TestRunRemovesProjectStateSecretsAndOpenAIEnv(t *testing.T) {
 	dir := t.TempDir()
 	p := paths.Paths{
-		InstallRoot:      filepath.Join(dir, ".agentserver-vscode"),
-		SecretsFile:      filepath.Join(dir, ".agentserver-vscode", "secrets.json"),
-		LocalAppDataRoot: filepath.Join(dir, "local-appdata", "agentserver-vscode"),
+		InstallRoot:      filepath.Join(dir, ".agentserver-app"),
+		SecretsFile:      filepath.Join(dir, ".agentserver-app", "secrets.json"),
+		LocalAppDataRoot: filepath.Join(dir, "local-appdata", "agentserver-app"),
 	}
 	sec := secrets.New(p.SecretsFile)
 	for _, key := range []string{
@@ -77,11 +77,11 @@ func TestRunStopsLocalSlaveAndInstallProcessesBeforeRemovingState(t *testing.T) 
 	dir := t.TempDir()
 	appDir := filepath.Join(dir, "app")
 	p := paths.Paths{
-		InstallRoot:      filepath.Join(dir, ".agentserver-vscode"),
-		SecretsFile:      filepath.Join(dir, ".agentserver-vscode", "secrets.json"),
-		SlavesFile:       filepath.Join(dir, ".agentserver-vscode", "slaves.json"),
-		SlavesDir:        filepath.Join(dir, ".agentserver-vscode", "slaves"),
-		LocalAppDataRoot: filepath.Join(dir, "local-appdata", "agentserver-vscode"),
+		InstallRoot:      filepath.Join(dir, ".agentserver-app"),
+		SecretsFile:      filepath.Join(dir, ".agentserver-app", "secrets.json"),
+		SlavesFile:       filepath.Join(dir, ".agentserver-app", "slaves.json"),
+		SlavesDir:        filepath.Join(dir, ".agentserver-app", "slaves"),
+		LocalAppDataRoot: filepath.Join(dir, "local-appdata", "agentserver-app"),
 	}
 	if err := os.MkdirAll(filepath.Dir(p.SlavesFile), 0o755); err != nil {
 		t.Fatal(err)
@@ -153,10 +153,10 @@ func TestRunStopsLocalSlaveAndInstallProcessesBeforeRemovingState(t *testing.T) 
 func TestRunStopsLocalAppDataCodexBeforeRemovingState(t *testing.T) {
 	dir := t.TempDir()
 	appDir := filepath.Join(dir, "app")
-	localRoot := filepath.Join(dir, "local-appdata", "agentserver-vscode")
+	localRoot := filepath.Join(dir, "local-appdata", "agentserver-app")
 	p := paths.Paths{
-		InstallRoot:      filepath.Join(dir, ".agentserver-vscode"),
-		SecretsFile:      filepath.Join(dir, ".agentserver-vscode", "secrets.json"),
+		InstallRoot:      filepath.Join(dir, ".agentserver-app"),
+		SecretsFile:      filepath.Join(dir, ".agentserver-app", "secrets.json"),
 		LocalAppDataRoot: localRoot,
 	}
 	var fallbackCalls []fallbackStopCall

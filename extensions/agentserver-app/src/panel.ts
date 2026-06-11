@@ -89,7 +89,7 @@ export function registerPanelCommands(ctx: vscode.ExtensionContext): void {
   if (panelCommandsRegistered) return;
   panelCommandsRegistered = true;
   ctx.subscriptions.push(
-    vscode.commands.registerCommand('agentserverVscode.focusTerminal', async () => {
+    vscode.commands.registerCommand('agentserverApp.focusTerminal', async () => {
       await vscode.commands.executeCommand(TERMINAL_FOCUS_CMD);
     }),
   );

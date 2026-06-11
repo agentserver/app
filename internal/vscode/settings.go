@@ -12,10 +12,10 @@ type SettingsInput struct {
 }
 
 var retiredManagedKeys = []string{
-	"agentserverVscode.panel.allowed",
+	"agentserverApp.panel.allowed",
 }
 
-// WriteSettings merges agentserver-vscode defaults into path. Existing
+// WriteSettings merges agentserver-app defaults into path. Existing
 // user keys not managed by us are preserved.
 func WriteSettings(path string, in SettingsInput) error {
 	if in.CodexAbsPath == "" {
@@ -74,10 +74,10 @@ func WriteSettings(path string, in SettingsInput) error {
 		"github.copilot.chat.reviewAgent.enabled":     false,
 		"github.copilot.chat.claudeAgent.enabled":     false,
 
-		"agentserverVscode.startup.openFolderIfEmpty": true,
-		"agentserverVscode.terminal.respawnOnClose":   true,
-		"agentserverVscode.terminal.profileName":      "codex",
-		"agentserverVscode.panel.hideViews": []string{
+		"agentserverApp.startup.openFolderIfEmpty": true,
+		"agentserverApp.terminal.respawnOnClose":   true,
+		"agentserverApp.terminal.profileName":      "codex",
+		"agentserverApp.panel.hideViews": []string{
 			"workbench.panel.markers.view",
 			"workbench.panel.output",
 			"workbench.panel.repl.view",

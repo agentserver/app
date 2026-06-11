@@ -111,7 +111,7 @@ func WriteConfig(sl Slave, m Machine, in ConfigInput) error {
 			Skills: []string{"chat", "bash", "powershell", "file", "permissions", "register_mcp", "unregister_mcp"},
 		},
 		Resources: loomResources{Tags: []string{
-			"agentserver-vscode-slave",
+			"agentserver-app-slave",
 			"local-machine:" + m.MachineID,
 			"host:" + m.ComputerName,
 		}},

@@ -137,7 +137,7 @@ func TestCompletedStateOrchestratorLoadsDashboardState(t *testing.T) {
 
 func TestCompletedSlaveManagerDepsRecoversBadMachineIdentity(t *testing.T) {
 	dir := t.TempDir()
-	machinePath := filepath.Join(dir, ".agentserver-vscode", "machine.json")
+	machinePath := filepath.Join(dir, ".agentserver-app", "machine.json")
 	if err := os.MkdirAll(filepath.Dir(machinePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -149,9 +149,9 @@ func TestCompletedSlaveManagerDepsRecoversBadMachineIdentity(t *testing.T) {
 	deps, err := completedSlaveManagerDeps(completedServeInput{
 		Paths: paths.Paths{
 			MachineFile:  machinePath,
-			SlavesFile:   filepath.Join(dir, ".agentserver-vscode", "slaves.json"),
-			SlavesDir:    filepath.Join(dir, ".agentserver-vscode", "slaves"),
-			CodexExePath: filepath.Join(dir, "local-appdata", "agentserver-vscode", "bin", "codex.exe"),
+			SlavesFile:   filepath.Join(dir, ".agentserver-app", "slaves.json"),
+			SlavesDir:    filepath.Join(dir, ".agentserver-app", "slaves"),
+			CodexExePath: filepath.Join(dir, "local-appdata", "agentserver-app", "bin", "codex.exe"),
 		},
 		InstallDir: filepath.Join(dir, "app"),
 	})
@@ -490,7 +490,7 @@ func TestLaunchCompletedInstallMigratesVSCodeSettingsBeforeLaunch(t *testing.T) 
 		t.Fatal(err)
 	}
 	prior := `{
-	  "agentserverVscode.panel.allowed": ["terminal", "output"],
+	  "agentserverApp.panel.allowed": ["terminal", "output"],
 	  "custom.key": "keep me"
 	}`
 	if err := os.WriteFile(settingsPath, []byte(prior), 0o644); err != nil {
@@ -510,11 +510,11 @@ func TestLaunchCompletedInstallMigratesVSCodeSettingsBeforeLaunch(t *testing.T) 
 	if err := json.Unmarshal(b, &settings); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := settings["agentserverVscode.panel.allowed"]; ok {
-		t.Fatalf("agentserverVscode.panel.allowed should be removed")
+	if _, ok := settings["agentserverApp.panel.allowed"]; ok {
+		t.Fatalf("agentserverApp.panel.allowed should be removed")
 	}
-	if _, ok := settings["agentserverVscode.panel.hideViews"]; !ok {
-		t.Fatalf("agentserverVscode.panel.hideViews should be written")
+	if _, ok := settings["agentserverApp.panel.hideViews"]; !ok {
+		t.Fatalf("agentserverApp.panel.hideViews should be written")
 	}
 	if settings["custom.key"] != "keep me" {
 		t.Fatalf("custom.key=%v, want keep me", settings["custom.key"])

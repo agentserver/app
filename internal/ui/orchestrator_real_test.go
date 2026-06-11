@@ -1410,7 +1410,7 @@ func TestConfigureCodexDesktopDefaultsDriverCodexBinToCodexCommand(t *testing.T)
 	if err := os.WriteFile(driverExe, []byte("driver"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	codexAbsPath := filepath.Join(dir, "agentserver-vscode", "bin", "codex.exe")
+	codexAbsPath := filepath.Join(dir, "agentserver-app", "bin", "codex.exe")
 	loomConfig := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
 	r := &realOrchestrator{d: Deps{
 		State:           store,

@@ -60,7 +60,7 @@ func Run(opts Options) error {
 	}
 	removeShortcut := func(name string) {
 		if err := shortcut.UninstallAll(shortcut.ContextMenuInput{
-			RegistryKeySuffix: "AgentserverVscode",
+			RegistryKeySuffix: "AgentserverApp",
 		}, name); err != nil {
 			errs = append(errs, err)
 		}

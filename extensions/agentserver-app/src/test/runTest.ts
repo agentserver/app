@@ -8,7 +8,7 @@ async function main() {
   try {
     const extensionDevelopmentPath = path.resolve(__dirname, '..', '..');
     const extensionTestsPath = path.resolve(__dirname, 'suite', 'index');
-    testWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agentserver-vscode-test-'));
+    testWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'agentserver-app-test-'));
     await runTests({
       extensionDevelopmentPath,
       extensionTestsPath,
