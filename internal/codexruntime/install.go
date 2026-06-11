@@ -14,13 +14,14 @@ import (
 )
 
 type Options struct {
-	ManifestPath          string
-	DestRoot              string
-	CacheDir              string
-	Client                *http.Client
-	ResponseHeaderTimeout time.Duration
-	DownloadIdleTimeout   time.Duration
-	VersionCommand        func(context.Context, string) error
+	ManifestPath           string
+	DestRoot               string
+	CacheDir               string
+	Client                 *http.Client
+	DownloadAttemptTimeout time.Duration
+	ResponseHeaderTimeout  time.Duration
+	DownloadIdleTimeout    time.Duration
+	VersionCommand         func(context.Context, string) error
 }
 
 type InstallResult struct {
@@ -77,7 +78,9 @@ func Ensure(ctx context.Context, opts Options) (InstallResult, error) {
 
 func installCandidate(ctx context.Context, opts Options, m Manifest, c PackageCandidate) (InstallResult, error) {
 	cachePath := filepath.Join(opts.CacheDir, "codex-"+c.Version+".tgz")
-	if err := downloadPackage(ctx, opts.Client, c.URL, cachePath, opts.downloadIdleTimeout()); err != nil {
+	downloadCtx, cancel := context.WithTimeout(ctx, opts.downloadAttemptTimeout())
+	defer cancel()
+	if err := downloadPackage(downloadCtx, opts.Client, c.URL, cachePath, opts.downloadIdleTimeout()); err != nil {
 		return InstallResult{}, err
 	}
 	if err := VerifyNPMIntegrity(cachePath, c.Integrity); err != nil {
@@ -102,9 +105,17 @@ func installCandidate(ctx context.Context, opts Options, m Manifest, c PackageCa
 }
 
 const (
-	defaultResponseHeaderTimeout = 15 * time.Second
-	defaultDownloadIdleTimeout   = 30 * time.Second
+	defaultDownloadAttemptTimeout = 45 * time.Second
+	defaultResponseHeaderTimeout  = 15 * time.Second
+	defaultDownloadIdleTimeout    = 30 * time.Second
 )
+
+func (opts Options) downloadAttemptTimeout() time.Duration {
+	if opts.DownloadAttemptTimeout > 0 {
+		return opts.DownloadAttemptTimeout
+	}
+	return defaultDownloadAttemptTimeout
+}
 
 func (opts Options) responseHeaderTimeout() time.Duration {
 	if opts.ResponseHeaderTimeout > 0 {

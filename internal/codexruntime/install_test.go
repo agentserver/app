@@ -222,6 +222,36 @@ func TestEnsureAbortsHeaderStallAfterTimeout(t *testing.T) {
 	}
 }
 
+func TestEnsureAbortsMirrorAttemptAfterTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	manifestPath := writeManifest(t, dir, Manifest{
+		Package:       "@openai/codex",
+		Platform:      "win32-x64",
+		PinnedVersion: "0.136.0-win32-x64",
+		StripPrefix:   "vendor/x86_64-pc-windows-msvc/",
+		CodexExe:      "bin/codex.exe",
+		RequiredFiles: requiredRuntimeFiles(),
+		Pinned:        PinnedPackage{Integrity: "sha512-unused", URLs: []string{srv.URL + "/attempt-stalled.tgz"}},
+	})
+	_, err := Ensure(context.Background(), Options{
+		ManifestPath:           manifestPath,
+		DestRoot:               filepath.Join(dir, "root"),
+		CacheDir:               filepath.Join(dir, "cache"),
+		DownloadAttemptTimeout: 20 * time.Millisecond,
+		ResponseHeaderTimeout:  time.Second,
+		DownloadIdleTimeout:    time.Second,
+		VersionCommand:         func(context.Context, string) error { return nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("err=%v, want attempt context deadline", err)
+	}
+}
+
 func TestEnsureSkipsWhenRuntimeAlreadyWorks(t *testing.T) {
 	dir := t.TempDir()
 	root := filepath.Join(dir, "root")
