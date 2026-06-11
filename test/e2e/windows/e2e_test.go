@@ -28,7 +28,7 @@ func TestWindowsE2E(t *testing.T) {
 
 	// 1. Locate locally-built setup .exe.
 	setupExe := filepath.Join("..", "..", "..", "packaging", "windows", "Output",
-		"agentserver-app-0.1.0-setup.exe")
+		"agentserver-app-0.1.1-setup.exe")
 	if _, err := os.Stat(setupExe); err != nil {
 		t.Fatalf("setup exe not built: %v", err)
 	}

@@ -26,7 +26,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 OUT="dist"
 STAGE="$OUT/agentserver-app-$VERSION-portable"
 ZIP="$OUT/agentserver-app-$VERSION-portable.zip"
@@ -230,7 +230,7 @@ echo "vscode installer: $vscode_size bytes (cached)"
 for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          dist/windows/agentctl.exe dist/windows/open-folder.exe \
          dist/windows/uninstall.exe dist/windows/token-refresher.exe \
-         extensions/agentserver-app/agentserver-app-0.1.0.vsix \
+         extensions/agentserver-app/agentserver-app-0.1.1.vsix \
          internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
          packaging/windows/install-driver-support.ps1 \
@@ -286,7 +286,7 @@ cp "$CODEX_DESKTOP_CACHE" "$STAGE/codex-desktop-installer.exe"
 cp "$VSCODE_CACHE" "$STAGE/vscode-installer.exe"
 
 # VS Code extension
-cp extensions/agentserver-app/agentserver-app-0.1.0.vsix \
+cp extensions/agentserver-app/agentserver-app-0.1.1.vsix \
    "$STAGE/agentserver-app.vsix"
 
 # Resources
