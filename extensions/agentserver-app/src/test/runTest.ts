@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { runTests } from '@vscode/test-electron';
+import { cleanupTestWorkspace } from '../testWorkspace';
 
 async function main() {
   let testWorkspace = '';
@@ -18,9 +19,7 @@ async function main() {
     console.error('Failed to run tests');
     process.exitCode = 1;
   } finally {
-    if (testWorkspace) {
-      fs.rmSync(testWorkspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-    }
+    cleanupTestWorkspace(testWorkspace);
   }
 }
 main();
