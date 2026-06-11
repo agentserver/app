@@ -110,15 +110,14 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			name: "ensure-vscode.ps1",
 			path: "../../packaging/windows/ensure-vscode.ps1",
 			want: []string{
-				"curl.exe",
-				"-C",
-				"LocalInstallerPath",
-				"ExpectedSize",
-				"MaxDownloadAttempts",
-				"download incomplete",
-				"Write-Progress",
+				"BootstrapperURL",
+				"XP9KHM4BK9FZ7Q",
+				"get.microsoft.com/installer/download",
+				"vscode-store-bootstrapper.exe",
+				"DownloadBootstrapper",
+				"Start-Process",
 				"Wait-ProcessWithProgress",
-				"Installing VS Code",
+				"Get-VSCodeDetection",
 				"Set-ScriptOutputEncoding",
 			},
 		},
@@ -237,6 +236,30 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWindowsEnsureCodexScriptCallsAgentctlInstallCodex(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-codex.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"param(",
+		"ManifestPath",
+		"AgentctlPath",
+		"install-codex",
+		"--manifest",
+		"--dest-root",
+		"--cache-dir",
+		"agentserver-app",
+		"cache\\codex",
+		"Set-ScriptOutputEncoding",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-codex.ps1 missing %q", want)
+		}
 	}
 }
 
