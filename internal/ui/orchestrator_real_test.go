@@ -36,13 +36,7 @@ func TestConfigureVSCodeWritesSettings(t *testing.T) {
 	codeExe := filepath.Join(dir, "code")
 	os.WriteFile(codeExe, []byte("#!/bin/bash\nexit 0\n"), 0o755)
 
-	// fake codex download server (avoid hitting real GitHub for 246MB)
 	fakeCodexBody := []byte("fake-codex-binary-body")
-	codexSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", "22")
-		w.Write(fakeCodexBody)
-	}))
-	defer codexSrv.Close()
 
 	store := state.NewStore(filepath.Join(dir, "state.json"))
 	store.Update(func(s *state.State) error {
@@ -59,7 +53,13 @@ func TestConfigureVSCodeWritesSettings(t *testing.T) {
 	r := &realOrchestrator{d: Deps{
 		State:             store,
 		CodexAbsPath:      codexPath,
-		CodexDownloadURL:  codexSrv.URL + "/codex",
+		CodexManifestPath: filepath.Join(dir, "codex-manifest.json"),
+		CodexRuntimeEnsure: func(ctx context.Context, manifestPath, destRoot, cacheDir string) error {
+			if err := os.MkdirAll(filepath.Dir(codexPath), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(codexPath, fakeCodexBody, 0o755)
+		},
 		VSCodeUserDataDir: filepath.Join(dir, "data"),
 		VSCodeExtDir:      filepath.Join(dir, "ext"),
 		EmbeddedVSIXPath:  vsix,
@@ -142,6 +142,49 @@ func TestConfigureVSCodeCopiesBundledCodexBeforeDownloading(t *testing.T) {
 	}
 	if codexSrvHits != 0 {
 		t.Fatalf("download server was hit %d times; bundled codex should avoid network", codexSrvHits)
+	}
+}
+
+func TestConfigureVSCodeUsesCodexRuntimeInstallerWhenCodexMissing(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("uses bash stub")
+	}
+	dir := t.TempDir()
+	codeExe := filepath.Join(dir, "code")
+	os.WriteFile(codeExe, []byte("#!/bin/bash\nexit 0\n"), 0o755)
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	store.Update(func(s *state.State) error {
+		s.VSCode.Path = codeExe
+		return nil
+	})
+	vsix := filepath.Join(dir, "stub.vsix")
+	os.WriteFile(vsix, []byte("PK\x03\x04stub"), 0o644)
+	codexPath := filepath.Join(dir, "agentserver-app", "bin", "codex.exe")
+	calls := 0
+	r := &realOrchestrator{d: Deps{
+		State:             store,
+		CodexAbsPath:      codexPath,
+		CodexManifestPath: filepath.Join(dir, "codex-manifest.json"),
+		CodexRuntimeEnsure: func(ctx context.Context, manifestPath, destRoot, cacheDir string) error {
+			calls++
+			if manifestPath == "" || destRoot == "" || cacheDir == "" {
+				return fmt.Errorf("missing codex runtime args")
+			}
+			if err := os.MkdirAll(filepath.Dir(codexPath), 0o755); err != nil {
+				return err
+			}
+			return os.WriteFile(codexPath, []byte("codex"), 0o755)
+		},
+		VSCodeUserDataDir: filepath.Join(dir, "data"),
+		VSCodeExtDir:      filepath.Join(dir, "ext"),
+		EmbeddedVSIXPath:  vsix,
+		CodexConfigPath:   filepath.Join(dir, "codex-config.toml"),
+	}}
+	if err := r.ConfigureVSCode(context.Background()); err != nil {
+		t.Fatalf("ConfigureVSCode: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("codex runtime ensure calls=%d", calls)
 	}
 }
 

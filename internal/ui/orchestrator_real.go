@@ -15,6 +15,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/branding"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
+	"github.com/agentserver/agentserver-pkg/internal/codexruntime"
 	"github.com/agentserver/agentserver-pkg/internal/download"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/loom"
@@ -55,6 +56,8 @@ type Deps struct {
 	EmbeddedVSIXPath                  string
 	CodexAbsPath                      string
 	BundledCodexPath                  string
+	CodexManifestPath                 string
+	CodexRuntimeEnsure                func(context.Context, string, string, string) error
 	LoomDriverPath                    string
 	LoomConfigPath                    string
 	// CodexDesktopCodexPath is the codex CLI used by loom's internal planner.
@@ -590,17 +593,21 @@ func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
 			}
 		}
 		if _, statErr := os.Stat(r.d.CodexAbsPath); os.IsNotExist(statErr) {
-			url := r.d.CodexDownloadURL
-			if url == "" {
-				url = codexDownloadURL()
+			ensure := r.d.CodexRuntimeEnsure
+			if ensure == nil {
+				ensure = func(ctx context.Context, manifestPath, destRoot, cacheDir string) error {
+					_, err := codexruntime.Ensure(ctx, codexruntime.Options{
+						ManifestPath: manifestPath,
+						DestRoot:     destRoot,
+						CacheDir:     cacheDir,
+					})
+					return err
+				}
 			}
-			// SHA256 left empty: openai/codex publishes SHA256SUMS only for
-			// the -package- .tar.gz variants, not the standalone .exe.
-			// We trust HTTPS + GitHub Releases. Upgrade path: pin a sha
-			// once OpenAI publishes one for the .exe.
-			if err := download.DownloadResumable(ctx, url,
-				r.d.CodexAbsPath, "", nil); err != nil {
-				return fmt.Errorf("download codex: %w", err)
+			destRoot := filepath.Dir(filepath.Dir(r.d.CodexAbsPath))
+			cacheDir := filepath.Join(destRoot, "cache", "codex")
+			if err := ensure(ctx, r.d.CodexManifestPath, destRoot, cacheDir); err != nil {
+				return fmt.Errorf("ensure codex runtime: %w", err)
 			}
 		}
 	}

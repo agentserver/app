@@ -592,6 +592,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		EmbeddedVSIXPath:                  joinExe(installDir, "agentserver-app.vsix"),
 		CodexAbsPath:                      p.CodexExePath,
 		BundledCodexPath:                  joinExe(installDir, "codex.exe"),
+		CodexManifestPath:                 joinExe(installDir, "codex-manifest.json"),
 		LoomDriverPath:                    joinExe(installDir, "driver-agent.exe"),
 		LoomConfigPath:                    filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml"),
 		LauncherExePath:                   joinExe(installDir, "launcher.exe"),
