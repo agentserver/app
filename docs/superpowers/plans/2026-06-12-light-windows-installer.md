@@ -406,7 +406,7 @@ func TestVerifyNPMIntegrityAcceptsSHA512(t *testing.T) {
 	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	integrity := "sha512-m3HSJL1i83hdltTDXq4ma0oU3FzoygRogwsL8YnvI7TNWgK8sgWbH3i7L8tmB3GmeK7w4x7MksC4vBz9p0z2WQ=="
+	integrity := "sha512-m3HSJL1i83hdltRq0+o9czGb+8KJDKra4t/3JRlnPKcjI8PZm6XBHXx6zG4UuMXaDEZjR1wuXDre9G9zvN7AQw=="
 	if err := VerifyNPMIntegrity(path, integrity); err != nil {
 		t.Fatal(err)
 	}
@@ -417,7 +417,7 @@ func TestVerifyNPMIntegrityRejectsMismatch(t *testing.T) {
 	if err := os.WriteFile(path, []byte("different"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := VerifyNPMIntegrity(path, "sha512-m3HSJL1i83hdltTDXq4ma0oU3FzoygRogwsL8YnvI7TNWgK8sgWbH3i7L8tmB3GmeK7w4x7MksC4vBz9p0z2WQ==")
+	err := VerifyNPMIntegrity(path, "sha512-m3HSJL1i83hdltRq0+o9czGb+8KJDKra4t/3JRlnPKcjI8PZm6XBHXx6zG4UuMXaDEZjR1wuXDre9G9zvN7AQw==")
 	if err == nil || !strings.Contains(err.Error(), "integrity") {
 		t.Fatalf("err=%v, want integrity mismatch", err)
 	}
@@ -853,6 +853,7 @@ import (
 	"context"
 	"crypto/sha512"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1019,6 +1020,19 @@ func TestEnsureRejectsIntegrityMismatch(t *testing.T) {
 Add helper functions to the same test file:
 
 ```go
+func writeManifest(t *testing.T, dir string, m Manifest) string {
+	t.Helper()
+	path := filepath.Join(dir, "codex-manifest.json")
+	body, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func requiredRuntimeFiles() []string {
 	return []string{
 		"bin/codex.exe",
