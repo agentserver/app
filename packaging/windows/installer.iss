@@ -52,6 +52,8 @@ Source: "..\..\dist\cache\loom\v0.0.4\slave-agent.windows-amd64.exe"; \
     DestDir: "{app}"; DestName: "slave-agent.exe"; Flags: ignoreversion
 Source: "..\..\dist\cache\loom\v0.0.4\driver-skills.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-skills.tar.gz"; Flags: ignoreversion
+Source: "..\..\dist\cache\superpowers\driver-superpower-skills.tar.gz"; \
+    DestDir: "{app}"; DestName: "driver-superpower-skills.tar.gz"; Flags: ignoreversion
 Source: "..\..\dist\cache\loom\v0.0.4\driver-codex-prompts.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-codex-prompts.tar.gz"; Flags: ignoreversion
 Source: "..\..\dist\cache\rust-v0.136.0\codex-x86_64-pc-windows-msvc.exe"; \

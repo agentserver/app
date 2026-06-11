@@ -1328,6 +1328,10 @@ func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
 	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-skills.tar.gz"), map[string]string{
 		"skills/multiagent/SKILL.md": "---\nname: multiagent\n---\nUse driver tools.\n",
 	})
+	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-superpower-skills.tar.gz"), map[string]string{
+		"using-superpowers/SKILL.md":       "---\nname: using-superpowers\n---\nUse skills.\n",
+		"test-driven-development/SKILL.md": "---\nname: test-driven-development\n---\nWrite tests first.\n",
+	})
 	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-codex-prompts.tar.gz"), map[string]string{
 		"prompts-codex/AGENTS.md": "# Multi-Agent Driver\n\nUse `role == \"slave\"`.\n",
 	})
@@ -1394,6 +1398,10 @@ func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join(dir, ".agents", "skills", "multiagent", "SKILL.md"),
 		filepath.Join(dir, ".codex", "skills", "multiagent", "SKILL.md"),
+		filepath.Join(dir, ".agents", "skills", "using-superpowers", "SKILL.md"),
+		filepath.Join(dir, ".codex", "skills", "using-superpowers", "SKILL.md"),
+		filepath.Join(dir, ".agents", "skills", "test-driven-development", "SKILL.md"),
+		filepath.Join(dir, ".codex", "skills", "test-driven-development", "SKILL.md"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected Loom driver skill at %s: %v", path, err)

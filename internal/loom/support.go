@@ -18,9 +18,10 @@ const (
 )
 
 type DriverSupportInput struct {
-	UserHome                string
-	SkillsArchivePath       string
-	CodexPromptsArchivePath string
+	UserHome                    string
+	SkillsArchivePath           string
+	SuperpowerSkillsArchivePath string
+	CodexPromptsArchivePath     string
 }
 
 func InstallDriverSupport(in DriverSupportInput) error {
@@ -28,19 +29,13 @@ func InstallDriverSupport(in DriverSupportInput) error {
 		return nil
 	}
 	if in.SkillsArchivePath != "" {
-		exists, err := fileExists(in.SkillsArchivePath)
-		if err != nil {
+		if err := installSkillsArchive(in.UserHome, in.SkillsArchivePath); err != nil {
 			return err
 		}
-		if exists {
-			for _, root := range []string{
-				filepath.Join(in.UserHome, ".agents", "skills"),
-				filepath.Join(in.UserHome, ".codex", "skills"),
-			} {
-				if err := extractArchivePrefix(in.SkillsArchivePath, "skills", root); err != nil {
-					return err
-				}
-			}
+	}
+	if in.SuperpowerSkillsArchivePath != "" {
+		if err := installSkillsArchive(in.UserHome, in.SuperpowerSkillsArchivePath); err != nil {
+			return err
 		}
 	}
 	if in.CodexPromptsArchivePath != "" {
@@ -63,25 +58,36 @@ func InstallDriverSupport(in DriverSupportInput) error {
 	return nil
 }
 
-func fileExists(path string) (bool, error) {
-	_, err := os.Stat(path)
-	if err == nil {
-		return true, nil
+func installSkillsArchive(userHome, archivePath string) error {
+	exists, err := fileExists(archivePath)
+	if err != nil {
+		return err
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+	if !exists {
+		return nil
 	}
-	return false, err
+	for _, root := range []string{
+		filepath.Join(userHome, ".agents", "skills"),
+		filepath.Join(userHome, ".codex", "skills"),
+	} {
+		if err := extractSkillsArchive(archivePath, root); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func extractArchivePrefix(archivePath, prefix, destRoot string) error {
+func extractSkillsArchive(archivePath, destRoot string) error {
 	return walkTarGz(archivePath, func(h *tar.Header, r io.Reader) error {
 		cleanName, err := cleanTarName(h.Name)
 		if err != nil {
 			return err
 		}
-		rel, ok := strings.CutPrefix(cleanName, prefix+"/")
-		if !ok || rel == "" {
+		rel, ok := strings.CutPrefix(cleanName, "skills/")
+		if !ok {
+			rel = cleanName
+		}
+		if rel == "" || rel == "skills" {
 			return nil
 		}
 		target, err := safeJoin(destRoot, rel)
@@ -100,6 +106,17 @@ func extractArchivePrefix(archivePath, prefix, destRoot string) error {
 			return fmt.Errorf("unsupported tar entry %s type %d", h.Name, h.Typeflag)
 		}
 	})
+}
+
+func fileExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
 }
 
 func readArchiveFile(archivePath, want string) ([]byte, bool, error) {

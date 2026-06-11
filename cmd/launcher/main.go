@@ -761,9 +761,10 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 		return fmt.Errorf("configure loom driver: %w", err)
 	}
 	if err := loom.InstallDriverSupport(loom.DriverSupportInput{
-		UserHome:                p.UserHome,
-		SkillsArchivePath:       joinExe(installDir, "driver-skills.tar.gz"),
-		CodexPromptsArchivePath: joinExe(installDir, "driver-codex-prompts.tar.gz"),
+		UserHome:                    p.UserHome,
+		SkillsArchivePath:           joinExe(installDir, "driver-skills.tar.gz"),
+		SuperpowerSkillsArchivePath: joinExe(installDir, "driver-superpower-skills.tar.gz"),
+		CodexPromptsArchivePath:     joinExe(installDir, "driver-codex-prompts.tar.gz"),
 	}); err != nil {
 		return fmt.Errorf("install loom driver support: %w", err)
 	}

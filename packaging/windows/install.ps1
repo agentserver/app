@@ -202,6 +202,7 @@ $required = @(
     'driver-agent.exe',
     'slave-agent.exe',
     'driver-skills.tar.gz',
+    'driver-superpower-skills.tar.gz',
     'driver-codex-prompts.tar.gz',
     'codex-desktop-installer.exe',
     'agentserver-app.vsix',

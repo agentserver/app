@@ -48,8 +48,9 @@ LOOM_SLAVE_ASSET="slave-agent.windows-amd64.exe"
 LOOM_SLAVE_SHA256="92e39b6e38c198a997ecb7d5102232934d578a66a00265ee5a0981e13bd7a97d"
 LOOM_SLAVE_CACHE="$OUT/cache/loom/$LOOM_RELEASE/$LOOM_SLAVE_ASSET"
 LOOM_DRIVER_SKILLS_ASSET="driver-skills.tar.gz"
-LOOM_DRIVER_SKILLS_SHA256="8679cdb901b9479ec39bde99f90aa9e8afe115fdc0011ed747d7448d8bfa81e2"
+LOOM_DRIVER_SKILLS_SHA256="7086dd93f3181c552fbe475c4698aa809c746ecd48dc5ed942539377116ed9cc"
 LOOM_DRIVER_SKILLS_CACHE="$OUT/cache/loom/$LOOM_RELEASE/$LOOM_DRIVER_SKILLS_ASSET"
+SUPERPOWER_SKILLS_CACHE="$OUT/cache/superpowers/driver-superpower-skills.tar.gz"
 LOOM_DRIVER_CODEX_PROMPTS_ASSET="driver-codex-prompts.tar.gz"
 LOOM_DRIVER_CODEX_PROMPTS_SHA256="dbbc4cc87cf2cfb377f7ec188610839ff9152ec05fa07adde999fdb39f2d6721"
 LOOM_DRIVER_CODEX_PROMPTS_CACHE="$OUT/cache/loom/$LOOM_RELEASE/$LOOM_DRIVER_CODEX_PROMPTS_ASSET"
@@ -191,6 +192,7 @@ download_loom_asset "$LOOM_DRIVER_ASSET" "$LOOM_DRIVER_CACHE" "$LOOM_DRIVER_SHA2
 download_loom_asset "$LOOM_SLAVE_ASSET" "$LOOM_SLAVE_CACHE" "$LOOM_SLAVE_SHA256"
 download_loom_asset "$LOOM_DRIVER_SKILLS_ASSET" "$LOOM_DRIVER_SKILLS_CACHE" "$LOOM_DRIVER_SKILLS_SHA256"
 download_loom_asset "$LOOM_DRIVER_CODEX_PROMPTS_ASSET" "$LOOM_DRIVER_CODEX_PROMPTS_CACHE" "$LOOM_DRIVER_CODEX_PROMPTS_SHA256"
+python3 scripts/package-superpower-skills.py "$SUPERPOWER_SKILLS_CACHE"
 
 if ! verify_vscode_cache; then
   mkdir -p "$(dirname "$VSCODE_CACHE")"
@@ -244,6 +246,7 @@ for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          "$LOOM_DRIVER_CACHE" \
          "$LOOM_SLAVE_CACHE" \
          "$LOOM_DRIVER_SKILLS_CACHE" \
+         "$SUPERPOWER_SKILLS_CACHE" \
          "$LOOM_DRIVER_CODEX_PROMPTS_CACHE" \
          "$CODEX_CACHE"; do
   if [[ ! -e "$f" ]]; then
@@ -270,6 +273,7 @@ cp dist/windows/token-refresher.exe   "$STAGE/"
 cp "$LOOM_DRIVER_CACHE"               "$STAGE/driver-agent.exe"
 cp "$LOOM_SLAVE_CACHE"                "$STAGE/slave-agent.exe"
 cp "$LOOM_DRIVER_SKILLS_CACHE"        "$STAGE/driver-skills.tar.gz"
+cp "$SUPERPOWER_SKILLS_CACHE"         "$STAGE/driver-superpower-skills.tar.gz"
 cp "$LOOM_DRIVER_CODEX_PROMPTS_CACHE" "$STAGE/driver-codex-prompts.tar.gz"
 
 # Bundled codex.exe (avoids GitHub round-trip during install)

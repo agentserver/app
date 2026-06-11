@@ -495,9 +495,10 @@ func (r *realOrchestrator) configureLoomDriver() error {
 		return fmt.Errorf("configure loom driver: %w", err)
 	}
 	if err := loom.InstallDriverSupport(loom.DriverSupportInput{
-		UserHome:                codexUserHome(r.d.CodexConfigPath),
-		SkillsArchivePath:       filepath.Join(filepath.Dir(r.d.LoomDriverPath), "driver-skills.tar.gz"),
-		CodexPromptsArchivePath: filepath.Join(filepath.Dir(r.d.LoomDriverPath), "driver-codex-prompts.tar.gz"),
+		UserHome:                    codexUserHome(r.d.CodexConfigPath),
+		SkillsArchivePath:           filepath.Join(filepath.Dir(r.d.LoomDriverPath), "driver-skills.tar.gz"),
+		SuperpowerSkillsArchivePath: filepath.Join(filepath.Dir(r.d.LoomDriverPath), "driver-superpower-skills.tar.gz"),
+		CodexPromptsArchivePath:     filepath.Join(filepath.Dir(r.d.LoomDriverPath), "driver-codex-prompts.tar.gz"),
 	}); err != nil {
 		return fmt.Errorf("install loom driver support: %w", err)
 	}
