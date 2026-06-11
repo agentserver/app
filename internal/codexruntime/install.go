@@ -9,6 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -141,6 +144,58 @@ func newHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
 }
 
 func downloadPackage(ctx context.Context, client *http.Client, url, dst string, idleTimeout time.Duration) error {
+	if runtime.GOOS == "windows" {
+		if err := downloadPackageWithCurl(ctx, url, dst, idleTimeout); err == nil {
+			return nil
+		} else if !errors.Is(err, exec.ErrNotFound) {
+			return err
+		}
+	}
+	return downloadPackageHTTP(ctx, client, url, dst, idleTimeout)
+}
+
+func downloadPackageWithCurl(ctx context.Context, url, dst string, idleTimeout time.Duration) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	tmp := dst + ".part"
+	_ = os.Remove(tmp)
+	speedTime := int(idleTimeout.Seconds())
+	if speedTime < 1 {
+		speedTime = 1
+	}
+	args := []string{
+		"-fL",
+		"-sS",
+		"--retry", "2",
+		"--retry-delay", "2",
+		"--connect-timeout", "15",
+		"--speed-time", strconv.Itoa(speedTime),
+		"--speed-limit", "1024",
+		"-o", tmp,
+		"--write-out", "%{http_code}",
+		url,
+	}
+	out, err := exec.CommandContext(ctx, "curl.exe", args...).CombinedOutput()
+	status := strings.TrimSpace(string(out))
+	if err != nil {
+		_ = os.Remove(tmp)
+		if status == "404" || status == "410" {
+			return unavailableError{err: fmt.Errorf("GET %s: status %s", url, status)}
+		}
+		return fmt.Errorf("curl GET %s failed: %w (%s)", url, err, strings.TrimSpace(string(out)))
+	}
+	if status != "" && status[0] != '2' {
+		_ = os.Remove(tmp)
+		if status == "404" || status == "410" {
+			return unavailableError{err: fmt.Errorf("GET %s: status %s", url, status)}
+		}
+		return fmt.Errorf("curl GET %s: status %s", url, status)
+	}
+	return os.Rename(tmp, dst)
+}
+
+func downloadPackageHTTP(ctx context.Context, client *http.Client, url, dst string, idleTimeout time.Duration) error {
 	reqCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
