@@ -56,7 +56,7 @@ USAGE:
                                   download and install Codex runtime from npm mirrors
 
 P13.4 verification subcommands (skip the OAuth steps, exercise everything else):
-  agentctl test-install-vscode   download + silently install VS Code 1.96.0
+  agentctl test-install-vscode   download + run the VS Code Microsoft Store bootstrapper
   agentctl test-install-codex-desktop
                                  install Codex Desktop with winget and persist state
   agentctl test-download-codex   download codex.exe to %LOCALAPPDATA%\agentserver-app\bin\
