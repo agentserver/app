@@ -110,7 +110,9 @@ func (opts Options) downloadIdleTimeout() time.Duration {
 }
 
 func downloadPackage(ctx context.Context, client *http.Client, url, dst string, idleTimeout time.Duration) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	reqCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
@@ -139,7 +141,7 @@ func downloadPackage(ctx context.Context, client *http.Client, url, dst string, 
 			_ = os.Remove(tmp)
 		}
 	}()
-	if err := copyWithIdleTimeout(ctx, out, resp.Body, idleTimeout); err != nil {
+	if err := copyWithIdleTimeout(reqCtx, cancel, out, resp.Body, idleTimeout); err != nil {
 		out.Close()
 		return err
 	}
@@ -163,7 +165,7 @@ func (w progressWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func copyWithIdleTimeout(ctx context.Context, dst io.Writer, src io.ReadCloser, idleTimeout time.Duration) error {
+func copyWithIdleTimeout(ctx context.Context, cancel context.CancelFunc, dst io.Writer, src io.ReadCloser, idleTimeout time.Duration) error {
 	if idleTimeout <= 0 {
 		_, err := io.Copy(dst, src)
 		return err
@@ -185,11 +187,13 @@ func copyWithIdleTimeout(ctx context.Context, dst io.Writer, src io.ReadCloser, 
 			case <-done:
 				return
 			case <-ctx.Done():
+				_ = src.Close()
 				return
 			case <-ticker.C:
 				last := time.Unix(0, lastNano.Load())
 				if time.Since(last) > idleTimeout {
 					timedOut.Store(true)
+					cancel()
 					_ = src.Close()
 					return
 				}
