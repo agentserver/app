@@ -19,7 +19,7 @@ async function main() {
     process.exitCode = 1;
   } finally {
     if (testWorkspace) {
-      fs.rmSync(testWorkspace, { recursive: true, force: true });
+      fs.rmSync(testWorkspace, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   }
 }

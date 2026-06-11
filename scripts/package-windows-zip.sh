@@ -26,7 +26,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 OUT="dist"
 STAGE="$OUT/agentserver-app-$VERSION-portable"
 ZIP="$OUT/agentserver-app-$VERSION-portable.zip"
@@ -40,14 +40,20 @@ CODEX_DESKTOP_ASSET="Codex Installer.exe"
 CODEX_DESKTOP_URL="https://get.microsoft.com/installer/download/$CODEX_DESKTOP_PRODUCT_ID?cid=website_cta_psi"
 CODEX_DESKTOP_CACHE="$OUT/cache/codex-desktop/$CODEX_DESKTOP_PRODUCT_ID/$CODEX_DESKTOP_ASSET"
 CODEX_DESKTOP_MIN_SIZE=65536
-LOOM_RELEASE="v0.0.3"
+LOOM_RELEASE="v0.0.4"
 LOOM_BASE_URL="https://github.com/agentserver/loom/releases/download/$LOOM_RELEASE"
 LOOM_DRIVER_ASSET="driver-agent.windows-amd64.exe"
-LOOM_DRIVER_SHA256="502d356c37b63a9f17e7ab147000b7e1e6bfa0dd4893a50997c59c69ac5ad021"
+LOOM_DRIVER_SHA256="f2f3d3ed2e27f9d681640b4884bdc78d807cef4ba2f9b9afaa19ccbcffe5796e"
 LOOM_DRIVER_CACHE="$OUT/cache/loom/$LOOM_RELEASE/$LOOM_DRIVER_ASSET"
 LOOM_SLAVE_ASSET="slave-agent.windows-amd64.exe"
-LOOM_SLAVE_SHA256="965197e9a78ef61efb7d26da1bebe570fdf5e4f6743ca810c16f21fde369af46"
+LOOM_SLAVE_SHA256="92e39b6e38c198a997ecb7d5102232934d578a66a00265ee5a0981e13bd7a97d"
 LOOM_SLAVE_CACHE="$OUT/cache/loom/$LOOM_RELEASE/$LOOM_SLAVE_ASSET"
+LOOM_DRIVER_SKILLS_ASSET="driver-skills.tar.gz"
+LOOM_DRIVER_SKILLS_SHA256="7086dd93f3181c552fbe475c4698aa809c746ecd48dc5ed942539377116ed9cc"
+LOOM_DRIVER_SKILLS_CACHE="$OUT/cache/loom/$LOOM_RELEASE/$LOOM_DRIVER_SKILLS_ASSET"
+SUPERPOWER_SKILLS_CACHE="$OUT/cache/superpowers/driver-superpower-skills.tar.gz"
+LOOM_DRIVER_CODEX_PROMPTS_ASSET="driver-codex-prompts.tar.gz"
+LOOM_DRIVER_CODEX_PROMPTS_CACHE="$OUT/cache/loom/$LOOM_RELEASE/$LOOM_DRIVER_CODEX_PROMPTS_ASSET"
 VSCODE_MANIFEST="packaging/windows/vscode-manifest.json"
 
 eval "$(
@@ -198,6 +204,9 @@ echo "Codex Desktop installer: $codex_desktop_size bytes (fresh)"
 
 download_loom_asset "$LOOM_DRIVER_ASSET" "$LOOM_DRIVER_CACHE" "$LOOM_DRIVER_SHA256"
 download_loom_asset "$LOOM_SLAVE_ASSET" "$LOOM_SLAVE_CACHE" "$LOOM_SLAVE_SHA256"
+download_loom_asset "$LOOM_DRIVER_SKILLS_ASSET" "$LOOM_DRIVER_SKILLS_CACHE" "$LOOM_DRIVER_SKILLS_SHA256"
+python3 scripts/package-superpower-skills.py "$SUPERPOWER_SKILLS_CACHE"
+python3 scripts/package-driver-codex-prompts.py "$LOOM_DRIVER_CODEX_PROMPTS_CACHE"
 
 if ! verify_vscode_cache; then
   mkdir -p "$(dirname "$VSCODE_CACHE")"
@@ -236,9 +245,10 @@ echo "vscode installer: $vscode_size bytes (cached)"
 for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          dist/windows/agentctl.exe dist/windows/open-folder.exe \
          dist/windows/uninstall.exe dist/windows/token-refresher.exe \
-         extensions/agentserver-app/agentserver-app-0.1.0.vsix \
+         extensions/agentserver-app/agentserver-app-0.1.1.vsix \
          internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
+         packaging/windows/install-driver-support.ps1 \
          packaging/windows/ensure-vscode.ps1 \
          packaging/windows/ensure-codex-desktop.ps1 \
          packaging/windows/write-install-mode.ps1 \
@@ -250,6 +260,9 @@ for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          "$CODEX_DESKTOP_CACHE" \
          "$LOOM_DRIVER_CACHE" \
          "$LOOM_SLAVE_CACHE" \
+         "$LOOM_DRIVER_SKILLS_CACHE" \
+         "$SUPERPOWER_SKILLS_CACHE" \
+         "$LOOM_DRIVER_CODEX_PROMPTS_CACHE" \
          "$CODEX_CACHE"; do
   if [[ ! -e "$f" ]]; then
     echo "missing: $f"
@@ -274,6 +287,9 @@ cp dist/windows/uninstall.exe         "$STAGE/"
 cp dist/windows/token-refresher.exe   "$STAGE/"
 cp "$LOOM_DRIVER_CACHE"               "$STAGE/driver-agent.exe"
 cp "$LOOM_SLAVE_CACHE"                "$STAGE/slave-agent.exe"
+cp "$LOOM_DRIVER_SKILLS_CACHE"        "$STAGE/driver-skills.tar.gz"
+cp "$SUPERPOWER_SKILLS_CACHE"         "$STAGE/driver-superpower-skills.tar.gz"
+cp "$LOOM_DRIVER_CODEX_PROMPTS_CACHE" "$STAGE/driver-codex-prompts.tar.gz"
 
 # Bundled codex.exe (avoids GitHub round-trip during install)
 cp "$CODEX_CACHE" "$STAGE/codex.exe"
@@ -285,11 +301,12 @@ cp "$CODEX_DESKTOP_CACHE" "$STAGE/codex-desktop-installer.exe"
 cp "$VSCODE_CACHE" "$STAGE/vscode-installer.exe"
 
 # VS Code extension
-cp extensions/agentserver-app/agentserver-app-0.1.0.vsix \
+cp extensions/agentserver-app/agentserver-app-0.1.1.vsix \
    "$STAGE/agentserver-app.vsix"
 
 # Resources
 cp packaging/windows/install.ps1      "$STAGE/"
+cp packaging/windows/install-driver-support.ps1 "$STAGE/"
 cp packaging/windows/ensure-vscode.ps1 "$STAGE/"
 cp packaging/windows/ensure-codex-desktop.ps1 "$STAGE/"
 cp packaging/windows/write-install-mode.ps1 "$STAGE/"

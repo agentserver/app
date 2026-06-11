@@ -4,7 +4,7 @@
 
 #define MyAppId "agentserver-app"
 #define MyAppName "星池指挥官"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.1.1"
 #define MyAppPublisher "agentserver"
 #define MyAppURL "https://agent.cs.ac.cn"
 #define MyAppExeName "launcher.exe"
@@ -46,10 +46,16 @@ Source: "..\..\dist\windows\open-folder.exe";       DestDir: "{app}"; Flags: ign
 Source: "..\..\dist\windows\uninstall.exe";         DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\token-refresher.exe";   DestDir: "{app}"; Flags: ignoreversion
 ; Bundled offline payloads
-Source: "..\..\dist\cache\loom\v0.0.3\driver-agent.windows-amd64.exe"; \
+Source: "..\..\dist\cache\loom\v0.0.4\driver-agent.windows-amd64.exe"; \
     DestDir: "{app}"; DestName: "driver-agent.exe"; Flags: ignoreversion
-Source: "..\..\dist\cache\loom\v0.0.3\slave-agent.windows-amd64.exe"; \
+Source: "..\..\dist\cache\loom\v0.0.4\slave-agent.windows-amd64.exe"; \
     DestDir: "{app}"; DestName: "slave-agent.exe"; Flags: ignoreversion
+Source: "..\..\dist\cache\loom\v0.0.4\driver-skills.tar.gz"; \
+    DestDir: "{app}"; DestName: "driver-skills.tar.gz"; Flags: ignoreversion
+Source: "..\..\dist\cache\superpowers\driver-superpower-skills.tar.gz"; \
+    DestDir: "{app}"; DestName: "driver-superpower-skills.tar.gz"; Flags: ignoreversion
+Source: "..\..\dist\cache\loom\v0.0.4\driver-codex-prompts.tar.gz"; \
+    DestDir: "{app}"; DestName: "driver-codex-prompts.tar.gz"; Flags: ignoreversion
 Source: "..\..\dist\cache\rust-v0.136.0\codex-x86_64-pc-windows-msvc.exe"; \
     DestDir: "{app}"; DestName: "codex.exe"; Flags: ignoreversion
 Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
@@ -57,7 +63,7 @@ Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
 Source: "..\..\dist\cache\vscode\1.96.0\VSCodeUserSetup-x64-1.96.0.exe"; \
     DestDir: "{app}"; DestName: "vscode-installer.exe"; Flags: ignoreversion
 ; Bundled VS Code extension
-Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.0.vsix"; \
+Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.1.vsix"; \
     DestDir: "{app}"; DestName: "agentserver-app.vsix"; Flags: ignoreversion
 ; Icon
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
@@ -65,6 +71,7 @@ Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE.zh.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Portable installer helpers reused by the Inno setup.
 Source: "install.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "install-driver-support.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-vscode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "write-install-mode.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -429,6 +436,9 @@ begin
     '-MachinePath ' + PowerShellQuote(MachinePath) + ' -ComputerNamePath ' + PowerShellQuote(ComputerNamePath), 10);
 
   StageBundledCodexForLocalSlaves();
+
+  RunEstimatedPowerShellStep('driver-support', '正在安装 driver skills 和 Codex 指令...', 'install-driver-support.ps1',
+    '-InstallDir ' + PowerShellQuote(ExpandConstant('{app}')), 20);
 
   ModePath := ExpandConstant('{app}\install-mode.json');
   if ShouldInstallCodexDesktop then begin
