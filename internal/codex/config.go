@@ -176,6 +176,43 @@ func UpdateMCPServer(path, name string, server MCPServer) error {
 	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
 
+func RemoveMCPServer(path, name string) error {
+	if name == "" {
+		return errors.New("MCP server name required")
+	}
+	root := map[string]any{}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read config.toml: %w", err)
+	}
+	if _, err := toml.Decode(string(b), &root); err != nil {
+		return fmt.Errorf("parse existing config.toml: %w", err)
+	}
+	servers, _ := root["mcp_servers"].(map[string]any)
+	if servers == nil {
+		return nil
+	}
+	if _, ok := servers[name]; !ok {
+		return nil
+	}
+	backup := fmt.Sprintf("%s.bak.%d", path, time.Now().Unix())
+	_ = os.WriteFile(backup, b, 0o644)
+	delete(servers, name)
+	if len(servers) == 0 {
+		delete(root, "mcp_servers")
+	} else {
+		root["mcp_servers"] = servers
+	}
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
+		return fmt.Errorf("marshal config.toml: %w", err)
+	}
+	return os.WriteFile(path, buf.Bytes(), 0o644)
+}
+
 func defaultString(v, fallback string) string {
 	if v != "" {
 		return v

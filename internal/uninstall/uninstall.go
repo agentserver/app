@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/agentserver/agentserver-pkg/internal/branding"
+	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -139,8 +140,17 @@ func cleanupGlobalDriverSupport(p paths.Paths) error {
 			errs = append(errs, err)
 		}
 	}
+	codexConfigFile := codexConfigFileFromPaths(p, codexDir)
+	if codexConfigFile != "" {
+		if err := codex.RemoveMCPServer(codexConfigFile, "driver"); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if home != "" {
 		if err := cleanupManagedSkillsRoot(filepath.Join(home, ".agents", "skills")); err != nil {
+			errs = append(errs, err)
+		}
+		if err := removeLoomDriverCredentials(home); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -168,6 +178,31 @@ func homeDirFromPaths(p paths.Paths, codexDir string) string {
 		return filepath.Dir(codexDir)
 	}
 	return ""
+}
+
+func codexConfigFileFromPaths(p paths.Paths, codexDir string) string {
+	if p.CodexConfigFile != "" {
+		return p.CodexConfigFile
+	}
+	if codexDir != "" {
+		return filepath.Join(codexDir, "config.toml")
+	}
+	return ""
+}
+
+func removeLoomDriverCredentials(home string) error {
+	loomConfigDir := filepath.Join(home, ".config", "multi-agent")
+	var errs []error
+	for _, path := range []string{
+		filepath.Join(loomConfigDir, "driver.yaml"),
+		filepath.Join(loomConfigDir, "observer.token"),
+	} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove Loom driver credential %s: %w", path, err))
+		}
+	}
+	pruneEmptyParents(loomConfigDir, filepath.Join(home, ".config"))
+	return errors.Join(errs...)
 }
 
 func removeManagedPromptBlock(agentsPath string) error {

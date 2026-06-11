@@ -170,6 +170,120 @@ func TestRunPreservesModifiedManagedSkillFilesAndUserSkills(t *testing.T) {
 	}
 }
 
+func TestRunRemovesLoomDriverCredentialsAndCodexMCPServer(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		UserHome:         dir,
+		InstallRoot:      filepath.Join(dir, ".agentserver-app"),
+		SecretsFile:      filepath.Join(dir, ".agentserver-app", "secrets.json"),
+		LocalAppDataRoot: filepath.Join(dir, "local-appdata", "agentserver-app"),
+		CodexDir:         filepath.Join(dir, ".codex"),
+		CodexConfigFile:  filepath.Join(dir, ".codex", "config.toml"),
+	}
+	loomDir := filepath.Join(dir, ".config", "multi-agent")
+	driverConfig := filepath.Join(loomDir, "driver.yaml")
+	observerToken := filepath.Join(loomDir, "observer.token")
+	writeTextFile(t, driverConfig, strings.Join([]string{
+		"credentials:",
+		`  tunnel_token: "plain-tunnel-token"`,
+		`  proxy_token: "plain-proxy-token"`,
+		"observer:",
+		`  api_key: "plain-observer-key"`,
+		`  token_state_path: "` + filepath.ToSlash(observerToken) + `"`,
+		"",
+	}, "\n"))
+	writeTextFile(t, observerToken, "observer refresh token\n")
+	writeTextFile(t, p.CodexConfigFile, strings.Join([]string{
+		`model_provider = "modelserver"`,
+		``,
+		`[mcp_servers.driver]`,
+		`command = "C:\\Agentserver\\driver-agent.exe"`,
+		`args = ["serve-mcp", "--config", "` + filepath.ToSlash(driverConfig) + `"]`,
+		`startup_timeout_sec = 30`,
+		``,
+		`[mcp_servers.other]`,
+		`command = "other.exe"`,
+		`args = ["serve"]`,
+		``,
+	}, "\n"))
+
+	err := Run(Options{
+		Paths:     p,
+		Secrets:   secrets.New(p.SecretsFile),
+		DeleteEnv: func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, path := range []string{driverConfig, observerToken, loomDir} {
+		if exists(path) {
+			t.Fatalf("Loom driver credential path still exists: %s", path)
+		}
+	}
+	configBody := readTextFile(t, p.CodexConfigFile)
+	for _, unwanted := range []string{
+		`[mcp_servers.driver]`,
+		`C:\\Agentserver\\driver-agent.exe`,
+		filepath.ToSlash(driverConfig),
+		`startup_timeout_sec = 30`,
+	} {
+		if strings.Contains(configBody, unwanted) {
+			t.Fatalf("config.toml still contains driver MCP content %q:\n%s", unwanted, configBody)
+		}
+	}
+	for _, want := range []string{
+		`model_provider = "modelserver"`,
+		`[mcp_servers.other]`,
+		`command = "other.exe"`,
+	} {
+		if !strings.Contains(configBody, want) {
+			t.Fatalf("config.toml missing preserved content %q:\n%s", want, configBody)
+		}
+	}
+}
+
+func TestRunPreservesUnrelatedLoomConfigFiles(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		UserHome:         dir,
+		InstallRoot:      filepath.Join(dir, ".agentserver-app"),
+		SecretsFile:      filepath.Join(dir, ".agentserver-app", "secrets.json"),
+		LocalAppDataRoot: filepath.Join(dir, "local-appdata", "agentserver-app"),
+		CodexDir:         filepath.Join(dir, ".codex"),
+		CodexConfigFile:  filepath.Join(dir, ".codex", "config.toml"),
+	}
+	loomDir := filepath.Join(dir, ".config", "multi-agent")
+	driverConfig := filepath.Join(loomDir, "driver.yaml")
+	observerToken := filepath.Join(loomDir, "observer.token")
+	unrelated := filepath.Join(loomDir, "custom.yaml")
+	writeTextFile(t, driverConfig, `proxy_token: "plain-proxy-token"`+"\n")
+	writeTextFile(t, observerToken, "observer refresh token\n")
+	writeTextFile(t, unrelated, "user config\n")
+
+	err := Run(Options{
+		Paths:     p,
+		Secrets:   secrets.New(p.SecretsFile),
+		DeleteEnv: func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if exists(driverConfig) {
+		t.Fatalf("driver config still exists: %s", driverConfig)
+	}
+	if exists(observerToken) {
+		t.Fatalf("observer token still exists: %s", observerToken)
+	}
+	if got := readTextFile(t, unrelated); got != "user config\n" {
+		t.Fatalf("unrelated Loom config = %q", got)
+	}
+	if !exists(loomDir) {
+		t.Fatalf("Loom config dir with unrelated file was pruned: %s", loomDir)
+	}
+}
+
 func TestRunRemovesProjectStateSecretsAndOpenAIEnv(t *testing.T) {
 	dir := t.TempDir()
 	p := paths.Paths{

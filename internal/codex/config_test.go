@@ -148,6 +148,73 @@ func TestUpdateMCPServerAddsDriverAndKeepsModelConfig(t *testing.T) {
 	}
 }
 
+func TestRemoveMCPServerRemovesOnlyNamedServer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeCodexTestFile(t, path, strings.Join([]string{
+		`model_provider = "modelserver"`,
+		`model = "gpt-5.5"`,
+		``,
+		`[mcp_servers.driver]`,
+		`command = "C:\\Agentserver\\driver-agent.exe"`,
+		`args = ["serve-mcp", "--config", "C:\\Users\\me\\.config\\multi-agent\\driver.yaml"]`,
+		`startup_timeout_sec = 30`,
+		``,
+		`[mcp_servers.other]`,
+		`command = "other.exe"`,
+		`args = ["serve"]`,
+		``,
+		`[model_providers.modelserver]`,
+		`name = "modelserver"`,
+		`base_url = "https://code.ai.cs.ac.cn/v1"`,
+		`env_key = "OPENAI_API_KEY"`,
+		`wire_api = "responses"`,
+		``,
+	}, "\n"))
+
+	if err := RemoveMCPServer(path, "driver"); err != nil {
+		t.Fatal(err)
+	}
+
+	b, _ := os.ReadFile(path)
+	s := string(b)
+	for _, unwanted := range []string{
+		`[mcp_servers.driver]`,
+		`C:\\Agentserver\\driver-agent.exe`,
+		`multi-agent\\driver.yaml`,
+		`startup_timeout_sec = 30`,
+	} {
+		if strings.Contains(s, unwanted) {
+			t.Fatalf("config.toml still contains driver MCP content %q:\n%s", unwanted, s)
+		}
+	}
+	for _, want := range []string{
+		`model_provider = "modelserver"`,
+		`model = "gpt-5.5"`,
+		`[mcp_servers.other]`,
+		`command = "other.exe"`,
+		`[model_providers.modelserver]`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("config.toml missing preserved content %q:\n%s", want, s)
+		}
+	}
+	matches, _ := filepath.Glob(path + ".bak.*")
+	if len(matches) == 0 {
+		t.Fatalf("expected backup")
+	}
+}
+
+func writeCodexTestFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func boolPtr(v bool) *bool {
 	return &v
 }
