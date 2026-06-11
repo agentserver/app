@@ -2,6 +2,8 @@ package uninstall
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -13,6 +15,274 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
 )
+
+type testSkillsManifest struct {
+	Version int                      `json:"version"`
+	Files   []testSkillsManifestFile `json:"files"`
+}
+
+type testSkillsManifestFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+func TestRunRemovesManagedCodexAgentsBlockAndManagedSkillFiles(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		UserHome:         dir,
+		InstallRoot:      filepath.Join(dir, ".agentserver-app"),
+		SecretsFile:      filepath.Join(dir, ".agentserver-app", "secrets.json"),
+		LocalAppDataRoot: filepath.Join(dir, "local-appdata", "agentserver-app"),
+		CodexDir:         filepath.Join(dir, ".codex"),
+	}
+	agentsPath := filepath.Join(p.CodexDir, "AGENTS.md")
+	writeTextFile(t, agentsPath, strings.Join([]string{
+		"keep before",
+		"",
+		"<!-- agentserver-app loom driver prompt:start -->",
+		"managed prompt",
+		"<!-- agentserver-app loom driver prompt:end -->",
+		"",
+		"keep after",
+		"",
+	}, "\n"))
+
+	codexSkill := filepath.Join(p.CodexDir, "skills", "multiagent", "SKILL.md")
+	codexSkillBody := []byte("managed codex skill\n")
+	writeBytesFile(t, codexSkill, codexSkillBody)
+	writeJSONFile(t, filepath.Join(p.CodexDir, ".agentserver-managed-skills.json"), testSkillsManifest{
+		Version: 1,
+		Files:   []testSkillsManifestFile{{Path: "multiagent/SKILL.md", SHA256: testSHA256Hex(codexSkillBody)}},
+	})
+
+	agentsRoot := filepath.Join(dir, ".agents")
+	agentsSkill := filepath.Join(agentsRoot, "skills", "using-superpowers", "SKILL.md")
+	agentsSkillBody := []byte("managed agents skill\n")
+	writeBytesFile(t, agentsSkill, agentsSkillBody)
+	writeJSONFile(t, filepath.Join(agentsRoot, ".agentserver-managed-skills.json"), testSkillsManifest{
+		Version: 1,
+		Files:   []testSkillsManifestFile{{Path: "using-superpowers/SKILL.md", SHA256: testSHA256Hex(agentsSkillBody)}},
+	})
+
+	err := Run(Options{
+		Paths:     p,
+		Secrets:   secrets.New(p.SecretsFile),
+		DeleteEnv: func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	agentsBody := readTextFile(t, agentsPath)
+	for _, unwanted := range []string{
+		"agentserver-app loom driver prompt:start",
+		"managed prompt",
+		"agentserver-app loom driver prompt:end",
+	} {
+		if strings.Contains(agentsBody, unwanted) {
+			t.Fatalf("AGENTS.md still contains managed block content %q:\n%s", unwanted, agentsBody)
+		}
+	}
+	for _, want := range []string{"keep before", "keep after"} {
+		if !strings.Contains(agentsBody, want) {
+			t.Fatalf("AGENTS.md missing user content %q:\n%s", want, agentsBody)
+		}
+	}
+	for _, path := range []string{codexSkill, agentsSkill} {
+		if exists(path) {
+			t.Fatalf("managed skill still exists: %s", path)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(p.CodexDir, "skills"),
+		filepath.Join(agentsRoot, "skills"),
+	} {
+		if exists(path) {
+			t.Fatalf("empty managed skills root still exists: %s", path)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(p.CodexDir, ".agentserver-managed-skills.json"),
+		filepath.Join(agentsRoot, ".agentserver-managed-skills.json"),
+	} {
+		if exists(path) {
+			t.Fatalf("managed skills manifest still exists: %s", path)
+		}
+	}
+}
+
+func TestRunPreservesModifiedManagedSkillFilesAndUserSkills(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		UserHome:         dir,
+		InstallRoot:      filepath.Join(dir, ".agentserver-app"),
+		SecretsFile:      filepath.Join(dir, ".agentserver-app", "secrets.json"),
+		LocalAppDataRoot: filepath.Join(dir, "local-appdata", "agentserver-app"),
+		CodexDir:         filepath.Join(dir, ".codex"),
+	}
+	agentsPath := filepath.Join(p.CodexDir, "AGENTS.md")
+	writeTextFile(t, agentsPath, strings.Join([]string{
+		"user before",
+		"<!-- agentserver-app loom driver prompt:start -->",
+		"managed prompt",
+		"<!-- agentserver-app loom driver prompt:end -->",
+		"user after",
+		"",
+	}, "\n"))
+
+	originalBody := []byte("original managed skill\n")
+	modifiedBody := []byte("user edited managed skill\n")
+	modifiedSkill := filepath.Join(p.CodexDir, "skills", "multiagent", "SKILL.md")
+	writeBytesFile(t, modifiedSkill, modifiedBody)
+	unrelatedSkill := filepath.Join(p.CodexDir, "skills", "custom", "SKILL.md")
+	writeTextFile(t, unrelatedSkill, "user skill\n")
+	writeJSONFile(t, filepath.Join(p.CodexDir, ".agentserver-managed-skills.json"), testSkillsManifest{
+		Version: 1,
+		Files:   []testSkillsManifestFile{{Path: "multiagent/SKILL.md", SHA256: testSHA256Hex(originalBody)}},
+	})
+
+	err := Run(Options{
+		Paths:     p,
+		Secrets:   secrets.New(p.SecretsFile),
+		DeleteEnv: func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := readTextFile(t, modifiedSkill); got != string(modifiedBody) {
+		t.Fatalf("modified managed skill = %q, want %q", got, string(modifiedBody))
+	}
+	if got := readTextFile(t, unrelatedSkill); got != "user skill\n" {
+		t.Fatalf("unrelated skill = %q", got)
+	}
+	agentsBody := readTextFile(t, agentsPath)
+	if strings.Contains(agentsBody, "managed prompt") || strings.Contains(agentsBody, "agentserver-app loom driver prompt") {
+		t.Fatalf("AGENTS.md still contains managed block:\n%s", agentsBody)
+	}
+	for _, want := range []string{"user before", "user after"} {
+		if !strings.Contains(agentsBody, want) {
+			t.Fatalf("AGENTS.md missing user content %q:\n%s", want, agentsBody)
+		}
+	}
+	if exists(filepath.Join(p.CodexDir, ".agentserver-managed-skills.json")) {
+		t.Fatalf("managed skills manifest still exists")
+	}
+}
+
+func TestRunRemovesLoomDriverCredentialsAndCodexMCPServer(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		UserHome:         dir,
+		InstallRoot:      filepath.Join(dir, ".agentserver-app"),
+		SecretsFile:      filepath.Join(dir, ".agentserver-app", "secrets.json"),
+		LocalAppDataRoot: filepath.Join(dir, "local-appdata", "agentserver-app"),
+		CodexDir:         filepath.Join(dir, ".codex"),
+		CodexConfigFile:  filepath.Join(dir, ".codex", "config.toml"),
+	}
+	loomDir := filepath.Join(dir, ".config", "multi-agent")
+	driverConfig := filepath.Join(loomDir, "driver.yaml")
+	observerToken := filepath.Join(loomDir, "observer.token")
+	writeTextFile(t, driverConfig, strings.Join([]string{
+		"credentials:",
+		`  tunnel_token: "plain-tunnel-token"`,
+		`  proxy_token: "plain-proxy-token"`,
+		"observer:",
+		`  api_key: "plain-observer-key"`,
+		`  token_state_path: "` + filepath.ToSlash(observerToken) + `"`,
+		"",
+	}, "\n"))
+	writeTextFile(t, observerToken, "observer refresh token\n")
+	writeTextFile(t, p.CodexConfigFile, strings.Join([]string{
+		`model_provider = "modelserver"`,
+		``,
+		`[mcp_servers.driver]`,
+		`command = "C:\\Agentserver\\driver-agent.exe"`,
+		`args = ["serve-mcp", "--config", "` + filepath.ToSlash(driverConfig) + `"]`,
+		`startup_timeout_sec = 30`,
+		``,
+		`[mcp_servers.other]`,
+		`command = "other.exe"`,
+		`args = ["serve"]`,
+		``,
+	}, "\n"))
+
+	err := Run(Options{
+		Paths:     p,
+		Secrets:   secrets.New(p.SecretsFile),
+		DeleteEnv: func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, path := range []string{driverConfig, observerToken, loomDir} {
+		if exists(path) {
+			t.Fatalf("Loom driver credential path still exists: %s", path)
+		}
+	}
+	configBody := readTextFile(t, p.CodexConfigFile)
+	for _, unwanted := range []string{
+		`[mcp_servers.driver]`,
+		`C:\\Agentserver\\driver-agent.exe`,
+		filepath.ToSlash(driverConfig),
+		`startup_timeout_sec = 30`,
+	} {
+		if strings.Contains(configBody, unwanted) {
+			t.Fatalf("config.toml still contains driver MCP content %q:\n%s", unwanted, configBody)
+		}
+	}
+	for _, want := range []string{
+		`model_provider = "modelserver"`,
+		`[mcp_servers.other]`,
+		`command = "other.exe"`,
+	} {
+		if !strings.Contains(configBody, want) {
+			t.Fatalf("config.toml missing preserved content %q:\n%s", want, configBody)
+		}
+	}
+}
+
+func TestRunPreservesUnrelatedLoomConfigFiles(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		UserHome:         dir,
+		InstallRoot:      filepath.Join(dir, ".agentserver-app"),
+		SecretsFile:      filepath.Join(dir, ".agentserver-app", "secrets.json"),
+		LocalAppDataRoot: filepath.Join(dir, "local-appdata", "agentserver-app"),
+		CodexDir:         filepath.Join(dir, ".codex"),
+		CodexConfigFile:  filepath.Join(dir, ".codex", "config.toml"),
+	}
+	loomDir := filepath.Join(dir, ".config", "multi-agent")
+	driverConfig := filepath.Join(loomDir, "driver.yaml")
+	observerToken := filepath.Join(loomDir, "observer.token")
+	unrelated := filepath.Join(loomDir, "custom.yaml")
+	writeTextFile(t, driverConfig, `proxy_token: "plain-proxy-token"`+"\n")
+	writeTextFile(t, observerToken, "observer refresh token\n")
+	writeTextFile(t, unrelated, "user config\n")
+
+	err := Run(Options{
+		Paths:     p,
+		Secrets:   secrets.New(p.SecretsFile),
+		DeleteEnv: func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if exists(driverConfig) {
+		t.Fatalf("driver config still exists: %s", driverConfig)
+	}
+	if exists(observerToken) {
+		t.Fatalf("observer token still exists: %s", observerToken)
+	}
+	if got := readTextFile(t, unrelated); got != "user config\n" {
+		t.Fatalf("unrelated Loom config = %q", got)
+	}
+	if !exists(loomDir) {
+		t.Fatalf("Loom config dir with unrelated file was pruned: %s", loomDir)
+	}
+}
 
 func TestRunRemovesProjectStateSecretsAndOpenAIEnv(t *testing.T) {
 	dir := t.TempDir()
@@ -223,6 +493,35 @@ func writeJSONFile(t *testing.T, path string, v any) {
 	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeTextFile(t *testing.T, path, body string) {
+	t.Helper()
+	writeBytesFile(t, path, []byte(body))
+}
+
+func writeBytesFile(t *testing.T, path string, body []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readTextFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func testSHA256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func containsString(values []string, want string) bool {
