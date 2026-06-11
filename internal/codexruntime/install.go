@@ -14,12 +14,13 @@ import (
 )
 
 type Options struct {
-	ManifestPath        string
-	DestRoot            string
-	CacheDir            string
-	Client              *http.Client
-	DownloadIdleTimeout time.Duration
-	VersionCommand      func(context.Context, string) error
+	ManifestPath          string
+	DestRoot              string
+	CacheDir              string
+	Client                *http.Client
+	ResponseHeaderTimeout time.Duration
+	DownloadIdleTimeout   time.Duration
+	VersionCommand        func(context.Context, string) error
 }
 
 type InstallResult struct {
@@ -35,7 +36,7 @@ func Ensure(ctx context.Context, opts Options) (InstallResult, error) {
 		return InstallResult{}, err
 	}
 	if opts.Client == nil {
-		opts.Client = http.DefaultClient
+		opts.Client = newHTTPClient(opts.responseHeaderTimeout())
 	}
 	if opts.VersionCommand == nil {
 		opts.VersionCommand = runCodexVersion
@@ -100,13 +101,32 @@ func installCandidate(ctx context.Context, opts Options, m Manifest, c PackageCa
 	return InstallResult{Version: c.Version, Source: c.Source, CodexExe: codexExe}, nil
 }
 
-const defaultDownloadIdleTimeout = 30 * time.Second
+const (
+	defaultResponseHeaderTimeout = 15 * time.Second
+	defaultDownloadIdleTimeout   = 30 * time.Second
+)
+
+func (opts Options) responseHeaderTimeout() time.Duration {
+	if opts.ResponseHeaderTimeout > 0 {
+		return opts.ResponseHeaderTimeout
+	}
+	return defaultResponseHeaderTimeout
+}
 
 func (opts Options) downloadIdleTimeout() time.Duration {
 	if opts.DownloadIdleTimeout > 0 {
 		return opts.DownloadIdleTimeout
 	}
 	return defaultDownloadIdleTimeout
+}
+
+func newHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport := base.Clone()
+		transport.ResponseHeaderTimeout = responseHeaderTimeout
+		return &http.Client{Transport: transport}
+	}
+	return &http.Client{Timeout: responseHeaderTimeout}
 }
 
 func downloadPackage(ctx context.Context, client *http.Client, url, dst string, idleTimeout time.Duration) error {
