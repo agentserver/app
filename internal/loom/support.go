@@ -15,6 +15,11 @@ import (
 const (
 	loomPromptStartMarker = "<!-- agentserver-app loom driver prompt:start -->"
 	loomPromptEndMarker   = "<!-- agentserver-app loom driver prompt:end -->"
+	codexDriverPrompt     = "# Agentserver Driver Workspace\n\n" +
+		"- Use the `multiagent` skill when the user wants to inspect or use workspace resources, agents, or remote execution.\n" +
+		"- Use the registered `mcp_servers.driver` MCP server as the source of truth for workspace agents, resources, and driver tools.\n" +
+		"- Discover agents and resources before acting. Filter agents by `role == \"slave\"` and choose shell helpers from each target's `platform` and `command_interfaces`.\n" +
+		"- For complex planning, debugging, implementation, or review tasks, use the installed Superpower skills. Start with `using-superpowers` when available.\n"
 )
 
 type DriverSupportInput struct {
@@ -44,12 +49,12 @@ func InstallDriverSupport(in DriverSupportInput) error {
 			return err
 		}
 		if exists {
-			prompt, ok, err := readArchiveFile(in.CodexPromptsArchivePath, "prompts-codex/AGENTS.md")
+			_, ok, err := readArchiveFile(in.CodexPromptsArchivePath, "prompts-codex/AGENTS.md")
 			if err != nil {
 				return err
 			}
 			if ok {
-				if err := mergeCodexAgents(filepath.Join(in.UserHome, ".codex", "AGENTS.md"), string(prompt)); err != nil {
+				if err := mergeCodexAgents(filepath.Join(in.UserHome, ".codex", "AGENTS.md"), codexDriverPrompt); err != nil {
 					return err
 				}
 			}

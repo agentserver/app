@@ -43,12 +43,63 @@ func TestInstallDriverSupportInstallsSkillsAndPrompt(t *testing.T) {
 	body := readFile(t, filepath.Join(home, ".codex", "AGENTS.md"))
 	for _, want := range []string{
 		loomPromptStartMarker,
-		"# Multi-Agent Driver",
+		"# Agentserver Driver Workspace",
+		"Use the `multiagent` skill",
+		"`mcp_servers.driver`",
 		"role == \"slave\"",
 		loomPromptEndMarker,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("AGENTS.md missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestInstallDriverSupportWritesLightweightCodexAgentsPrompt(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	promptsArchive := filepath.Join(dir, "driver-codex-prompts.tar.gz")
+	writeTarGz(t, promptsArchive, map[string]string{
+		"prompts-codex/AGENTS.md": strings.Join([]string{
+			"# Multi-Agent Driver",
+			"",
+			"## Core tools",
+			"- `mcp__driver__run_slave_bash(...)` - run Bash commands.",
+			"",
+			"## Permissions skill",
+			"Use low-level permission helpers.",
+			"",
+		}, "\n"),
+	})
+
+	if err := InstallDriverSupport(DriverSupportInput{
+		UserHome:                home,
+		CodexPromptsArchivePath: promptsArchive,
+	}); err != nil {
+		t.Fatalf("InstallDriverSupport: %v", err)
+	}
+
+	body := readFile(t, filepath.Join(home, ".codex", "AGENTS.md"))
+	for _, want := range []string{
+		loomPromptStartMarker,
+		"Use the `multiagent` skill",
+		"`mcp_servers.driver`",
+		"`role == \"slave\"`",
+		"`platform` and `command_interfaces`",
+		"use the installed Superpower skills",
+		loomPromptEndMarker,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("AGENTS.md missing %q:\n%s", want, body)
+		}
+	}
+	for _, unwanted := range []string{
+		"## Core tools",
+		"mcp__driver__run_slave_bash",
+		"## Permissions skill",
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("AGENTS.md contains verbose release prompt %q:\n%s", unwanted, body)
 		}
 	}
 }
@@ -161,7 +212,7 @@ func TestInstallDriverSupportReplacesManagedPromptBlock(t *testing.T) {
 	}
 
 	body := readFile(t, agentsPath)
-	for _, want := range []string{"keep before", "new managed prompt", "keep after"} {
+	for _, want := range []string{"keep before", "# Agentserver Driver Workspace", "keep after"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("AGENTS.md missing %q:\n%s", want, body)
 		}
