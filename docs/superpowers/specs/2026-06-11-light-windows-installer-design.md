@@ -2,7 +2,7 @@
 
 **Date**: 2026-06-11
 **Status**: Design approved; written spec pending user review
-**Scope**: Windows x64 Inno installer and portable zip stop bundling `codex.exe` and the VS Code installer executable. Install-time setup downloads the Codex Windows runtime from domestic npm mirrors. Minimal VS Code mode installs VS Code through Microsoft Store / `winget`, then uses the existing onboarding configuration path.
+**Scope**: Windows x64 Inno installer and portable zip stop bundling `codex.exe` and the VS Code installer executable. Install-time setup downloads the Codex Windows runtime from domestic npm mirrors. Minimal VS Code mode downloads the VS Code Microsoft Store bootstrapper at install time, runs it, then uses the existing onboarding configuration path.
 
 ## Motivation
 
@@ -20,7 +20,7 @@ The user-approved product behavior is:
 - Build installer artifacts without bundled VS Code installer exe.
 - During `星池指挥官` installation, download Codex from domestic mirrors.
 - Prefer the pinned `0.136.0-win32-x64` Codex runtime; if it is unavailable on mirrors, use the latest Windows x64 Codex npm platform package.
-- If the user chooses `极简风` / minimal VS Code, install VS Code from Microsoft Store using the same `winget` style as Codex Desktop, then let onboarding configure it.
+- If the user chooses `极简风` / minimal VS Code, download the VS Code Microsoft Store bootstrapper during installation, run it to install VS Code, then let onboarding configure it.
 
 ## Mirror Findings
 
@@ -62,7 +62,7 @@ Use a light installer by default. The installer still installs the same app comp
 | Mode | Default | Frontend install source | Codex runtime source | Onboarding configure step |
 |---|---:|---|---|---|
 | Codex Desktop | Yes | Existing Codex Desktop ensure flow | Domestic npm mirrors | `ConfigureCodexDesktop` |
-| Minimal VS Code | No | Microsoft Store via `winget` | Domestic npm mirrors | `ConfigureVSCode` |
+| Minimal VS Code | No | Downloaded Microsoft Store bootstrapper | Domestic npm mirrors | `ConfigureVSCode` |
 
 No Node.js or npm executable is required on the target machine. The app downloads npm tarballs directly and verifies npm integrity itself.
 
@@ -158,7 +158,7 @@ Install order in `CurStepChanged(ssPostInstall)`:
 3. Write `install-mode.json`.
 4. Ensure the selected frontend:
    - default: existing Codex Desktop ensure script.
-   - minimal VS Code: Store-based `ensure-vscode.ps1`.
+   - minimal VS Code: bootstrapper-based `ensure-vscode.ps1`.
 
 `StageBundledCodexForLocalSlaves` is removed. Failure to download or verify Codex stops installation with a visible error and a log path.
 
@@ -179,27 +179,28 @@ The staged zip includes `ensure-codex.ps1` and `codex-manifest.json`. `install.p
 
 The resulting Inno setup exe is still named the same unless release automation chooses to add a suffix later.
 
-## Store-Based VS Code Install
+## VS Code Store Bootstrapper Install
 
-`ensure-vscode.ps1` changes from "download a locked VS Code installer exe" to "install VS Code from Microsoft Store via winget".
+`ensure-vscode.ps1` changes from "download a locked VS Code installer exe during package build" to "download the VS Code Microsoft Store bootstrapper during installation and run it".
 
 Behavior:
 
 1. Detect an existing usable `code` command.
 2. If found, print version and skip install.
-3. Require `winget.exe`.
-4. Run a Microsoft Store install command:
+3. Download the bootstrapper from Microsoft's installer endpoint:
 
-```powershell
-winget install --id XP9KHM4BK9FZ7Q -e -s msstore --accept-source-agreements --accept-package-agreements --disable-interactivity
-```
+   ```text
+   https://get.microsoft.com/installer/download/XP9KHM4BK9FZ7Q?cid=website_cta_psi
+   ```
 
-5. Poll until a usable `code` command is detected.
-6. Store the detected path/version in onboarding state when `EnsureVSCode` runs.
+4. Save it under `%LOCALAPPDATA%\agentserver-app\cache\vscode\`.
+5. Run the downloaded bootstrapper and wait for it to exit.
+6. Poll until a usable `code` command is detected.
+7. Store the detected path/version in onboarding state when `EnsureVSCode` runs.
 
-The package ID lives in the script as a constant and can later move to a manifest if Microsoft changes the Store ID.
+The Store product ID `XP9KHM4BK9FZ7Q` and bootstrapper URL live in the script as constants and can later move to a manifest if Microsoft changes the Store ID.
 
-Go-side `internal/vscode` install behavior should match the script. If onboarding sees minimal VS Code mode and VS Code is missing, `EnsureVSCode` should use the same Store / `winget` path rather than downloading a locked installer.
+Go-side `internal/vscode` install behavior should match the script. If onboarding sees minimal VS Code mode and VS Code is missing, `EnsureVSCode` should use the same bootstrapper download path rather than downloading a locked VS Code user installer.
 
 Detection should be updated to include Microsoft Store app execution aliases:
 
@@ -230,11 +231,11 @@ Codex runtime errors:
 - Tarball missing `bin/codex.exe` or required resources: fail install with "Codex npm 包内容不完整".
 - Existing `bin/codex.exe` fails `--version`: reinstall runtime from mirrors.
 
-VS Code Store errors:
+VS Code Store bootstrapper errors:
 
-- `winget.exe` missing: fail with "未找到 winget；请安装或更新 Windows App Installer / Windows Package Manager 后重试。"
-- `msstore` source unavailable: fail with "Microsoft Store source 不可用；请检查 Store 源、网络或企业策略。"
-- Store install succeeds but `code` command is not detected: fail with a message that includes the winget output and app execution alias paths checked.
+- Bootstrapper download fails: fail with "无法下载 VS Code 微软商店引导器；请检查网络后重试。"
+- Bootstrapper exits non-zero: fail with "VS Code 微软商店引导器安装失败" and include the exit code in logs.
+- Store install succeeds but `code` command is not detected: fail with a message that includes the bootstrapper exit code and app execution alias paths checked.
 
 ## Tests
 
@@ -247,9 +248,9 @@ Go tests:
 - Tar extractor strips `vendor/x86_64-pc-windows-msvc/` and writes `bin/codex.exe`.
 - Tar extractor rejects path traversal and symlinks.
 - `agentctl install-codex` skips when required files already exist and `codex.exe --version` succeeds.
-- VS Code install plan builds the Microsoft Store `winget` command.
+- VS Code install plan downloads the Microsoft Store bootstrapper URL.
 - VS Code detection checks WindowsApps aliases.
-- Onboarding `EnsureVSCode` uses Store / `winget` install semantics when detection fails.
+- Onboarding `EnsureVSCode` uses bootstrapper install semantics when detection fails.
 
 Packaging text tests:
 
@@ -259,7 +260,7 @@ Packaging text tests:
 - `installer.iss` runs Codex ensure before frontend ensure.
 - `install.ps1` includes `ensure-codex.ps1` and calls it before frontend setup.
 - `package-windows.sh` and `package-windows-zip.sh` no longer prefetch or copy `codex.exe` and `vscode-installer.exe`.
-- `ensure-vscode.ps1` contains `winget`, `msstore`, and the Store package ID.
+- `ensure-vscode.ps1` contains the `get.microsoft.com/installer/download` URL and Store product ID.
 
 Manual Windows verification:
 
@@ -269,7 +270,7 @@ Manual Windows verification:
 4. Confirm `%LOCALAPPDATA%\agentserver-app\bin\codex.exe` exists after install.
 5. Confirm default mode launches Codex Desktop onboarding.
 6. Install minimal VS Code mode on a clean Windows user.
-7. Confirm VS Code is installed from Microsoft Store / `winget`.
+7. Confirm VS Code is installed after downloading and running the Microsoft Store bootstrapper.
 8. Complete onboarding and confirm VS Code settings point to `%LOCALAPPDATA%\agentserver-app\bin\codex.exe`.
 
 ## Non-Goals
