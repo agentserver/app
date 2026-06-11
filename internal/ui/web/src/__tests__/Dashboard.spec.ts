@@ -179,6 +179,33 @@ describe('Dashboard', () => {
     expect(refreshSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('reconnects agentserver when the workspace token is unauthorized', async () => {
+    const expired = consoleState();
+    expired.agentserver.reconnect_required = true;
+    expired.agentserver.auth_message = '星池工作区连接已失效，请重新连接。';
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(expired);
+    vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves());
+    const startSpy = vi.spyOn(api, 'startStep').mockResolvedValue({
+      state: 'started',
+      oauth_url: 'https://agent.example/device',
+    });
+    const pollSpy = vi.spyOn(api, 'pollStepStatus').mockResolvedValue({ state: 'success' });
+    const refreshSpy = vi.spyOn(api, 'refreshConsoleState').mockResolvedValue(consoleState());
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(w.text()).toContain('星池工作区连接已失效，请重新连接。');
+    const reconnectButton = w.findAll('button').find(b => b.text().includes('重新连接星池工作区'));
+    expect(reconnectButton).toBeDefined();
+    await reconnectButton!.trigger('click');
+    await flushPromises();
+
+    expect(startSpy).toHaveBeenCalledWith('agentserver_login');
+    expect(pollSpy).toHaveBeenCalledWith('agentserver_login');
+    expect(refreshSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores duplicate refresh clicks while refresh is pending', async () => {
     mockConsoleState();
     const refreshSpy = vi.spyOn(api, 'refreshConsoleState').mockReturnValue(new Promise(() => {}));

@@ -313,6 +313,9 @@ func (r *realOrchestrator) PollAgentserverLogin(ctx context.Context) (agentserve
 	}); err != nil {
 		return agentserver.WorkspaceAPIKey{}, err
 	}
+	if err := r.configureLoomDriver(); err != nil {
+		return agentserver.WorkspaceAPIKey{}, err
+	}
 	return key, nil
 }
 

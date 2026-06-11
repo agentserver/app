@@ -234,6 +234,8 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	srv.Handler = ui.NewServerWithConsole(newCompletedConsoleOrchestrator(completedOrchestratorInput{
 		State:                 in.State,
 		Secrets:               sec,
+		Paths:                 in.Paths,
+		InstallDir:            in.InstallDir,
 		MSOAuth:               modelserver.OAuthConfig(),
 		OpenBrowser:           func(url string) { _ = openBrowser(url) },
 		TokenRefresherExePath: joinExe(in.InstallDir, "token-refresher.exe"),
@@ -427,20 +429,56 @@ type completedStateOrchestrator struct {
 type completedOrchestratorInput struct {
 	State                 *state.Store
 	Secrets               secrets.Store
+	Paths                 paths.Paths
+	InstallDir            string
 	MSOAuth               oauth.AuthCodeConfig
+	ASOAuth               oauth.Config
 	OpenBrowser           func(string)
 	TokenRefresherExePath string
 }
 
 func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestrator {
+	asBaseURL := completedAgentserverBaseURL(in.State)
+	asOAuth := in.ASOAuth
+	if asOAuth.Endpoint == "" {
+		asOAuth = defaultAgentserverOAuthConfig(asBaseURL)
+	}
+	loomDriverPath := ""
+	if in.InstallDir != "" {
+		loomDriverPath = joinExe(in.InstallDir, "driver-agent.exe")
+	}
+	loomConfigPath := ""
+	if in.Paths.UserHome != "" {
+		loomConfigPath = filepath.Join(in.Paths.UserHome, ".config", "multi-agent", "driver.yaml")
+	}
 	return ui.NewRealOrchestrator(ui.Deps{
-		State:                 in.State,
-		Secrets:               in.Secrets,
-		MS:                    modelserver.New("https://codeapi.cs.ac.cn"),
-		MSOAuth:               in.MSOAuth,
-		OpenBrowser:           in.OpenBrowser,
-		TokenRefresherExePath: in.TokenRefresherExePath,
+		State:                             in.State,
+		Secrets:                           in.Secrets,
+		MS:                                modelserver.New("https://codeapi.cs.ac.cn"),
+		AS:                                agentserver.New(asBaseURL),
+		MSOAuth:                           in.MSOAuth,
+		ASOAuth:                           asOAuth,
+		CodexConfigPath:                   in.Paths.CodexConfigFile,
+		CodexDesktopGlobalStatePath:       in.Paths.CodexDesktopGlobalStateFile,
+		CodexDesktopComputerUseConfigPath: in.Paths.CodexDesktopComputerUseConfigFile,
+		CodexAbsPath:                      in.Paths.CodexExePath,
+		LoomDriverPath:                    loomDriverPath,
+		LoomConfigPath:                    loomConfigPath,
+		OpenBrowser:                       in.OpenBrowser,
+		TokenRefresherExePath:             in.TokenRefresherExePath,
 	})
+}
+
+func completedAgentserverBaseURL(store *state.Store) string {
+	const fallback = "https://agent.cs.ac.cn"
+	if store == nil {
+		return fallback
+	}
+	st, err := store.Load()
+	if err != nil || strings.TrimSpace(st.Agentserver.BaseURL) == "" {
+		return fallback
+	}
+	return strings.TrimSpace(st.Agentserver.BaseURL)
 }
 
 func newCompletedStateOrchestrator(store *state.Store) ui.Orchestrator {
@@ -525,13 +563,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	// to Hydra. The CLI client `agentserver-agent-cli` is pre-registered
 	// by the Helm chart with grant=device_code, public (no secret),
 	// scopes=openid profile agent:register.
-	asOAuth := oauth.Config{
-		Endpoint:  "https://agent.cs.ac.cn",
-		AuthPath:  "/api/oauth2/device/auth",
-		TokenPath: "/api/oauth2/token",
-		ClientID:  "agentserver-agent-cli",
-		Scope:     "openid profile agent:register",
-	}
+	asOAuth := defaultAgentserverOAuthConfig("https://agent.cs.ac.cn")
 
 	installDir, err := os.Executable()
 	if err != nil {
@@ -599,6 +631,19 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		return nil // clean shutdown via LaunchAndShutdown
 	}
 	return err
+}
+
+func defaultAgentserverOAuthConfig(endpoint string) oauth.Config {
+	if strings.TrimSpace(endpoint) == "" {
+		endpoint = "https://agent.cs.ac.cn"
+	}
+	return oauth.Config{
+		Endpoint:  strings.TrimRight(strings.TrimSpace(endpoint), "/"),
+		AuthPath:  "/api/oauth2/device/auth",
+		TokenPath: "/api/oauth2/token",
+		ClientID:  "agentserver-agent-cli",
+		Scope:     "openid profile agent:register",
+	}
 }
 
 func launchCompletedInstall(ctx context.Context, codeExe string, p paths.Paths, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string) error {

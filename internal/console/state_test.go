@@ -314,6 +314,51 @@ func TestControllerStateMarksModelserverReconnectWhenRefreshTokenMissing(t *test
 	}
 }
 
+func TestControllerStateMarksAgentserverReconnectWhenWhoamiUnauthorized(t *testing.T) {
+	as := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/agent/whoami" {
+			t.Fatalf("agentserver unexpected path %s", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer revoked-proxy-token" {
+			t.Fatalf("agentserver Authorization=%q", r.Header.Get("Authorization"))
+		}
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	}))
+	defer as.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"agentserver_login"}
+		s.Agentserver.WorkspaceID = "ws-cached"
+		s.Agentserver.WorkspaceName = "嘿嘿"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	if err := sec.Set("agentserver_ws_api_key", "revoked-proxy-token"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewController(Deps{
+		State: store, Secrets: sec, AS: agentserver.New(as.URL),
+	}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Agentserver.WorkspaceName != "嘿嘿" {
+		t.Fatalf("cached workspace name should remain visible: %+v", got.Agentserver)
+	}
+	if !got.Agentserver.ReconnectRequired {
+		t.Fatalf("agentserver reconnect should be required: %+v", got.Agentserver)
+	}
+	if got.Agentserver.AuthMessage != "星池工作区连接已失效，请重新连接。" {
+		t.Fatalf("AuthMessage=%q", got.Agentserver.AuthMessage)
+	}
+}
+
 func TestControllerStateRefreshesExpiredModelserverTokenBeforeQuota(t *testing.T) {
 	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/usage" {

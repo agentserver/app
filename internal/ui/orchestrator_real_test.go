@@ -774,6 +774,92 @@ func TestPollAgentserverLoginRegistersAgentAndStoresWorkspaceName(t *testing.T) 
 	}
 }
 
+func TestPollAgentserverLoginRefreshesLoomDriverConfigAndMCP(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"oauth-token","token_type":"Bearer","expires_in":3600}`))
+	})
+	mux.HandleFunc("/api/agent/register", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"sandbox_id":"sb-new","tunnel_token":"tunnel-new","proxy_token":"proxy-new","workspace_id":"ws-new","short_id":"new123"}`))
+	})
+	mux.HandleFunc("/api/agent/whoami", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"workspace_id":"ws-new","workspace_name":"New workspace"}`))
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		s.Agentserver.SandboxID = "sb-old"
+		s.Agentserver.WorkspaceID = "ws-old"
+		s.Agentserver.WorkspaceName = "Old workspace"
+		s.Agentserver.ShortID = "old123"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	if err := sec.Set("agentserver_ws_api_key", "proxy-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sec.Set("agentserver_tunnel_token", "tunnel-old"); err != nil {
+		t.Fatal(err)
+	}
+	driverExe := filepath.Join(dir, "install", "driver-agent.exe")
+	if err := os.MkdirAll(filepath.Dir(driverExe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(driverExe, []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	loomConfig := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
+	codexConfig := filepath.Join(dir, ".codex", "config.toml")
+	r := &realOrchestrator{d: Deps{
+		State:           store,
+		Secrets:         sec,
+		AS:              agentserver.New(fake.URL),
+		ASOAuth:         oauth.Config{Endpoint: fake.URL, TokenPath: "/api/oauth2/token", ClientID: "client-x"},
+		CodexConfigPath: codexConfig,
+		LoomDriverPath:  driverExe,
+		LoomConfigPath:  loomConfig,
+	}}
+	r.asChallenge = oauth.DeviceCodeChallenge{DeviceCode: "dev", ExpiresIn: 30, Interval: 1}
+
+	if _, err := r.PollAgentserverLogin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	loomBytes, err := os.ReadFile(loomConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loomText := string(loomBytes)
+	for _, want := range []string{
+		`proxy_token: "proxy-new"`,
+		`tunnel_token: "tunnel-new"`,
+		`sandbox_id: "sb-new"`,
+		`workspace_id: "ws-new"`,
+		`workspace_name: "New workspace"`,
+		`agent_id: "driver-new123"`,
+	} {
+		if !strings.Contains(loomText, want) {
+			t.Fatalf("driver.yaml missing %q:\n%s", want, loomText)
+		}
+	}
+	codexBytes, err := os.ReadFile(codexConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(codexBytes), `[mcp_servers.driver]`) {
+		t.Fatalf("config.toml missing driver MCP:\n%s", string(codexBytes))
+	}
+}
+
 func TestPollAgentserverLoginUsesRegisterWorkspaceWhenWhoamiNameUnavailable(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/oauth2/token", func(w http.ResponseWriter, r *http.Request) {

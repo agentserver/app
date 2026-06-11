@@ -50,7 +50,12 @@ export interface ConsoleState {
     reconnect_required?: boolean;
     auth_message?: string;
   };
-  agentserver: { workspace_id?: string; workspace_name?: string };
+  agentserver: {
+    workspace_id?: string;
+    workspace_name?: string;
+    reconnect_required?: boolean;
+    auth_message?: string;
+  };
   quotas: ConsoleQuota[];
   quota_error?: string;
   subscription_url?: string;

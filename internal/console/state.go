@@ -57,8 +57,10 @@ type ModelserverView struct {
 }
 
 type AgentserverView struct {
-	WorkspaceID   string `json:"workspace_id,omitempty"`
-	WorkspaceName string `json:"workspace_name,omitempty"`
+	WorkspaceID       string `json:"workspace_id,omitempty"`
+	WorkspaceName     string `json:"workspace_name,omitempty"`
+	ReconnectRequired bool   `json:"reconnect_required,omitempty"`
+	AuthMessage       string `json:"auth_message,omitempty"`
 }
 
 type SlaveRemoteOpenResult struct {
@@ -109,6 +111,7 @@ func (c *Controller) State(ctx context.Context) (State, error) {
 	msToken = c.secret(tokenrefresh.AccessTokenKey)
 	asToken := c.secret("agentserver_ws_api_key")
 	c.applyModelserverAuthState(st, msToken, &out)
+	c.applyAgentserverAuthState(st, asToken, &out)
 	if tokenrefresh.ReauthRequired(preRefreshErr) {
 		markModelserverReconnect(&out)
 	}
@@ -155,6 +158,8 @@ func (c *Controller) State(ctx context.Context) (State, error) {
 				out.Agentserver.WorkspaceID = identity.Workspace.ID
 			}
 			out.Agentserver.WorkspaceName = identity.Workspace.Name
+		} else if isAgentserverAuthError(err) {
+			markAgentserverReconnect(&out)
 		}
 	}
 
@@ -385,7 +390,29 @@ func markModelserverReconnect(out *State) {
 	out.Modelserver.AuthMessage = "大模型连接已失效，请重新连接。"
 }
 
+func (c *Controller) applyAgentserverAuthState(st *state.State, asToken string, out *State) {
+	if st == nil || out == nil || !st.Onboarding.HasCompleted("agentserver_login") {
+		return
+	}
+	if asToken == "" {
+		markAgentserverReconnect(out)
+	}
+}
+
+func markAgentserverReconnect(out *State) {
+	out.Agentserver.ReconnectRequired = true
+	out.Agentserver.AuthMessage = "星池工作区连接已失效，请重新连接。"
+}
+
 func isModelserverAuthError(err error) bool {
+	return isAuthError(err)
+}
+
+func isAgentserverAuthError(err error) bool {
+	return isAuthError(err)
+}
+
+func isAuthError(err error) bool {
 	if err == nil {
 		return false
 	}

@@ -17,6 +17,10 @@ const reconnectingModelserver = ref(false);
 const reconnectStatus = ref('');
 const reconnectOauthUrl = ref('');
 const reconnectError = ref('');
+const reconnectingAgentserver = ref(false);
+const agentserverReconnectStatus = ref('');
+const agentserverReconnectOauthUrl = ref('');
+const agentserverReconnectError = ref('');
 const slaveMachine = ref<api.ConsoleMachine | null>(null);
 const slaves = ref<api.ConsoleSlave[]>([]);
 const slaveFolder = ref('');
@@ -38,6 +42,7 @@ const visibleErrors = computed(() => [
   { key: 'subscription', message: subscriptionError.value },
   { key: 'logout-modelserver', message: logoutModelserverError.value },
   { key: 'reconnect', message: reconnectError.value },
+  { key: 'agentserver-reconnect', message: agentserverReconnectError.value },
   { key: 'slave', message: slaveError.value },
 ].filter(error => error.message));
 
@@ -195,6 +200,40 @@ async function pollModelserverReconnect() {
       state.value = await api.refreshConsoleState();
       reconnectStatus.value = '';
       reconnectOauthUrl.value = '';
+      return;
+    }
+    if (s.error && !isLongPollTimeout(s.error)) {
+      throw new Error(s.error);
+    }
+    await delay(3000);
+  }
+}
+
+async function reconnectAgentserver() {
+  if (reconnectingAgentserver.value) return;
+  reconnectingAgentserver.value = true;
+  agentserverReconnectError.value = '';
+  agentserverReconnectOauthUrl.value = '';
+  agentserverReconnectStatus.value = '正在打开登录页面…';
+  try {
+    const started = await api.startStep('agentserver_login');
+    if (started.oauth_url) agentserverReconnectOauthUrl.value = started.oauth_url;
+    agentserverReconnectStatus.value = '请在浏览器中完成星池工作区连接…';
+    await pollAgentserverReconnect();
+  } catch (e) {
+    agentserverReconnectError.value = errorMessage(e);
+  } finally {
+    reconnectingAgentserver.value = false;
+  }
+}
+
+async function pollAgentserverReconnect() {
+  for (;;) {
+    const s = await api.pollStepStatus('agentserver_login');
+    if (s.state === 'success') {
+      state.value = await api.refreshConsoleState();
+      agentserverReconnectStatus.value = '';
+      agentserverReconnectOauthUrl.value = '';
       return;
     }
     if (s.error && !isLongPollTimeout(s.error)) {
@@ -404,6 +443,33 @@ onBeforeUnmount(() => {
       <a
         v-if="reconnectOauthUrl"
         :href="reconnectOauthUrl"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        浏览器没自动打开? 点这里
+      </a>
+    </div>
+    <el-alert
+      v-if="state?.agentserver.reconnect_required"
+      type="warning"
+      :title="state.agentserver.auth_message || '星池工作区连接已失效，请重新连接。'"
+      :closable="false"
+      show-icon
+    />
+
+    <div v-if="state?.agentserver.reconnect_required" class="reconnect-row">
+      <el-button
+        type="primary"
+        :loading="reconnectingAgentserver"
+        :disabled="reconnectingAgentserver"
+        @click="reconnectAgentserver"
+      >
+        重新连接星池工作区
+      </el-button>
+      <span v-if="agentserverReconnectStatus">{{ agentserverReconnectStatus }}</span>
+      <a
+        v-if="agentserverReconnectOauthUrl"
+        :href="agentserverReconnectOauthUrl"
         target="_blank"
         rel="noopener noreferrer"
       >
