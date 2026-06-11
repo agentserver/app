@@ -60,15 +60,13 @@ function Invoke-CodexDesktopLocalInstaller {
     Write-Step $LocalInstallerPath
     $p = Start-Process -FilePath $LocalInstallerPath -Wait -PassThru
     if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0) {
-        if ($p.ExitCode -eq 1612) {
-            Write-Step "Codex Desktop installer opened Microsoft Store; waiting for the user to complete installation..."
-        } else {
-            throw "Codex Desktop installer failed with exit code $($p.ExitCode)"
-        }
+        Write-Warning "Bundled Codex Desktop installer failed with exit code $($p.ExitCode); falling back to winget."
+        return $false
     }
     Write-Step "Waiting for Codex Desktop to become available..."
     if (-not (Wait-CodexDesktopInstalled -TimeoutSeconds $InstallTimeoutSeconds)) {
-        throw "Codex Desktop 安装器已退出，但在 $InstallTimeoutSeconds 秒内未检测到 Codex Desktop。"
+        Write-Warning "Bundled Codex Desktop installer exited, but Codex Desktop was not detected within $InstallTimeoutSeconds seconds; falling back to winget."
+        return $false
     }
     return $true
 }

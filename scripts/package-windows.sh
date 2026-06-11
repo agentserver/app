@@ -137,19 +137,18 @@ fi
 codex_size=$(stat -c%s "$CODEX_CACHE")
 echo "codex.exe: $codex_size bytes (cached)"
 
-if [[ ! -f "$CODEX_DESKTOP_CACHE" ]]; then
-  mkdir -p "$(dirname "$CODEX_DESKTOP_CACHE")"
-  echo "Fetching Codex Desktop installer ..."
-  echo "  URL: $CODEX_DESKTOP_URL"
-  if ! curl --fail --location --retry 2 --retry-delay 2 --output "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_URL"; then
-    rm -f "$CODEX_DESKTOP_CACHE.part"
-    echo "ERROR: failed to download Codex Desktop installer" >&2
-    exit 2
-  fi
-  mv "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_CACHE"
+mkdir -p "$(dirname "$CODEX_DESKTOP_CACHE")"
+rm -f "$CODEX_DESKTOP_CACHE" "$CODEX_DESKTOP_CACHE.part"
+echo "Fetching Codex Desktop installer ..."
+echo "  URL: $CODEX_DESKTOP_URL"
+if ! curl --fail --location --retry 2 --retry-delay 2 --output "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_URL"; then
+  rm -f "$CODEX_DESKTOP_CACHE.part"
+  echo "ERROR: failed to download Codex Desktop installer" >&2
+  exit 2
 fi
+mv "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_CACHE"
 codex_desktop_size=$(stat -c%s "$CODEX_DESKTOP_CACHE")
-echo "Codex Desktop installer: $codex_desktop_size bytes (cached)"
+echo "Codex Desktop installer: $codex_desktop_size bytes (fresh)"
 
 download_loom_asset "$LOOM_DRIVER_ASSET" "$LOOM_DRIVER_CACHE" "$LOOM_DRIVER_SHA256"
 download_loom_asset "$LOOM_SLAVE_ASSET" "$LOOM_SLAVE_CACHE" "$LOOM_SLAVE_SHA256"
