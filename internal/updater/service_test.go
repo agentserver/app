@@ -222,6 +222,63 @@ func TestServiceAutomaticCheckSkipsWhenRecentlyChecked(t *testing.T) {
 	}
 }
 
+func TestServiceAutomaticCheckReturnsErrorStateWhenRefreshedStateSaveFails(t *testing.T) {
+	now := time.Date(2026, 6, 12, 13, 15, 0, 0, time.UTC)
+	called := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "unexpected network call", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	stateRoot := filepath.Join(t.TempDir(), "state-root")
+	statePath := filepath.Join(stateRoot, "state.json")
+	store := NewStateStore(statePath)
+	if err := store.Save(State{
+		CurrentVersion: "0.1.0",
+		LastCheckedAt:  now.Add(-time.Hour),
+		Status:         StatusLatest,
+	}); err != nil {
+		t.Fatalf("Save prior state: %v", err)
+	}
+	saveHookCalled := false
+	store.beforeSave = func() {
+		if saveHookCalled {
+			return
+		}
+		saveHookCalled = true
+		if err := os.Remove(statePath); err != nil {
+			t.Fatalf("Remove state file: %v", err)
+		}
+		if err := os.Remove(stateRoot); err != nil {
+			t.Fatalf("Remove state dir: %v", err)
+		}
+		if err := os.WriteFile(stateRoot, []byte("not a directory"), 0o644); err != nil {
+			t.Fatalf("Write state root conflict: %v", err)
+		}
+	}
+
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		ManifestURL:    server.URL,
+		State:          store,
+		Client:         server.Client(),
+		Now:            func() time.Time { return now },
+	}.Check(context.Background(), true)
+	if err == nil {
+		t.Fatal("expected refreshed state save error")
+	}
+	if called {
+		t.Fatal("automatic check fetched manifest despite throttle path save failure")
+	}
+	if got.Status != StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+	}
+	if !strings.Contains(got.LastError, "state-root") {
+		t.Fatalf("LastError=%q, want state save error", got.LastError)
+	}
+}
+
 func TestServiceAutomaticCheckDefaultsToDailyThrottle(t *testing.T) {
 	now := time.Date(2026, 6, 12, 13, 30, 0, 0, time.UTC)
 	called := false
@@ -255,6 +312,50 @@ func TestServiceAutomaticCheckDefaultsToDailyThrottle(t *testing.T) {
 	}
 	if got.CurrentVersion != "0.1.1" {
 		t.Fatalf("CurrentVersion=%q, want refreshed current version", got.CurrentVersion)
+	}
+}
+
+func TestServiceCheckReturnsErrorStateWhenCheckingStateSaveFails(t *testing.T) {
+	now := time.Date(2026, 6, 12, 13, 45, 0, 0, time.UTC)
+	called := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "unexpected network call", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	stateRoot := filepath.Join(t.TempDir(), "state-root")
+	statePath := filepath.Join(stateRoot, "state.json")
+	store := NewStateStore(statePath)
+	saveHookCalled := false
+	store.beforeSave = func() {
+		if saveHookCalled {
+			return
+		}
+		saveHookCalled = true
+		if err := os.WriteFile(stateRoot, []byte("not a directory"), 0o644); err != nil {
+			t.Fatalf("Write state root conflict: %v", err)
+		}
+	}
+
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		ManifestURL:    server.URL,
+		State:          store,
+		Client:         server.Client(),
+		Now:            func() time.Time { return now },
+	}.Check(context.Background(), false)
+	if err == nil {
+		t.Fatal("expected checking state save error")
+	}
+	if called {
+		t.Fatal("Check fetched manifest despite checking state save failure")
+	}
+	if got.Status != StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+	}
+	if !strings.Contains(got.LastError, "state-root") {
+		t.Fatalf("LastError=%q, want checking state save error", got.LastError)
 	}
 }
 
@@ -316,6 +417,67 @@ func TestServiceDownloadVerifiesSHA256AndStartsInstaller(t *testing.T) {
 	}
 	if string(gotBody) != string(body) {
 		t.Fatalf("installer body=%q, want %q", gotBody, body)
+	}
+}
+
+func TestServiceDownloadDoesNotFollowPredictablePartSymlink(t *testing.T) {
+	body := []byte("installer bytes")
+	sum := sha256.Sum256(body)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write(body); err != nil {
+			t.Fatalf("Write body: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	allowTestInstallerHost(t, server.URL)
+
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatalf("Mkdir cache: %v", err)
+	}
+	outsidePath := filepath.Join(t.TempDir(), "outside.txt")
+	outsideBody := []byte("outside original")
+	if err := os.WriteFile(outsidePath, outsideBody, 0o644); err != nil {
+		t.Fatalf("Write outside file: %v", err)
+	}
+	oldPartPath := filepath.Join(cacheDir, "agentserver-app-0.1.2-setup.exe.part")
+	if err := os.Symlink(outsidePath, oldPartPath); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		CacheDir:       cacheDir,
+		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		Client:         server.Client(),
+		StartInstaller: func(ctx context.Context, path string) error {
+			return nil
+		},
+	}.DownloadAndStart(context.Background(), Manifest{
+		Version: "0.1.2",
+		URL:     server.URL + "/agentserver-app-0.1.2-setup.exe",
+		SHA256:  hex.EncodeToString(sum[:]),
+		Size:    int64(len(body)),
+	})
+	if err != nil {
+		t.Fatalf("DownloadAndStart: %v", err)
+	}
+	if got.Status != StatusInstallerStarted {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusInstallerStarted)
+	}
+	gotOutside, err := os.ReadFile(outsidePath)
+	if err != nil {
+		t.Fatalf("Read outside file: %v", err)
+	}
+	if string(gotOutside) != string(outsideBody) {
+		t.Fatalf("outside file was modified: got %q, want %q", gotOutside, outsideBody)
+	}
+	linkTarget, err := os.Readlink(oldPartPath)
+	if err != nil {
+		t.Fatalf("Read old predictable part symlink: %v", err)
+	}
+	if linkTarget != outsidePath {
+		t.Fatalf("old predictable part symlink target=%q, want %q", linkTarget, outsidePath)
 	}
 }
 
@@ -431,13 +593,7 @@ func TestServiceDownloadRejectsOversizedResponseBeforeVerification(t *testing.T)
 	if !strings.Contains(err.Error(), "larger than declared size") {
 		t.Fatalf("error=%q, want oversized response error", err)
 	}
-	matches, err := filepath.Glob(filepath.Join(cacheDir, "*.part"))
-	if err != nil {
-		t.Fatalf("Glob part files: %v", err)
-	}
-	if len(matches) != 0 {
-		t.Fatalf("part files remain: %v", matches)
-	}
+	assertCacheDirEmpty(t, cacheDir)
 }
 
 func TestServiceDownloadDeletesPartOnHashMismatch(t *testing.T) {
@@ -477,13 +633,7 @@ func TestServiceDownloadDeletesPartOnHashMismatch(t *testing.T) {
 	if got.LastError == "" {
 		t.Fatal("LastError is empty")
 	}
-	matches, err := filepath.Glob(filepath.Join(cacheDir, "*.part"))
-	if err != nil {
-		t.Fatalf("Glob part files: %v", err)
-	}
-	if len(matches) != 0 {
-		t.Fatalf("part files remain: %v", matches)
-	}
+	assertCacheDirEmpty(t, cacheDir)
 }
 
 func TestServiceDownloadReturnsStateSaveErrorBeforeInstallerStart(t *testing.T) {
@@ -624,4 +774,19 @@ func allowTestInstallerHost(t *testing.T, rawURL string) {
 	t.Cleanup(func() {
 		delete(extraAllowedInstallerHosts, host)
 	})
+}
+
+func assertCacheDirEmpty(t *testing.T, cacheDir string) {
+	t.Helper()
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatalf("Read cache dir: %v", err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("cache files remain: %v", names)
+	}
 }

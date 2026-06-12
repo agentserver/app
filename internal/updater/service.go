@@ -37,7 +37,9 @@ func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
 	}
 	if automatic && !prior.LastCheckedAt.IsZero() && now.Sub(prior.LastCheckedAt) < s.autoCheckEvery() {
 		prior.CurrentVersion = s.CurrentVersion
-		_ = s.saveState(prior)
+		if err := s.saveState(prior); err != nil {
+			return s.saveError(now, err)
+		}
 		return prior, nil
 	}
 
@@ -47,7 +49,9 @@ func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
 		Status:         StatusChecking,
 		Update:         prior.Update,
 	}
-	_ = s.saveState(checking)
+	if err := s.saveState(checking); err != nil {
+		return s.saveError(now, err)
+	}
 
 	manifest, err := s.fetchManifest(ctx)
 	if err != nil {
@@ -105,19 +109,31 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 	if err != nil {
 		return s.saveError(now, err)
 	}
-	partPath := finalPath + ".part"
-	if err := s.downloadInstaller(ctx, m, partPath); err != nil {
-		_ = os.Remove(partPath)
+	temp, err := os.CreateTemp(s.CacheDir, filepath.Base(finalPath)+".*.tmp")
+	if err != nil {
 		return s.saveError(now, err)
 	}
-	if err := verifyInstaller(partPath, m); err != nil {
-		_ = os.Remove(partPath)
+	tempPath := temp.Name()
+	promoted := false
+	defer func() {
+		if !promoted {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := s.downloadInstaller(ctx, m, temp); err != nil {
+		_ = temp.Close()
 		return s.saveError(now, err)
 	}
-	if err := replaceFile(partPath, finalPath); err != nil {
-		_ = os.Remove(partPath)
+	if err := temp.Close(); err != nil {
 		return s.saveError(now, err)
 	}
+	if err := verifyInstaller(tempPath, m); err != nil {
+		return s.saveError(now, err)
+	}
+	if err := replaceFile(tempPath, finalPath); err != nil {
+		return s.saveError(now, err)
+	}
+	promoted = true
 
 	start := s.StartInstaller
 	if start == nil {
@@ -161,7 +177,7 @@ func (s Service) fetchManifest(ctx context.Context) (Manifest, error) {
 	return manifest, nil
 }
 
-func (s Service) downloadInstaller(ctx context.Context, m Manifest, path string) error {
+func (s Service) downloadInstaller(ctx context.Context, m Manifest, w io.Writer) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.URL, nil)
 	if err != nil {
 		return err
@@ -174,20 +190,14 @@ func (s Service) downloadInstaller(ctx context.Context, m Manifest, path string)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("download installer: unexpected status %s", resp.Status)
 	}
-	f, err := os.Create(path)
+	n, err := io.Copy(w, io.LimitReader(resp.Body, m.Size+1))
 	if err != nil {
-		return err
-	}
-	n, err := io.Copy(f, io.LimitReader(resp.Body, m.Size+1))
-	if err != nil {
-		_ = f.Close()
 		return err
 	}
 	if n > m.Size {
-		_ = f.Close()
 		return fmt.Errorf("installer response larger than declared size: got more than %d bytes", m.Size)
 	}
-	return f.Close()
+	return nil
 }
 
 func (s Service) autoCheckEvery() time.Duration {

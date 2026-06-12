@@ -10,7 +10,13 @@ import (
 )
 
 func StartInstaller(ctx context.Context, path string) error {
-	cmd := exec.CommandContext(ctx, path)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cmd := exec.Command(path)
 	process.HideWindow(cmd)
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
 }
