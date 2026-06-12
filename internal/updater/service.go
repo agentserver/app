@@ -42,7 +42,7 @@ func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
 		return s.saveError(now, err)
 	}
 	if automatic && !prior.LastCheckedAt.IsZero() && now.Sub(prior.LastCheckedAt) < s.autoCheckEvery() {
-		prior.CurrentVersion = s.CurrentVersion
+		prior = NormalizeStateForCurrentVersion(prior, s.CurrentVersion)
 		if err := s.saveState(prior); err != nil {
 			return s.saveError(now, err)
 		}
@@ -88,6 +88,24 @@ func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
 		},
 	}
 	return s.saveFinalState(now, state)
+}
+
+func NormalizeStateForCurrentVersion(state State, currentVersion string) State {
+	state.CurrentVersion = currentVersion
+	if state.Status != StatusAvailable {
+		return state
+	}
+	if state.Update == nil {
+		state.Status = StatusLatest
+		state.Update = nil
+		return state
+	}
+	cmp, err := CompareVersions(state.Update.Version, currentVersion)
+	if err != nil || cmp <= 0 {
+		state.Status = StatusLatest
+		state.Update = nil
+	}
+	return state
 }
 
 func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error) {

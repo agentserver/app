@@ -46,6 +46,38 @@ func TestControllerUpdateStateLoadsFromUpdaterStateStore(t *testing.T) {
 	}
 }
 
+func TestControllerUpdateStateNormalizesStaleAvailableUpdate(t *testing.T) {
+	dir := t.TempDir()
+	store := updater.NewStateStore(filepath.Join(dir, "updates.json"))
+	if err := store.Save(updater.State{
+		CurrentVersion: "1.0.0",
+		Status:         updater.StatusAvailable,
+		Update: &updater.AvailableUpdate{
+			Version: "1.1.0",
+			URL:     "https://assets.agent.cs.ac.cn/agentserver-app.exe",
+			SHA256:  strings.Repeat("a", 64),
+			Size:    12,
+		},
+	}); err != nil {
+		t.Fatalf("Save update state: %v", err)
+	}
+	c := NewController(Deps{Updates: &updater.Service{CurrentVersion: "1.1.0", State: store}})
+
+	got, err := c.UpdateState(context.Background())
+	if err != nil {
+		t.Fatalf("UpdateState: %v", err)
+	}
+	if got.CurrentVersion != "1.1.0" {
+		t.Fatalf("CurrentVersion=%q, want service current version", got.CurrentVersion)
+	}
+	if got.Status != updater.StatusLatest {
+		t.Fatalf("Status=%q, want %q", got.Status, updater.StatusLatest)
+	}
+	if got.Update != nil {
+		t.Fatalf("Update=%+v, want nil", got.Update)
+	}
+}
+
 func TestControllerCheckUpdateDelegatesToUpdaterService(t *testing.T) {
 	manifest := updater.Manifest{
 		Version: "1.2.0",

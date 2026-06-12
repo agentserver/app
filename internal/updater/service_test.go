@@ -224,6 +224,185 @@ func TestServiceAutomaticCheckSkipsWhenRecentlyChecked(t *testing.T) {
 	}
 }
 
+func TestServiceAutomaticCheckNormalizesStaleAvailableUpdateWhenRecentlyChecked(t *testing.T) {
+	now := time.Date(2026, 6, 12, 13, 5, 0, 0, time.UTC)
+	called := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "unexpected network call", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	store := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	if err := store.Save(State{
+		CurrentVersion: "0.1.1",
+		LastCheckedAt:  now.Add(-10 * time.Minute),
+		Status:         StatusAvailable,
+		Update: &AvailableUpdate{
+			Version: "0.1.2",
+			URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-0.1.2-setup.exe",
+			SHA256:  strings.Repeat("a", 64),
+			Size:    123,
+		},
+	}); err != nil {
+		t.Fatalf("Save prior state: %v", err)
+	}
+
+	got, err := Service{
+		CurrentVersion: "0.1.2",
+		ManifestURL:    server.URL,
+		State:          store,
+		Client:         assetsHostClient(t, server),
+		Now:            func() time.Time { return now },
+		AutoCheckEvery: time.Hour,
+	}.Check(context.Background(), true)
+	if err != nil {
+		t.Fatalf("Check automatic: %v", err)
+	}
+	if called {
+		t.Fatal("automatic check made network request despite recent LastCheckedAt")
+	}
+	if got.CurrentVersion != "0.1.2" {
+		t.Fatalf("CurrentVersion=%q, want refreshed current version", got.CurrentVersion)
+	}
+	if got.Status != StatusLatest {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusLatest)
+	}
+	if got.Update != nil {
+		t.Fatalf("Update=%+v, want nil", got.Update)
+	}
+
+	saved, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load saved state: %v", err)
+	}
+	if saved.CurrentVersion != "0.1.2" {
+		t.Fatalf("saved CurrentVersion=%q, want refreshed current version", saved.CurrentVersion)
+	}
+	if saved.Status != StatusLatest {
+		t.Fatalf("saved Status=%q, want %q", saved.Status, StatusLatest)
+	}
+	if saved.Update != nil {
+		t.Fatalf("saved Update=%+v, want nil", saved.Update)
+	}
+}
+
+func TestServiceAutomaticCheckKeepsNewerAvailableUpdateWhenRecentlyChecked(t *testing.T) {
+	now := time.Date(2026, 6, 12, 13, 10, 0, 0, time.UTC)
+	called := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "unexpected network call", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	store := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	wantUpdate := &AvailableUpdate{
+		Version: "0.1.3",
+		URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-0.1.3-setup.exe",
+		SHA256:  strings.Repeat("b", 64),
+		Size:    456,
+		Notes:   "newer update",
+	}
+	if err := store.Save(State{
+		CurrentVersion: "0.1.1",
+		LastCheckedAt:  now.Add(-10 * time.Minute),
+		Status:         StatusAvailable,
+		Update:         wantUpdate,
+	}); err != nil {
+		t.Fatalf("Save prior state: %v", err)
+	}
+
+	got, err := Service{
+		CurrentVersion: "0.1.2",
+		ManifestURL:    server.URL,
+		State:          store,
+		Client:         assetsHostClient(t, server),
+		Now:            func() time.Time { return now },
+		AutoCheckEvery: time.Hour,
+	}.Check(context.Background(), true)
+	if err != nil {
+		t.Fatalf("Check automatic: %v", err)
+	}
+	if called {
+		t.Fatal("automatic check made network request despite recent LastCheckedAt")
+	}
+	if got.CurrentVersion != "0.1.2" {
+		t.Fatalf("CurrentVersion=%q, want refreshed current version", got.CurrentVersion)
+	}
+	if got.Status != StatusAvailable {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusAvailable)
+	}
+	if got.Update == nil || *got.Update != *wantUpdate {
+		t.Fatalf("Update=%+v, want %+v", got.Update, wantUpdate)
+	}
+
+	saved, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load saved state: %v", err)
+	}
+	if saved.CurrentVersion != "0.1.2" {
+		t.Fatalf("saved CurrentVersion=%q, want refreshed current version", saved.CurrentVersion)
+	}
+	if saved.Status != StatusAvailable {
+		t.Fatalf("saved Status=%q, want %q", saved.Status, StatusAvailable)
+	}
+	if saved.Update == nil || *saved.Update != *wantUpdate {
+		t.Fatalf("saved Update=%+v, want %+v", saved.Update, wantUpdate)
+	}
+}
+
+func TestNormalizeStateForCurrentVersionClearsUnavailableAvailableState(t *testing.T) {
+	tests := []struct {
+		name  string
+		state State
+	}{
+		{
+			name:  "missing update",
+			state: State{CurrentVersion: "0.1.1", Status: StatusAvailable},
+		},
+		{
+			name: "invalid update version",
+			state: State{
+				CurrentVersion: "0.1.1",
+				Status:         StatusAvailable,
+				Update:         &AvailableUpdate{Version: "invalid"},
+			},
+		},
+		{
+			name: "equal update version",
+			state: State{
+				CurrentVersion: "0.1.1",
+				Status:         StatusAvailable,
+				Update:         &AvailableUpdate{Version: "0.1.2"},
+			},
+		},
+		{
+			name: "older update version",
+			state: State{
+				CurrentVersion: "0.1.1",
+				Status:         StatusAvailable,
+				Update:         &AvailableUpdate{Version: "0.1.0"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := NormalizeStateForCurrentVersion(tt.state, "0.1.2")
+			if got.CurrentVersion != "0.1.2" {
+				t.Fatalf("CurrentVersion=%q, want current version", got.CurrentVersion)
+			}
+			if got.Status != StatusLatest {
+				t.Fatalf("Status=%q, want %q", got.Status, StatusLatest)
+			}
+			if got.Update != nil {
+				t.Fatalf("Update=%+v, want nil", got.Update)
+			}
+		})
+	}
+}
+
 func TestServiceAutomaticCheckReturnsErrorStateWhenRefreshedStateSaveFails(t *testing.T) {
 	now := time.Date(2026, 6, 12, 13, 15, 0, 0, time.UTC)
 	saveErr := errors.New("refreshed state save failed")

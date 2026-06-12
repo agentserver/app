@@ -16,7 +16,14 @@ func (c *Controller) UpdateState(context.Context) (updater.State, error) {
 	if c.d.Updates == nil || c.d.Updates.State == nil {
 		return updater.State{}, errUpdaterUnavailable
 	}
-	return c.d.Updates.State.Load()
+	state, err := c.d.Updates.State.Load()
+	if err != nil {
+		return updater.State{}, err
+	}
+	if c.d.Updates.CurrentVersion == "" {
+		return state, nil
+	}
+	return updater.NormalizeStateForCurrentVersion(state, c.d.Updates.CurrentVersion), nil
 }
 
 func (c *Controller) CheckUpdate(ctx context.Context, automatic bool) (updater.State, error) {
