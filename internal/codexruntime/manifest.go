@@ -8,15 +8,13 @@ import (
 )
 
 type Manifest struct {
-	Package                     string        `json:"package"`
-	Platform                    string        `json:"platform"`
-	PinnedVersion               string        `json:"pinned_version"`
-	StripPrefix                 string        `json:"strip_prefix"`
-	CodexExe                    string        `json:"codex_exe"`
-	RequiredFiles               []string      `json:"required_files"`
-	Pinned                      PinnedPackage `json:"pinned"`
-	LatestMetadataURLs          []string      `json:"latest_metadata_urls"`
-	PackageMetadataURLTemplates []string      `json:"package_metadata_url_templates"`
+	Package       string        `json:"package"`
+	Platform      string        `json:"platform"`
+	PinnedVersion string        `json:"pinned_version"`
+	StripPrefix   string        `json:"strip_prefix"`
+	CodexExe      string        `json:"codex_exe"`
+	RequiredFiles []string      `json:"required_files"`
+	Pinned        PinnedPackage `json:"pinned"`
 }
 
 type PinnedPackage struct {

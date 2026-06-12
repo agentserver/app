@@ -17,13 +17,5 @@
       "https://registry.npmmirror.com/@openai/codex/-/codex-0.136.0-win32-x64.tgz",
       "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.136.0-win32-x64.tgz"
     ]
-  },
-  "latest_metadata_urls": [
-    "https://registry.npmmirror.com/@openai%2Fcodex/latest",
-    "https://npmreg.proxy.ustclug.org/@openai%2Fcodex/latest"
-  ],
-  "package_metadata_url_templates": [
-    "https://registry.npmmirror.com/@openai%2Fcodex/{version}",
-    "https://npmreg.proxy.ustclug.org/@openai%2Fcodex/{version}"
-  ]
+  }
 }

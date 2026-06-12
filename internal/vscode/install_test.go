@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPlanInstall_WindowsUsesStoreBootstrapper(t *testing.T) {
@@ -52,7 +53,7 @@ func TestWindowsDetectCandidatesIncludeStoreAliases(t *testing.T) {
 }
 
 func TestDownloadBootstrapperUsesGETBecauseMicrosoftEndpointRejectsHEAD(t *testing.T) {
-	body := []byte("bootstrapper")
+	body := fakeBootstrapperBody()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead {
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -76,6 +77,54 @@ func TestDownloadBootstrapperUsesGETBecauseMicrosoftEndpointRejectsHEAD(t *testi
 	if string(got) != string(body) {
 		t.Fatalf("body=%q", got)
 	}
+}
+
+func TestDownloadBootstrapperRejectsNonExecutableBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bytes.Repeat([]byte("x"), int(minBootstrapperSize)))
+	}))
+	defer srv.Close()
+
+	dst := filepath.Join(t.TempDir(), "vscode-store-bootstrapper.exe")
+	err := DownloadBootstrapper(context.Background(), srv.URL, dst, http.DefaultClient)
+	if err == nil || !strings.Contains(err.Error(), "MZ") {
+		t.Fatalf("err=%v, want MZ validation failure", err)
+	}
+	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid bootstrapper should not be promoted, stat err=%v", statErr)
+	}
+	if _, statErr := os.Stat(dst + ".part"); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid bootstrapper partial should be removed, stat err=%v", statErr)
+	}
+}
+
+func TestDownloadBootstrapperAbortsStalledBodyAfterIdleTimeout(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	dst := filepath.Join(t.TempDir(), "vscode-store-bootstrapper.exe")
+	err := downloadBootstrapper(context.Background(), srv.URL, dst, http.DefaultClient, 20*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "download idle timeout") {
+		t.Fatalf("err=%v, want idle timeout", err)
+	}
+	if _, statErr := os.Stat(dst + ".part"); !os.IsNotExist(statErr) {
+		t.Fatalf("stalled bootstrapper partial should be removed, stat err=%v", statErr)
+	}
+}
+
+func fakeBootstrapperBody() []byte {
+	body := bytes.Repeat([]byte{0}, int(minBootstrapperSize))
+	body[0] = 'M'
+	body[1] = 'Z'
+	return body
 }
 
 func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
@@ -126,6 +175,16 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 				"get.microsoft.com/installer/download",
 				"vscode-store-bootstrapper.exe",
 				"DownloadBootstrapper",
+				"Test-BootstrapperFile",
+				"MinBootstrapperSize",
+				"DownloadTimeoutSeconds",
+				"DownloadIdleTimeoutSeconds",
+				"--max-time",
+				"--speed-time",
+				"--speed-limit",
+				"-TimeoutSec",
+				"Get-AuthenticodeSignature",
+				"Move-Item",
 				"Start-Process",
 				"Wait-ProcessWithProgress",
 				"Get-VSCodeDetection",

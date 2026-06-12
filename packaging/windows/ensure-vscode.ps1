@@ -1,7 +1,10 @@
 ﻿param(
     [string]$BootstrapperURL = 'https://get.microsoft.com/installer/download/XP9KHM4BK9FZ7Q?cid=website_cta_psi',
     [string]$LocalBootstrapperPath = (Join-Path $env:LOCALAPPDATA 'agentserver-app\cache\vscode\vscode-store-bootstrapper.exe'),
-    [int]$InstallTimeoutSeconds = 600
+    [int]$InstallTimeoutSeconds = 600,
+    [int]$DownloadTimeoutSeconds = 300,
+    [int]$DownloadIdleTimeoutSeconds = 30,
+    [Int64]$MinBootstrapperSize = 65536
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,18 +85,58 @@ function Get-VSCodeDetection {
     return [PSCustomObject]@{ Path = $path; Version = $version }
 }
 
+function Test-BootstrapperFile([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "VS Code Microsoft Store bootstrapper download missing: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path
+    if ($item.Length -lt $MinBootstrapperSize) {
+        throw "VS Code Microsoft Store bootstrapper is too small: $($item.Length) bytes"
+    }
+
+    $fs = [System.IO.File]::OpenRead($Path)
+    try {
+        $magic = New-Object byte[] 2
+        $read = $fs.Read($magic, 0, 2)
+        if ($read -ne 2 -or $magic[0] -ne 0x4d -or $magic[1] -ne 0x5a) {
+            throw "VS Code Microsoft Store bootstrapper is not a valid MZ executable"
+        }
+    } finally {
+        $fs.Dispose()
+    }
+
+    $sig = Get-AuthenticodeSignature -FilePath $Path
+    if ($sig.Status -ne 'Valid') {
+        throw "VS Code Microsoft Store bootstrapper Authenticode signature is $($sig.Status)"
+    }
+}
+
 function DownloadBootstrapper {
     $dir = Split-Path -Parent $LocalBootstrapperPath
     if (-not (Test-Path $dir)) {
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
     }
+    $partPath = "$LocalBootstrapperPath.part"
+    Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
     Write-Step "Downloading VS Code Microsoft Store bootstrapper..."
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
-    if ($curl) {
-        & curl.exe -fL --retry 2 --retry-delay 2 --connect-timeout 20 -o $LocalBootstrapperPath $BootstrapperURL
-        if ($LASTEXITCODE -eq 0 -and (Test-Path $LocalBootstrapperPath)) { return }
+    try {
+        if ($curl) {
+            & curl.exe -fL --retry 2 --retry-delay 2 --connect-timeout 20 --max-time $DownloadTimeoutSeconds --speed-time $DownloadIdleTimeoutSeconds --speed-limit 1024 -o $partPath $BootstrapperURL
+            if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $partPath)) {
+                Test-BootstrapperFile $partPath
+                Move-Item -LiteralPath $partPath -Destination $LocalBootstrapperPath -Force
+                return
+            }
+            Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
+        }
+        Invoke-WebRequest -Uri $BootstrapperURL -OutFile $partPath -UseBasicParsing -TimeoutSec $DownloadTimeoutSeconds
+        Test-BootstrapperFile $partPath
+        Move-Item -LiteralPath $partPath -Destination $LocalBootstrapperPath -Force
+    } catch {
+        Remove-Item -LiteralPath $partPath -Force -ErrorAction SilentlyContinue
+        throw
     }
-    Invoke-WebRequest -Uri $BootstrapperURL -OutFile $LocalBootstrapperPath -UseBasicParsing
 }
 
 function Wait-ForVSCode([int]$Seconds) {

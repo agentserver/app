@@ -24,7 +24,7 @@ type Options struct {
 	DownloadAttemptTimeout time.Duration
 	ResponseHeaderTimeout  time.Duration
 	DownloadIdleTimeout    time.Duration
-	VersionCommand         func(context.Context, string) error
+	VersionCommand         func(context.Context, string) (string, error)
 }
 
 type InstallResult struct {
@@ -46,18 +46,20 @@ func Ensure(ctx context.Context, opts Options) (InstallResult, error) {
 		opts.VersionCommand = runCodexVersion
 	}
 	codexExe := filepath.Join(opts.DestRoot, filepath.FromSlash(m.CodexExe))
-	if runtimeComplete(opts.DestRoot, m.RequiredFiles) && opts.VersionCommand(ctx, codexExe) == nil {
-		return InstallResult{
-			Version:  m.PinnedVersion,
-			Source:   "existing",
-			CodexExe: codexExe,
-			Skipped:  true,
-		}, nil
+	if runtimeComplete(opts.DestRoot, m.RequiredFiles) {
+		versionOutput, err := opts.VersionCommand(ctx, codexExe)
+		if err == nil && versionMatchesPinned(versionOutput, m) {
+			return InstallResult{
+				Version:  m.PinnedVersion,
+				Source:   "existing",
+				CodexExe: codexExe,
+				Skipped:  true,
+			}, nil
+		}
 	}
 	if err := os.MkdirAll(opts.CacheDir, 0o755); err != nil {
 		return InstallResult{}, err
 	}
-	allPinnedUnavailable := true
 	var lastErr error
 	for _, candidate := range PinnedCandidates(m) {
 		res, err := installCandidate(ctx, opts, m, candidate)
@@ -65,18 +67,11 @@ func Ensure(ctx context.Context, opts Options) (InstallResult, error) {
 			return res, nil
 		}
 		lastErr = err
-		if !IsUnavailable(err) {
-			allPinnedUnavailable = false
-		}
 	}
-	if allPinnedUnavailable {
-		candidate, err := ResolveLatest(ctx, opts.Client, m)
-		if err != nil {
-			return InstallResult{}, fmt.Errorf("无法从国内 npm 镜像下载 Codex: pinned unavailable: %v; latest failed: %w", lastErr, err)
-		}
-		return installCandidate(ctx, opts, m, candidate)
+	if lastErr == nil {
+		return InstallResult{}, fmt.Errorf("无法从国内 npm 镜像下载 Codex pinned runtime %s: no pinned mirrors configured", m.PinnedVersion)
 	}
-	return InstallResult{}, fmt.Errorf("无法从国内 npm 镜像下载 Codex: %w", lastErr)
+	return InstallResult{}, fmt.Errorf("无法从国内 npm 镜像下载 Codex pinned runtime %s: %w", m.PinnedVersion, lastErr)
 }
 
 func installCandidate(ctx context.Context, opts Options, m Manifest, c PackageCandidate) (InstallResult, error) {
@@ -101,8 +96,12 @@ func installCandidate(ctx context.Context, opts Options, m Manifest, c PackageCa
 		return InstallResult{}, fmt.Errorf("Codex npm 包内容不完整: %w", err)
 	}
 	codexExe := filepath.Join(opts.DestRoot, filepath.FromSlash(m.CodexExe))
-	if err := opts.VersionCommand(ctx, codexExe); err != nil {
+	versionOutput, err := opts.VersionCommand(ctx, codexExe)
+	if err != nil {
 		return InstallResult{}, fmt.Errorf("codex --version failed after install: %w", err)
+	}
+	if !versionMatchesPinned(versionOutput, m) {
+		return InstallResult{}, fmt.Errorf("codex --version %q does not match pinned runtime %s", strings.TrimSpace(versionOutput), m.PinnedVersion)
 	}
 	return InstallResult{Version: c.Version, Source: c.Source, CodexExe: codexExe}, nil
 }
@@ -300,8 +299,31 @@ func runtimeComplete(root string, required []string) bool {
 	return true
 }
 
-func runCodexVersion(ctx context.Context, exe string) error {
-	return exec.CommandContext(ctx, exe, "--version").Run()
+func runCodexVersion(ctx context.Context, exe string) (string, error) {
+	out, err := exec.CommandContext(ctx, exe, "--version").CombinedOutput()
+	versionOutput := strings.TrimSpace(string(out))
+	if err != nil {
+		return versionOutput, fmt.Errorf("%w: %s", err, versionOutput)
+	}
+	return versionOutput, nil
+}
+
+func versionMatchesPinned(versionOutput string, m Manifest) bool {
+	versionOutput = strings.TrimSpace(versionOutput)
+	expectedCLI := strings.TrimSuffix(m.PinnedVersion, "-"+m.Platform)
+	for _, candidate := range []string{m.PinnedVersion, expectedCLI} {
+		if versionOutput == candidate {
+			return true
+		}
+	}
+	for _, field := range strings.Fields(versionOutput) {
+		for _, candidate := range []string{m.PinnedVersion, expectedCLI} {
+			if field == candidate {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 type unavailableError struct {

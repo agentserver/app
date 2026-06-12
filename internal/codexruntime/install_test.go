@@ -8,7 +8,6 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -40,8 +39,8 @@ func TestEnsureInstallsPinnedRuntimeFromFirstGoodMirror(t *testing.T) {
 		ManifestPath: manifestPath,
 		DestRoot:     filepath.Join(dir, "root"),
 		CacheDir:     filepath.Join(dir, "cache"),
-		VersionCommand: func(context.Context, string) error {
-			return nil
+		VersionCommand: func(context.Context, string) (string, error) {
+			return "codex-cli 0.136.0", nil
 		},
 	})
 	if err != nil {
@@ -55,50 +54,42 @@ func TestEnsureInstallsPinnedRuntimeFromFirstGoodMirror(t *testing.T) {
 	}
 }
 
-func TestEnsureFallsBackToLatestWhenPinnedReturns404(t *testing.T) {
-	pkg := runtimePackage(t, "latest-codex")
-	integrity := npmIntegrity(pkg)
+func TestEnsureDoesNotFetchUnpinnedMetadataWhenPinnedReturns404(t *testing.T) {
+	metadataHits := 0
 	mux := http.NewServeMux()
 	mux.HandleFunc("/pinned.tgz", func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	})
-	mux.HandleFunc("/latest", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/metadata", func(w http.ResponseWriter, r *http.Request) {
+		metadataHits++
 		w.Write([]byte(`{"optionalDependencies":{"@openai/codex-win32-x64":"npm:@openai/codex@0.139.0-win32-x64"}}`))
-	})
-	mux.HandleFunc("/pkg/0.139.0-win32-x64", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"dist":{"tarball":"%s/latest.tgz","integrity":"%s"}}`, "http://"+r.Host, integrity)
-	})
-	mux.HandleFunc("/latest.tgz", func(w http.ResponseWriter, r *http.Request) {
-		w.Write(pkg)
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	dir := t.TempDir()
 	manifestPath := writeManifest(t, dir, Manifest{
-		Package:                     "@openai/codex",
-		Platform:                    "win32-x64",
-		PinnedVersion:               "0.136.0-win32-x64",
-		StripPrefix:                 "vendor/x86_64-pc-windows-msvc/",
-		CodexExe:                    "bin/codex.exe",
-		RequiredFiles:               requiredRuntimeFiles(),
-		Pinned:                      PinnedPackage{Integrity: "sha512-missing", URLs: []string{srv.URL + "/pinned.tgz"}},
-		LatestMetadataURLs:          []string{srv.URL + "/latest"},
-		PackageMetadataURLTemplates: []string{srv.URL + "/pkg/{version}"},
+		Package:       "@openai/codex",
+		Platform:      "win32-x64",
+		PinnedVersion: "0.136.0-win32-x64",
+		StripPrefix:   "vendor/x86_64-pc-windows-msvc/",
+		CodexExe:      "bin/codex.exe",
+		RequiredFiles: requiredRuntimeFiles(),
+		Pinned:        PinnedPackage{Integrity: "sha512-missing", URLs: []string{srv.URL + "/pinned.tgz"}},
 	})
-	res, err := Ensure(context.Background(), Options{
+	_, err := Ensure(context.Background(), Options{
 		ManifestPath: manifestPath,
 		DestRoot:     filepath.Join(dir, "root"),
 		CacheDir:     filepath.Join(dir, "cache"),
-		VersionCommand: func(context.Context, string) error {
-			return nil
+		VersionCommand: func(context.Context, string) (string, error) {
+			return "codex-cli 0.136.0", nil
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil || !strings.Contains(err.Error(), "pinned") {
+		t.Fatalf("err=%v, want pinned download failure", err)
 	}
-	if res.Version != "0.139.0-win32-x64" || res.Source != "latest" {
-		t.Fatalf("result=%+v", res)
+	if metadataHits != 0 {
+		t.Fatalf("unpinned metadata should not be fetched, hits=%d", metadataHits)
 	}
 }
 
@@ -136,8 +127,8 @@ func TestEnsureTriesSecondPinnedMirrorAfterFirstHTTPError(t *testing.T) {
 		ManifestPath: manifestPath,
 		DestRoot:     filepath.Join(dir, "root"),
 		CacheDir:     filepath.Join(dir, "cache"),
-		VersionCommand: func(context.Context, string) error {
-			return nil
+		VersionCommand: func(context.Context, string) (string, error) {
+			return "codex-cli 0.136.0", nil
 		},
 	})
 	if err != nil {
@@ -178,7 +169,7 @@ func TestEnsureAbortsStalledDownloadAfterIdleTimeout(t *testing.T) {
 		DestRoot:            filepath.Join(dir, "root"),
 		CacheDir:            filepath.Join(dir, "cache"),
 		DownloadIdleTimeout: 20 * time.Millisecond,
-		VersionCommand:      func(context.Context, string) error { return nil },
+		VersionCommand:      func(context.Context, string) (string, error) { return "codex-cli 0.136.0", nil },
 	})
 	if err == nil || !strings.Contains(err.Error(), "download idle timeout") {
 		t.Fatalf("err=%v, want download idle timeout", err)
@@ -212,7 +203,7 @@ func TestEnsureAbortsHeaderStallAfterTimeout(t *testing.T) {
 		CacheDir:              filepath.Join(dir, "cache"),
 		ResponseHeaderTimeout: 20 * time.Millisecond,
 		DownloadIdleTimeout:   time.Second,
-		VersionCommand:        func(context.Context, string) error { return nil },
+		VersionCommand:        func(context.Context, string) (string, error) { return "codex-cli 0.136.0", nil },
 	})
 	if err == nil || !strings.Contains(err.Error(), "timeout") {
 		t.Fatalf("err=%v, want response header timeout", err)
@@ -245,7 +236,7 @@ func TestEnsureAbortsMirrorAttemptAfterTimeout(t *testing.T) {
 		DownloadAttemptTimeout: 20 * time.Millisecond,
 		ResponseHeaderTimeout:  time.Second,
 		DownloadIdleTimeout:    time.Second,
-		VersionCommand:         func(context.Context, string) error { return nil },
+		VersionCommand:         func(context.Context, string) (string, error) { return "codex-cli 0.136.0", nil },
 	})
 	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
 		t.Fatalf("err=%v, want attempt context deadline", err)
@@ -278,9 +269,9 @@ func TestEnsureSkipsWhenRuntimeAlreadyWorks(t *testing.T) {
 		ManifestPath: manifestPath,
 		DestRoot:     root,
 		CacheDir:     filepath.Join(dir, "cache"),
-		VersionCommand: func(context.Context, string) error {
+		VersionCommand: func(context.Context, string) (string, error) {
 			calls++
-			return nil
+			return "codex-cli 0.136.0", nil
 		},
 	})
 	if err != nil {
@@ -288,6 +279,60 @@ func TestEnsureSkipsWhenRuntimeAlreadyWorks(t *testing.T) {
 	}
 	if !res.Skipped || calls != 1 {
 		t.Fatalf("result=%+v calls=%d", res, calls)
+	}
+}
+
+func TestEnsureReinstallsExistingRuntimeWhenVersionDoesNotMatchPinned(t *testing.T) {
+	pkg := runtimePackage(t, "new-codex")
+	integrity := npmIntegrity(pkg)
+	downloads := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downloads++
+		w.Write(pkg)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	for _, rel := range requiredRuntimeFiles() {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("old"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifestPath := writeManifest(t, dir, Manifest{
+		Package:       "@openai/codex",
+		Platform:      "win32-x64",
+		PinnedVersion: "0.136.0-win32-x64",
+		StripPrefix:   "vendor/x86_64-pc-windows-msvc/",
+		CodexExe:      "bin/codex.exe",
+		RequiredFiles: requiredRuntimeFiles(),
+		Pinned:        PinnedPackage{Integrity: integrity, URLs: []string{srv.URL + "/codex.tgz"}},
+	})
+	calls := 0
+	res, err := Ensure(context.Background(), Options{
+		ManifestPath: manifestPath,
+		DestRoot:     root,
+		CacheDir:     filepath.Join(dir, "cache"),
+		VersionCommand: func(context.Context, string) (string, error) {
+			calls++
+			if calls == 1 {
+				return "codex-cli 0.135.0", nil
+			}
+			return "codex-cli 0.136.0", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Skipped || res.Source != "pinned" || downloads != 1 {
+		t.Fatalf("result=%+v downloads=%d", res, downloads)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "bin", "codex.exe")); err != nil || string(got) != "new-codex" {
+		t.Fatalf("codex.exe=%q err=%v", got, err)
 	}
 }
 
@@ -312,8 +357,8 @@ func TestEnsureRejectsIntegrityMismatch(t *testing.T) {
 		ManifestPath: manifestPath,
 		DestRoot:     filepath.Join(dir, "root"),
 		CacheDir:     filepath.Join(dir, "cache"),
-		VersionCommand: func(context.Context, string) error {
-			return nil
+		VersionCommand: func(context.Context, string) (string, error) {
+			return "codex-cli 0.136.0", nil
 		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "integrity") {

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
+	"time"
 )
 
 type InstallPlan struct {
@@ -25,6 +27,13 @@ type InstallPlan struct {
 
 const StoreProductID = "XP9KHM4BK9FZ7Q"
 const StoreBootstrapperURL = "https://get.microsoft.com/installer/download/" + StoreProductID + "?cid=website_cta_psi"
+
+const (
+	minBootstrapperSize                int64 = 65536
+	defaultBootstrapperAttemptTimeout        = 5 * time.Minute
+	defaultBootstrapperResponseTimeout       = 20 * time.Second
+	defaultBootstrapperIdleTimeout           = 30 * time.Second
+)
 
 func PlanInstall() InstallPlan {
 	return planInstallFor(runtime.GOOS, runtime.GOARCH)
@@ -46,7 +55,16 @@ func planInstallFor(goos, goarch string) InstallPlan {
 
 func DownloadBootstrapper(ctx context.Context, url, dst string, client *http.Client) error {
 	if client == nil {
-		client = http.DefaultClient
+		client = newBootstrapperHTTPClient(defaultBootstrapperResponseTimeout)
+	}
+	downloadCtx, cancel := context.WithTimeout(ctx, defaultBootstrapperAttemptTimeout)
+	defer cancel()
+	return downloadBootstrapper(downloadCtx, url, dst, client, defaultBootstrapperIdleTimeout)
+}
+
+func downloadBootstrapper(ctx context.Context, url, dst string, client *http.Client, idleTimeout time.Duration) error {
+	if client == nil {
+		client = newBootstrapperHTTPClient(defaultBootstrapperResponseTimeout)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -64,18 +82,116 @@ func DownloadBootstrapper(ctx context.Context, url, dst string, client *http.Cli
 		return err
 	}
 	tmp := dst + ".part"
+	_ = os.Remove(tmp)
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, resp.Body); err != nil {
+	promoted := false
+	defer func() {
+		if !promoted {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := copyWithIdleTimeout(ctx, out, resp.Body, idleTimeout); err != nil {
 		out.Close()
 		return err
 	}
 	if err := out.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, dst)
+	if err := validateBootstrapperFile(tmp); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	promoted = true
+	return nil
+}
+
+func newBootstrapperHTTPClient(responseHeaderTimeout time.Duration) *http.Client {
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport := base.Clone()
+		transport.ResponseHeaderTimeout = responseHeaderTimeout
+		return &http.Client{Transport: transport}
+	}
+	return &http.Client{Timeout: responseHeaderTimeout}
+}
+
+type progressWriter struct {
+	dst      io.Writer
+	lastNano *atomic.Int64
+}
+
+func (w progressWriter) Write(p []byte) (int, error) {
+	n, err := w.dst.Write(p)
+	if n > 0 {
+		w.lastNano.Store(time.Now().UnixNano())
+	}
+	return n, err
+}
+
+func copyWithIdleTimeout(ctx context.Context, dst io.Writer, src io.ReadCloser, idleTimeout time.Duration) error {
+	if idleTimeout <= 0 {
+		_, err := io.Copy(dst, src)
+		return err
+	}
+
+	var lastNano atomic.Int64
+	lastNano.Store(time.Now().UnixNano())
+	done := make(chan error, 1)
+	interval := idleTimeout / 2
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	copyCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
+		_, err := io.Copy(progressWriter{dst: dst, lastNano: &lastNano}, src)
+		done <- err
+	}()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-copyCtx.Done():
+			_ = src.Close()
+			return copyCtx.Err()
+		case <-ticker.C:
+			last := time.Unix(0, lastNano.Load())
+			if time.Since(last) > idleTimeout {
+				_ = src.Close()
+				return fmt.Errorf("download idle timeout after %s", idleTimeout)
+			}
+		}
+	}
+}
+
+func validateBootstrapperFile(path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if st.Size() < minBootstrapperSize {
+		return fmt.Errorf("VS Code Microsoft Store bootstrapper too small: got %d bytes, want at least %d", st.Size(), minBootstrapperSize)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	magic := make([]byte, 2)
+	if _, err := io.ReadFull(f, magic); err != nil {
+		return err
+	}
+	if string(magic) != "MZ" {
+		return fmt.Errorf("VS Code Microsoft Store bootstrapper missing MZ executable header")
+	}
+	return nil
 }
 
 // SilentInstall runs the downloaded installer with platform-appropriate args.

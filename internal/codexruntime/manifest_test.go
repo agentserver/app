@@ -49,12 +49,6 @@ func TestLoadManifestParsesPinnedMirrorsAndRuntimeFiles(t *testing.T) {
 	if !strings.Contains(m.Pinned.URLs[1], "npmreg.proxy.ustclug.org") {
 		t.Fatalf("second mirror should be USTC, got %q", m.Pinned.URLs[1])
 	}
-	if len(m.LatestMetadataURLs) != 2 {
-		t.Fatalf("latest metadata URLs=%#v", m.LatestMetadataURLs)
-	}
-	if len(m.PackageMetadataURLTemplates) != 2 {
-		t.Fatalf("package metadata URL templates=%#v", m.PackageMetadataURLTemplates)
-	}
 }
 
 func TestLoadManifestRejectsMissingRequiredFields(t *testing.T) {
