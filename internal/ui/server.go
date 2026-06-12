@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/slave"
+	"github.com/agentserver/agentserver-pkg/internal/updater"
 )
 
 //go:embed all:assets/dist
@@ -52,6 +53,9 @@ func NewServerWithConsole(o Orchestrator, c ConsoleController) http.Handler {
 	mux.HandleFunc("/api/console/health", s.handleConsoleHealth)
 	mux.HandleFunc("/api/console/state", s.handleConsoleState)
 	mux.HandleFunc("/api/console/refresh", s.handleConsoleRefresh)
+	mux.HandleFunc("/api/console/update", s.handleConsoleUpdate)
+	mux.HandleFunc("/api/console/update/check", s.handleConsoleUpdateCheck)
+	mux.HandleFunc("/api/console/update/install", s.handleConsoleUpdateInstall)
 	mux.HandleFunc("/api/console/open-frontend", s.handleConsoleOpenFrontend)
 	mux.HandleFunc("/api/console/open-subscription", s.handleConsoleOpenSubscription)
 	mux.HandleFunc("/api/console/logout-modelserver", s.handleConsoleLogoutModelserver)
@@ -313,6 +317,62 @@ func (s *server) handleConsoleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st, err := s.c.Refresh(r.Context())
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, st)
+}
+
+func (s *server) handleConsoleUpdate(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	st, err := s.c.UpdateState(r.Context())
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, st)
+}
+
+func (s *server) handleConsoleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
+	st, err := s.c.CheckUpdate(r.Context(), false)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, st)
+}
+
+func (s *server) handleConsoleUpdateInstall(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
+	st, err := s.c.UpdateState(r.Context())
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	if st.Status != updater.StatusAvailable || st.Update == nil {
+		writeErr(w, http.StatusConflict, errors.New("console: no update available"))
+		return
+	}
+	manifest := updater.Manifest{
+		Version: st.Update.Version,
+		URL:     st.Update.URL,
+		SHA256:  st.Update.SHA256,
+		Size:    st.Update.Size,
+		Notes:   st.Update.Notes,
+	}
+	if err := manifest.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st, err = s.c.InstallUpdate(r.Context(), manifest)
 	if err != nil {
 		writeErr(w, 500, err)
 		return

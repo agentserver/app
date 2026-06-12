@@ -18,6 +18,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
+	"github.com/agentserver/agentserver-pkg/internal/updater"
 )
 
 func TestServerStateEndpoint(t *testing.T) {
@@ -62,6 +63,24 @@ func TestServerConsoleSlaveMutationsRequireCompletedConsole(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode/100 == 2 {
 		t.Fatalf("plain server should not report slave mutation success: status=%d", resp.StatusCode)
+	}
+}
+
+func TestServerConsoleUpdateMutationsRequireCompletedConsole(t *testing.T) {
+	srv := httptest.NewServer(NewServer(noopOrchestrator{}))
+	defer srv.Close()
+
+	for _, path := range []string{"/api/console/update/check", "/api/console/update/install"} {
+		t.Run(path, func(t *testing.T) {
+			resp, err := http.Post(srv.URL+path, "application/json", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode/100 == 2 {
+				t.Fatalf("plain server should not report update mutation success: status=%d", resp.StatusCode)
+			}
+		})
 	}
 }
 
@@ -287,6 +306,173 @@ func TestServerConsoleStateEndpoint(t *testing.T) {
 	}
 }
 
+func TestServerConsoleUpdateEndpoint(t *testing.T) {
+	cc := &fakeConsoleController{
+		updateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusAvailable,
+			Update: &updater.AvailableUpdate{
+				Version: "1.2.4",
+				Notes:   "bug fixes",
+			},
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/console/update")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body updater.State
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.CurrentVersion != "1.2.3" || body.Status != updater.StatusAvailable || body.Update == nil || body.Update.Version != "1.2.4" {
+		t.Fatalf("body=%+v", body)
+	}
+	if cc.updateStateCalls != 1 {
+		t.Fatalf("UpdateState calls=%d", cc.updateStateCalls)
+	}
+}
+
+func TestServerConsoleUpdateCheckEndpoint(t *testing.T) {
+	cc := &fakeConsoleController{
+		checkUpdateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusLatest,
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/console/update/check", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body updater.State
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !cc.checkUpdateCalled || cc.checkUpdateAutomatic {
+		t.Fatalf("CheckUpdate called=%v automatic=%v", cc.checkUpdateCalled, cc.checkUpdateAutomatic)
+	}
+	if body.CurrentVersion != "1.2.3" || body.Status != updater.StatusLatest {
+		t.Fatalf("body=%+v", body)
+	}
+}
+
+func TestServerConsoleUpdateInstallEndpointInstallsPersistedAvailableUpdate(t *testing.T) {
+	available := updater.AvailableUpdate{
+		Version: "1.2.4",
+		URL:     "https://assets.agent.cs.ac.cn/downloads/installer.exe",
+		SHA256:  strings.Repeat("a", 64),
+		Size:    123456,
+		Notes:   "bug fixes",
+	}
+	cc := &fakeConsoleController{
+		updateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusAvailable,
+			Update:         &available,
+		},
+		installUpdateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusInstallerStarted,
+			Update:         &available,
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	body := strings.NewReader(`{"version":"9.9.9","url":"https://assets.agent.cs.ac.cn/downloads/bad.exe","sha256":"` + strings.Repeat("b", 64) + `","size":999}`)
+	resp, err := http.Post(srv.URL+"/api/console/update/install", "application/json", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var got updater.State
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if cc.updateStateCalls != 1 || !cc.installUpdateCalled {
+		t.Fatalf("updateStateCalls=%d installUpdateCalled=%v", cc.updateStateCalls, cc.installUpdateCalled)
+	}
+	if cc.installedManifest.Version != available.Version ||
+		cc.installedManifest.URL != available.URL ||
+		cc.installedManifest.SHA256 != available.SHA256 ||
+		cc.installedManifest.Size != available.Size ||
+		cc.installedManifest.Notes != available.Notes {
+		t.Fatalf("installed manifest=%+v want from available=%+v", cc.installedManifest, available)
+	}
+	if got.Status != updater.StatusInstallerStarted {
+		t.Fatalf("body=%+v", got)
+	}
+}
+
+func TestServerConsoleUpdateInstallEndpointConflictsWhenNoUpdateAvailable(t *testing.T) {
+	cc := &fakeConsoleController{
+		updateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusLatest,
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/console/update/install", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if cc.installUpdateCalled {
+		t.Fatal("InstallUpdate should not be called")
+	}
+}
+
+func TestServerConsoleUpdateInstallEndpointRejectsInvalidPersistedUpdate(t *testing.T) {
+	cc := &fakeConsoleController{
+		updateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusAvailable,
+			Update: &updater.AvailableUpdate{
+				Version: "1.2.4",
+				URL:     "https://example.com/installer.exe",
+				SHA256:  strings.Repeat("a", 64),
+				Size:    123456,
+			},
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/console/update/install", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if cc.installUpdateCalled {
+		t.Fatal("InstallUpdate should not be called")
+	}
+}
+
 func TestServerConsoleOpenFrontendEndpoint(t *testing.T) {
 	cc := &fakeConsoleController{}
 	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
@@ -421,6 +607,8 @@ func TestServerConsoleMutationsRejectCrossOriginBrowserRequests(t *testing.T) {
 		{name: "delete slave", method: http.MethodDelete, path: "/api/console/slaves/slave-1"},
 		{name: "select folder", method: http.MethodPost, path: "/api/console/select-folder"},
 		{name: "open frontend", method: http.MethodPost, path: "/api/console/open-frontend"},
+		{name: "check update", method: http.MethodPost, path: "/api/console/update/check"},
+		{name: "install update", method: http.MethodPost, path: "/api/console/update/install"},
 	}
 
 	for _, tt := range tests {
@@ -445,7 +633,8 @@ func TestServerConsoleMutationsRejectCrossOriginBrowserRequests(t *testing.T) {
 				t.Fatalf("status=%d", resp.StatusCode)
 			}
 			if cc.createdInput.Folder != "" || cc.restartedID != "" || cc.pausedID != "" ||
-				cc.openedRemoteID != "" || cc.deletedID != "" || cc.selectedFolderCalled || cc.openedFrontend {
+				cc.openedRemoteID != "" || cc.deletedID != "" || cc.selectedFolderCalled || cc.openedFrontend ||
+				cc.checkUpdateCalled || cc.installUpdateCalled {
 				t.Fatalf("cross-origin request reached controller: %+v", cc)
 			}
 		})
@@ -763,6 +952,20 @@ func TestServerConsoleActionEndpointsRequirePost(t *testing.T) {
 				return cc.quit
 			},
 		},
+		{
+			name: "check update",
+			path: "/api/console/update/check",
+			called: func(cc *fakeConsoleController) bool {
+				return cc.checkUpdateCalled
+			},
+		},
+		{
+			name: "install update",
+			path: "/api/console/update/install",
+			called: func(cc *fakeConsoleController) bool {
+				return cc.installUpdateCalled
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -903,6 +1106,14 @@ type fakeConsoleController struct {
 	openedRemoteID       string
 	openRemoteResult     console.SlaveRemoteOpenResult
 	deletedID            string
+	updateState          updater.State
+	updateStateCalls     int
+	checkUpdateCalled    bool
+	checkUpdateAutomatic bool
+	checkUpdateState     updater.State
+	installUpdateCalled  bool
+	installedManifest    updater.Manifest
+	installUpdateState   updater.State
 }
 
 func (f *fakeConsoleController) State(context.Context) (console.State, error) {
@@ -967,6 +1178,20 @@ func (f *fakeConsoleController) OpenSlaveRemote(_ context.Context, id string) (c
 func (f *fakeConsoleController) DeleteSlave(_ context.Context, id string) error {
 	f.deletedID = id
 	return nil
+}
+func (f *fakeConsoleController) UpdateState(context.Context) (updater.State, error) {
+	f.updateStateCalls++
+	return f.updateState, nil
+}
+func (f *fakeConsoleController) CheckUpdate(_ context.Context, automatic bool) (updater.State, error) {
+	f.checkUpdateCalled = true
+	f.checkUpdateAutomatic = automatic
+	return f.checkUpdateState, nil
+}
+func (f *fakeConsoleController) InstallUpdate(_ context.Context, m updater.Manifest) (updater.State, error) {
+	f.installUpdateCalled = true
+	f.installedManifest = m
+	return f.installUpdateState, nil
 }
 
 func errWrap(msg string, err error) error {

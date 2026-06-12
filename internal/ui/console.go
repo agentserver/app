@@ -6,6 +6,7 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
+	"github.com/agentserver/agentserver-pkg/internal/updater"
 )
 
 type ConsoleController interface {
@@ -23,6 +24,9 @@ type ConsoleController interface {
 	OpenSubscription(context.Context) error
 	LogoutModelserver(context.Context) error
 	Quit(context.Context) error
+	UpdateState(context.Context) (updater.State, error)
+	CheckUpdate(context.Context, bool) (updater.State, error)
+	InstallUpdate(context.Context, updater.Manifest) (updater.State, error)
 }
 
 type noopConsoleController struct{}
@@ -61,3 +65,12 @@ func (noopConsoleController) LogoutModelserver(context.Context) error {
 	return nil
 }
 func (noopConsoleController) Quit(context.Context) error { return nil }
+func (noopConsoleController) UpdateState(context.Context) (updater.State, error) {
+	return updater.State{}, errors.New("console: updater unavailable")
+}
+func (noopConsoleController) CheckUpdate(context.Context, bool) (updater.State, error) {
+	return updater.State{}, errors.New("console: updater unavailable")
+}
+func (noopConsoleController) InstallUpdate(context.Context, updater.Manifest) (updater.State, error) {
+	return updater.State{}, errors.New("console: updater unavailable")
+}
