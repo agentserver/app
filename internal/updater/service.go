@@ -31,7 +31,10 @@ type Service struct {
 
 func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
 	now := s.now()
-	prior, _ := s.loadState()
+	prior, err := s.loadState()
+	if err != nil {
+		return s.saveError(now, err)
+	}
 	if automatic && !prior.LastCheckedAt.IsZero() && now.Sub(prior.LastCheckedAt) < s.autoCheckEvery() {
 		prior.CurrentVersion = s.CurrentVersion
 		_ = s.saveState(prior)
@@ -60,7 +63,7 @@ func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
 			LastCheckedAt:  now,
 			Status:         StatusLatest,
 		}
-		return state, s.saveState(state)
+		return s.saveFinalState(now, state)
 	}
 	state := State{
 		CurrentVersion: s.CurrentVersion,
@@ -74,7 +77,7 @@ func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
 			Notes:   manifest.Notes,
 		},
 	}
-	return state, s.saveState(state)
+	return s.saveFinalState(now, state)
 }
 
 func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error) {
@@ -128,7 +131,7 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 		Status:         StatusInstallerStarted,
 		Update:         availableFromManifest(m),
 	}
-	return state, s.saveState(state)
+	return s.saveFinalState(now, state)
 }
 
 func (s Service) fetchManifest(ctx context.Context) (Manifest, error) {
@@ -267,6 +270,13 @@ func (s Service) saveState(state State) error {
 		return nil
 	}
 	return s.State.Save(state)
+}
+
+func (s Service) saveFinalState(now time.Time, state State) (State, error) {
+	if err := s.saveState(state); err != nil {
+		return s.saveError(now, err)
+	}
+	return state, nil
 }
 
 func (s Service) saveError(now time.Time, err error) (State, error) {

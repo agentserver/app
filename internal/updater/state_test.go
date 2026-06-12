@@ -1,7 +1,9 @@
 package updater
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -87,5 +89,15 @@ func TestStateStoreSaveOverwritesExistingState(t *testing.T) {
 	}
 	if got.Update == nil || got.Update.Version != "0.1.3" {
 		t.Fatalf("Update=%+v, want replacement update", got.Update)
+	}
+}
+
+func TestStateJSONOmitsZeroLastCheckedAt(t *testing.T) {
+	data, err := json.Marshal(State{Status: StatusIdle})
+	if err != nil {
+		t.Fatalf("Marshal state: %v", err)
+	}
+	if strings.Contains(string(data), "last_checked_at") {
+		t.Fatalf("state JSON=%s, want no last_checked_at for zero time", data)
 	}
 }

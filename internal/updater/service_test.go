@@ -68,6 +68,38 @@ func TestServiceCheckReportsAvailableUpdate(t *testing.T) {
 	}
 }
 
+func TestServiceCheckReturnsErrorStateOnCorruptPersistedState(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(statePath, []byte("{not-json"), 0o644); err != nil {
+		t.Fatalf("Write corrupt state: %v", err)
+	}
+	called := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		http.Error(w, "unexpected network call", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		ManifestURL:    server.URL,
+		State:          NewStateStore(statePath),
+		Client:         server.Client(),
+	}.Check(context.Background(), false)
+	if err == nil {
+		t.Fatal("expected corrupt state load error")
+	}
+	if called {
+		t.Fatal("Check fetched manifest despite corrupt persisted state")
+	}
+	if got.Status != StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+	}
+	if !strings.Contains(got.LastError, "invalid character") {
+		t.Fatalf("LastError=%q, want corrupt JSON error", got.LastError)
+	}
+}
+
 func TestServiceCheckReportsLatestForEqualVersion(t *testing.T) {
 	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
 	manifest := Manifest{
@@ -101,6 +133,51 @@ func TestServiceCheckReportsLatestForEqualVersion(t *testing.T) {
 	}
 	if got.LastError != "" {
 		t.Fatalf("LastError=%q, want empty", got.LastError)
+	}
+}
+
+func TestServiceCheckReturnsErrorStateWhenFinalSaveFails(t *testing.T) {
+	manifest := Manifest{
+		Version: "0.1.2",
+		URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-0.1.2-setup.exe",
+		SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Size:    123,
+	}
+	stateRoot := filepath.Join(t.TempDir(), "state-root")
+	statePath := filepath.Join(stateRoot, "state.json")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := os.Remove(statePath); err != nil {
+			t.Fatalf("Remove state file: %v", err)
+		}
+		if err := os.Remove(stateRoot); err != nil {
+			t.Fatalf("Remove state dir: %v", err)
+		}
+		if err := os.WriteFile(stateRoot, []byte("not a directory"), 0o644); err != nil {
+			t.Fatalf("Write state root conflict: %v", err)
+		}
+		if err := json.NewEncoder(w).Encode(manifest); err != nil {
+			t.Fatalf("Encode manifest: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		ManifestURL:    server.URL,
+		State:          NewStateStore(statePath),
+		Client:         server.Client(),
+	}.Check(context.Background(), false)
+	if err == nil {
+		t.Fatal("expected final save error")
+	}
+	if got.Status != StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+	}
+	if !strings.Contains(got.LastError, "state-root") {
+		t.Fatalf("LastError=%q, want final save error", got.LastError)
+	}
+	if !strings.Contains(err.Error(), "state-root") {
+		t.Fatalf("error=%q, want final save error", err)
 	}
 }
 
@@ -491,7 +568,7 @@ func TestServiceDownloadReturnsFinalStateSaveError(t *testing.T) {
 	started := false
 	stateRoot := filepath.Join(t.TempDir(), "state-root")
 	statePath := filepath.Join(stateRoot, "state.json")
-	_, err := Service{
+	got, err := Service{
 		CurrentVersion: "0.1.1",
 		CacheDir:       filepath.Join(t.TempDir(), "cache"),
 		State:          NewStateStore(statePath),
@@ -520,6 +597,12 @@ func TestServiceDownloadReturnsFinalStateSaveError(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("expected final save error")
+	}
+	if got.Status != StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+	}
+	if !strings.Contains(got.LastError, "state-root") {
+		t.Fatalf("LastError=%q, want final save error", got.LastError)
 	}
 	if !strings.Contains(err.Error(), "state-root") {
 		t.Fatalf("error=%q, want final state save error", err)

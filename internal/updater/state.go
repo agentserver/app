@@ -31,7 +31,7 @@ type AvailableUpdate struct {
 
 type State struct {
 	CurrentVersion string           `json:"current_version"`
-	LastCheckedAt  time.Time        `json:"last_checked_at,omitempty"`
+	LastCheckedAt  time.Time        `json:"last_checked_at,omitempty,omitzero"`
 	Status         Status           `json:"status"`
 	Update         *AvailableUpdate `json:"update,omitempty"`
 	LastError      string           `json:"last_error,omitempty"`
