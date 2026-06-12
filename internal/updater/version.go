@@ -33,7 +33,10 @@ func CompareVersions(a, b string) (int, error) {
 }
 
 func parseVersion(v string) (parsedVersion, error) {
-	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if v != strings.TrimSpace(v) {
+		return parsedVersion{}, fmt.Errorf("version %q must not have leading or trailing whitespace", v)
+	}
+	v = strings.TrimPrefix(v, "v")
 	parts := strings.Split(v, ".")
 	if len(parts) != 3 {
 		return parsedVersion{}, fmt.Errorf("version %q must be MAJOR.MINOR.PATCH", v)

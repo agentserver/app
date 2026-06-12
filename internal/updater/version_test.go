@@ -36,6 +36,18 @@ func TestCompareVersionsRejectsInvalidSecondVersion(t *testing.T) {
 	}
 }
 
+func TestCompareVersionsRejectsPaddedVersion(t *testing.T) {
+	tests := []string{
+		" 1.2.3",
+		"1.2.3 ",
+	}
+	for _, version := range tests {
+		if _, err := CompareVersions(version, "1.2.2"); err == nil {
+			t.Fatalf("expected padded version error for %q", version)
+		}
+	}
+}
+
 func TestCompareVersionsRejectsSignedComponents(t *testing.T) {
 	tests := []string{
 		"+1.2.3",
