@@ -22,6 +22,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tray"
+	"github.com/agentserver/agentserver-pkg/internal/updater"
 )
 
 func TestLauncherOptionsDefaultOpensPageAndFrontend(t *testing.T) {
@@ -166,6 +167,47 @@ func TestCompletedSlaveManagerDepsRecoversBadMachineIdentity(t *testing.T) {
 	}
 	if got.ComputerName != "RECOVERED-PC" || got.MachineID == "" {
 		t.Fatalf("machine=%+v", got)
+	}
+}
+
+func TestNewCompletedUpdaterUsesDefaultManifestAndPaths(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		UpdateStateFile: filepath.Join(dir, "update-state.json"),
+		UpdatesCacheDir: filepath.Join(dir, "updates"),
+	}
+
+	got := newCompletedUpdater(p)
+
+	if got.ManifestURL != updater.DefaultManifestURL {
+		t.Fatalf("ManifestURL=%q, want %q", got.ManifestURL, updater.DefaultManifestURL)
+	}
+	if got.CacheDir != p.UpdatesCacheDir {
+		t.Fatalf("CacheDir=%q, want %q", got.CacheDir, p.UpdatesCacheDir)
+	}
+	if got.State == nil {
+		t.Fatal("State is nil")
+	}
+}
+
+func TestRestorePendingSlaveRestartsCallsManager(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pending-slave-restarts.json")
+	if err := os.WriteFile(path, []byte(`{"reason":"app_update","version":"0.1.2","created_at":"2026-06-12T00:00:00Z","slave_ids":["a","b"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+
+	err := restorePendingSlaveRestarts(context.Background(), path, func(_ context.Context, id string) error {
+		got = append(got, id)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Join(got, ",") != "a,b" {
+		t.Fatalf("restarted=%v, want [a b]", got)
 	}
 }
 

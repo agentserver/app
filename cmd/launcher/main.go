@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
+	"github.com/agentserver/agentserver-pkg/internal/appversion"
 	"github.com/agentserver/agentserver-pkg/internal/browser"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
@@ -42,6 +43,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 	"github.com/agentserver/agentserver-pkg/internal/tray"
 	"github.com/agentserver/agentserver-pkg/internal/ui"
+	"github.com/agentserver/agentserver-pkg/internal/updater"
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
 
@@ -193,6 +195,14 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	if err != nil {
 		return err
 	}
+	updates := newCompletedUpdater(in.Paths)
+	if err := restorePendingSlaveRestarts(ctx, in.Paths.PendingSlaveRestartsFile, func(ctx context.Context, id string) error {
+		_, err := slaveManager.Restart(ctx, id)
+		return err
+	}); err != nil {
+		log.Printf("launcher: restore pending slave restarts: %v", err)
+	}
+	scheduleAutomaticUpdateCheck(ctx, updates, 30*time.Second)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -200,13 +210,15 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	}
 	srv := &http.Server{}
 	ctrl := console.NewController(console.Deps{
-		State:                 in.State,
-		Secrets:               sec,
-		MS:                    modelserver.New("https://codeapi.cs.ac.cn"),
-		MSProxy:               modelserver.New("https://code.ai.cs.ac.cn"),
-		AS:                    agentserver.New("https://agent.cs.ac.cn"),
-		Slaves:                slaveManager,
-		ModelserverWebBaseURL: "https://code.cs.ac.cn",
+		State:                    in.State,
+		Secrets:                  sec,
+		MS:                       modelserver.New("https://codeapi.cs.ac.cn"),
+		MSProxy:                  modelserver.New("https://code.ai.cs.ac.cn"),
+		AS:                       agentserver.New("https://agent.cs.ac.cn"),
+		Slaves:                   slaveManager,
+		Updates:                  updates,
+		PendingSlaveRestartsPath: in.Paths.PendingSlaveRestartsFile,
+		ModelserverWebBaseURL:    "https://code.cs.ac.cn",
 		RefreshModelserverToken: func(ctx context.Context) error {
 			_, err := tokenrefresh.RefreshOnce(ctx, tokenrefresh.Options{
 				Secrets: sec,
@@ -304,6 +316,42 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		return nil
 	}
 	return err
+}
+
+func newCompletedUpdater(p paths.Paths) *updater.Service {
+	return &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    updater.DefaultManifestURL,
+		CacheDir:       p.UpdatesCacheDir,
+		State:          updater.NewStateStore(p.UpdateStateFile),
+	}
+}
+
+func restorePendingSlaveRestarts(ctx context.Context, path string, restart func(context.Context, string) error) error {
+	return slave.RestorePendingRestarts(ctx, path, restart)
+}
+
+func scheduleAutomaticUpdateCheck(ctx context.Context, svc *updater.Service, delay time.Duration) {
+	if svc == nil {
+		return
+	}
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+			}
+
+			if _, err := svc.Check(ctx, true); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("launcher: automatic update check: %v", err)
+			}
+
+			timer.Reset(24 * time.Hour)
+		}
+	}()
 }
 
 func newCompletedSlaveManager(in completedServeInput) (*slave.Manager, error) {
