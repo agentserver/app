@@ -233,6 +233,9 @@ func (s Service) installerDownloadClient() *http.Client {
 		if priorCheckRedirect != nil {
 			return priorCheckRedirect(req, via)
 		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
 		return nil
 	}
 	return &client

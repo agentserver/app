@@ -445,6 +445,43 @@ func TestServiceDownloadRejectsRedirectToDisallowedHostBeforeRequestingTarget(t 
 	}
 }
 
+func TestServiceDownloadStopsAllowedRedirectLoop(t *testing.T) {
+	body := []byte("installer bytes")
+	sum := sha256.Sum256(body)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"), http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		CacheDir:       filepath.Join(t.TempDir(), "cache"),
+		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		Client:         assetsHostClient(t, server),
+		StartInstaller: func(context.Context, string) error {
+			t.Fatal("StartInstaller called after redirect loop")
+			return nil
+		},
+	}.DownloadAndStart(ctx, Manifest{
+		Version: "0.1.2",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
+		SHA256:  hex.EncodeToString(sum[:]),
+		Size:    int64(len(body)),
+	})
+	if err == nil {
+		t.Fatal("expected redirect limit error")
+	}
+	if got.Status != StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+	}
+	if !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("error=%q, want default redirect limit", err)
+	}
+}
+
 func TestServiceDownloadRejectsNonNewerUpdateBeforeNetwork(t *testing.T) {
 	for _, tt := range []struct {
 		name          string
