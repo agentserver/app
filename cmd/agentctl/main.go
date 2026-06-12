@@ -19,6 +19,10 @@ func main() {
 		runReconfigure()
 	case "logs":
 		runLogs()
+	case "install-codex":
+		if err := runInstallCodex(os.Args[2:]); err != nil {
+			die(err)
+		}
 	case "test-install-vscode":
 		runTestInstallVSCode()
 	case "test-install-codex-desktop":
@@ -48,9 +52,11 @@ USAGE:
   agentctl uninstall [--silent] [--vscode]
                                   remove shortcuts/registry/state; --vscode also removes VS Code
   agentctl logs                   print last 200 lines of launcher log
+  agentctl install-codex --manifest <path>
+                                  download and install Codex runtime from npm mirrors
 
 P13.4 verification subcommands (skip the OAuth steps, exercise everything else):
-  agentctl test-install-vscode   download + silently install VS Code 1.96.0
+  agentctl test-install-vscode   download + run the VS Code Microsoft Store bootstrapper
   agentctl test-install-codex-desktop
                                  install Codex Desktop with winget and persist state
   agentctl test-download-codex   download codex.exe to %LOCALAPPDATA%\agentserver-app\bin\

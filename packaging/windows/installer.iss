@@ -56,12 +56,8 @@ Source: "..\..\dist\cache\superpowers\driver-superpower-skills.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-superpower-skills.tar.gz"; Flags: ignoreversion
 Source: "..\..\dist\cache\loom\v0.0.4\driver-codex-prompts.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-codex-prompts.tar.gz"; Flags: ignoreversion
-Source: "..\..\dist\cache\rust-v0.136.0\codex-x86_64-pc-windows-msvc.exe"; \
-    DestDir: "{app}"; DestName: "codex.exe"; Flags: ignoreversion
 Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
     DestDir: "{app}"; DestName: "codex-desktop-installer.exe"; Flags: ignoreversion
-Source: "..\..\dist\cache\vscode\1.96.0\VSCodeUserSetup-x64-1.96.0.exe"; \
-    DestDir: "{app}"; DestName: "vscode-installer.exe"; Flags: ignoreversion
 ; Bundled VS Code extension
 Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.1.vsix"; \
     DestDir: "{app}"; DestName: "agentserver-app.vsix"; Flags: ignoreversion
@@ -73,10 +69,11 @@ Source: "LICENSE.zh.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install-driver-support.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-vscode.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "ensure-codex.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "write-install-mode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "machine.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "vscode-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "codex-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; \
@@ -358,39 +355,19 @@ begin
   Result := Exec(PowerShellExe, '-NoProfile -ExecutionPolicy Bypass -File "' + RunnerPath + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
 end;
 
+procedure DeleteObsoleteBundledPayloads();
+begin
+  DeleteFile(ExpandConstant('{app}\codex.exe'));
+  DeleteFile(ExpandConstant('{app}\vscode-installer' + '.exe'));
+  DeleteFile(ExpandConstant('{app}\vscode-manifest' + '.json'));
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   if StopRunningAgentserverProcesses() then begin
     Result := '';
   end else begin
     Result := '无法关闭正在运行的星池指挥官后台程序。请关闭后重试。';
-  end;
-end;
-
-procedure StageBundledCodexForLocalSlaves();
-var
-  LocalAppData: String;
-  CodexBinDir: String;
-  CodexSrc: String;
-  CodexDst: String;
-begin
-  LocalAppData := GetEnv('LOCALAPPDATA');
-  if LocalAppData = '' then begin
-    LocalAppData := ExpandConstant('{localappdata}');
-  end;
-
-  CodexSrc := ExpandConstant('{app}\codex.exe');
-  CodexBinDir := AddBackslash(LocalAppData) + 'agentserver-app\bin';
-  CodexDst := AddBackslash(CodexBinDir) + 'codex.exe';
-
-  if not FileExists(CodexSrc) then begin
-    RaiseException('缺少 codex.exe，无法准备本地 slave。');
-  end;
-  if not ForceDirectories(CodexBinDir) then begin
-    RaiseException('无法创建 codex.exe 目录：' + CodexBinDir);
-  end;
-  if not FileCopy(CodexSrc, CodexDst, False) then begin
-    RaiseException('无法复制 codex.exe 到：' + CodexDst);
   end;
 end;
 
@@ -425,6 +402,8 @@ begin
     Exit;
   end;
 
+  DeleteObsoleteBundledPayloads();
+
   MachinePath := GetMachinePath();
   ComputerName := GetChosenComputerName();
   ComputerNamePath := ExpandConstant('{tmp}\agentserver-machine-name.txt');
@@ -435,7 +414,8 @@ begin
   RunEstimatedPowerShellStep('machine', '正在初始化电脑名称...', 'machine.ps1',
     '-MachinePath ' + PowerShellQuote(MachinePath) + ' -ComputerNamePath ' + PowerShellQuote(ComputerNamePath), 10);
 
-  StageBundledCodexForLocalSlaves();
+  RunEstimatedPowerShellStep('codex-runtime', '正在从国内 npm 镜像准备 Codex 运行时...', 'ensure-codex.ps1',
+    '-ManifestPath ' + PowerShellQuote(ExpandConstant('{app}\codex-manifest.json')), 300);
 
   RunEstimatedPowerShellStep('driver-support', '正在安装 driver skills 和 Codex 指令...', 'install-driver-support.ps1',
     '-InstallDir ' + PowerShellQuote(ExpandConstant('{app}')), 20);
@@ -450,7 +430,7 @@ begin
     RunEstimatedPowerShellStep('vscode-mode', '正在准备极简风模式...', 'write-install-mode.ps1',
       '-Mode ' + PowerShellQuote('minimal_vscode') + ' -Path ' + PowerShellQuote(ModePath), 10);
     RunEstimatedPowerShellStep('vscode-install', '正在安装极简 VS Code（可能需要几分钟，请勿关闭）...', 'ensure-vscode.ps1',
-      '-ManifestPath ' + PowerShellQuote(ExpandConstant('{app}\vscode-manifest.json')), 180);
+      '', 300);
   end;
 end;
 

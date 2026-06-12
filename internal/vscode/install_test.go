@@ -6,75 +6,178 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
-func TestPlanInstall_Windows(t *testing.T) {
+func TestPlanInstall_WindowsUsesStoreBootstrapper(t *testing.T) {
 	p := planInstallFor("windows", "amd64")
-	if p.URL == "" || p.SHA256 == "" {
-		t.Errorf("missing URL/sha: %+v", p)
+	if p.BootstrapperURL == "" {
+		t.Fatalf("missing BootstrapperURL: %+v", p)
 	}
-	if p.InstallerType != "InnoSetup" {
-		t.Errorf("type %q", p.InstallerType)
+	if !strings.Contains(p.BootstrapperURL, "get.microsoft.com/installer/download") {
+		t.Fatalf("BootstrapperURL=%q", p.BootstrapperURL)
 	}
-	if len(p.SilentArgs) == 0 {
-		t.Errorf("silent args empty")
+	if p.StoreProductID != "XP9KHM4BK9FZ7Q" {
+		t.Fatalf("StoreProductID=%q", p.StoreProductID)
 	}
-	if len(p.URLs) < 2 {
-		t.Errorf("expected at least 2 mirror URLs (prss + update.code), got %v", p.URLs)
+	if p.FileExt != ".exe" {
+		t.Fatalf("FileExt=%q", p.FileExt)
 	}
-	if p.URL != p.URLs[0] {
-		t.Errorf("URL should equal URLs[0] for back-compat: got URL=%q URLs[0]=%q", p.URL, p.URLs[0])
-	}
-	// prss CDN URL should be tried first (fastest in CN per P13.4 measurements)
-	if !strings.Contains(p.URLs[0], "prss.microsoft.com") {
-		t.Errorf("expected prss URL first, got %q", p.URLs[0])
+	if p.SHA256 != "" {
+		t.Fatalf("Store bootstrapper should not use locked VS Code installer sha, got %q", p.SHA256)
 	}
 }
 
-func TestWindowsPackagingManifestMatchesPlanInstall(t *testing.T) {
-	var manifest struct {
-		Version      string   `json:"version"`
-		SHA256       string   `json:"sha256"`
-		ExpectedSize int64    `json:"expected_size"`
-		URLs         []string `json:"urls"`
-		SilentArgs   []string `json:"silent_args"`
+func TestWindowsDetectCandidatesIncludeStoreAliases(t *testing.T) {
+	got := detectCandidatesWindows(`C:\Users\me\AppData\Local`, `C:\Program Files`, `C:\Program Files (x86)`)
+	joined := strings.Join(got, "\n")
+	for _, want := range []string{
+		`C:\Users\me\AppData\Local\Microsoft\WindowsApps\code.exe`,
+		`C:\Users\me\AppData\Local\Microsoft\WindowsApps\code.cmd`,
+		`C:\Users\me\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("detect candidates missing %q:\n%s", want, joined)
+		}
 	}
-	b, err := os.ReadFile("../../packaging/windows/vscode-manifest.json")
+}
+
+func TestDownloadBootstrapperUsesGETBecauseMicrosoftEndpointRejectsHEAD(t *testing.T) {
+	stubBootstrapperSignatureValidator(t)
+	body := fakeBootstrapperBody()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Method != http.MethodGet {
+			t.Fatalf("method=%s", r.Method)
+		}
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	dst := filepath.Join(t.TempDir(), "vscode-store-bootstrapper.exe")
+	if err := DownloadBootstrapper(context.Background(), srv.URL, dst, http.DefaultClient); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(dst)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(b, &manifest); err != nil {
-		t.Fatal(err)
-	}
-
-	plan := planInstallFor("windows", "amd64")
-	if manifest.Version != LockedVersion {
-		t.Fatalf("manifest version %q != LockedVersion %q", manifest.Version, LockedVersion)
-	}
-	if manifest.SHA256 != plan.SHA256 {
-		t.Fatalf("manifest sha %q != plan sha %q", manifest.SHA256, plan.SHA256)
-	}
-	if manifest.ExpectedSize <= 0 {
-		t.Fatalf("manifest expected_size should be set so truncated downloads are detected")
-	}
-	if !reflect.DeepEqual(manifest.URLs, plan.URLs) {
-		t.Fatalf("manifest URLs %#v != plan URLs %#v", manifest.URLs, plan.URLs)
-	}
-	if !reflect.DeepEqual(manifest.SilentArgs, plan.SilentArgs) {
-		t.Fatalf("manifest silent args %#v != plan silent args %#v", manifest.SilentArgs, plan.SilentArgs)
+	if string(got) != string(body) {
+		t.Fatalf("body=%q", got)
 	}
 }
 
-func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
+func TestDownloadBootstrapperRejectsNonExecutableBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bytes.Repeat([]byte("x"), int(minBootstrapperSize)))
+	}))
+	defer srv.Close()
+
+	dst := filepath.Join(t.TempDir(), "vscode-store-bootstrapper.exe")
+	err := DownloadBootstrapper(context.Background(), srv.URL, dst, http.DefaultClient)
+	if err == nil || !strings.Contains(err.Error(), "MZ") {
+		t.Fatalf("err=%v, want MZ validation failure", err)
+	}
+	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid bootstrapper should not be promoted, stat err=%v", statErr)
+	}
+	if _, statErr := os.Stat(dst + ".part"); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid bootstrapper partial should be removed, stat err=%v", statErr)
+	}
+}
+
+func TestDownloadBootstrapperAbortsStalledBodyAfterIdleTimeout(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	dst := filepath.Join(t.TempDir(), "vscode-store-bootstrapper.exe")
+	err := downloadBootstrapper(context.Background(), srv.URL, dst, http.DefaultClient, 20*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "download idle timeout") {
+		t.Fatalf("err=%v, want idle timeout", err)
+	}
+	if _, statErr := os.Stat(dst + ".part"); !os.IsNotExist(statErr) {
+		t.Fatalf("stalled bootstrapper partial should be removed, stat err=%v", statErr)
+	}
+}
+
+func TestEnsureVSCodeScriptBoundsBootstrapperProcessAndPublisher(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-vscode.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"ExpectedBootstrapperPublisherPattern",
+		"SignerCertificate.Subject",
+		"X509Chain",
+		"O=Microsoft Corporation",
+		"function Wait-ProcessWithProgress([System.Diagnostics.Process]$Process, [string]$Activity, [string]$Status, [int]$TimeoutSeconds)",
+		"Stop-Process -Id $Process.Id -Force",
+		"Wait-ProcessWithProgress $proc \"Installing VS Code\" \"正在通过微软商店引导器安装 VS Code，请稍候...\" $InstallTimeoutSeconds",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-vscode.ps1 missing %q", want)
+		}
+	}
+}
+
+func TestWindowsBootstrapperGoValidatorChecksAuthenticodePublisher(t *testing.T) {
+	body, err := os.ReadFile("install_authenticode_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"Get-AuthenticodeSignature",
+		"ExpectedBootstrapperPublisherPattern",
+		"SignerCertificate.Subject",
+		"X509Chain",
+		"O=Microsoft Corporation",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install_authenticode_windows.go missing %q", want)
+		}
+	}
+}
+
+func fakeBootstrapperBody() []byte {
+	body := bytes.Repeat([]byte{0}, int(minBootstrapperSize))
+	body[0] = 'M'
+	body[1] = 'Z'
+	return body
+}
+
+func stubBootstrapperSignatureValidator(t *testing.T) {
+	t.Helper()
+	old := bootstrapperSignatureValidator
+	bootstrapperSignatureValidator = func(context.Context, string) error { return nil }
+	t.Cleanup(func() {
+		bootstrapperSignatureValidator = old
+	})
+}
+
+func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		path string
@@ -86,17 +189,19 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			want: []string{
 				"[switch]$MinimalVSCode",
 				"ensure-vscode.ps1",
+				"ensure-codex.ps1",
 				"ensure-codex-desktop.ps1",
 				"install-driver-support.ps1",
 				"write-install-mode.ps1",
 				"machine.ps1",
-				"vscode-manifest.json",
+				"codex-manifest.json",
 				"codex-desktop-installer.exe",
 				"slave-agent.exe",
 				"driver-skills.tar.gz",
 				"driver-superpower-skills.tar.gz",
 				"driver-codex-prompts.tar.gz",
 				"uninstall.exe",
+				"Ensuring Codex runtime",
 				"Ensuring VS Code is installed",
 				"codex_desktop",
 				"minimal_vscode",
@@ -115,15 +220,24 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			name: "ensure-vscode.ps1",
 			path: "../../packaging/windows/ensure-vscode.ps1",
 			want: []string{
-				"curl.exe",
-				"-C",
-				"LocalInstallerPath",
-				"ExpectedSize",
-				"MaxDownloadAttempts",
-				"download incomplete",
-				"Write-Progress",
+				"BootstrapperURL",
+				"XP9KHM4BK9FZ7Q",
+				"get.microsoft.com/installer/download",
+				"vscode-store-bootstrapper.exe",
+				"DownloadBootstrapper",
+				"Test-BootstrapperFile",
+				"MinBootstrapperSize",
+				"DownloadTimeoutSeconds",
+				"DownloadIdleTimeoutSeconds",
+				"--max-time",
+				"--speed-time",
+				"--speed-limit",
+				"-TimeoutSec",
+				"Get-AuthenticodeSignature",
+				"Move-Item",
+				"Start-Process",
 				"Wait-ProcessWithProgress",
-				"Installing VS Code",
+				"Get-VSCodeDetection",
 				"Set-ScriptOutputEncoding",
 			},
 		},
@@ -141,25 +255,23 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			name: "package-windows-zip.sh",
 			path: "../../scripts/package-windows-zip.sh",
 			want: []string{
-				"VSCODE_CACHE",
 				"LOOM_RELEASE=\"v0.0.4\"",
 				"LOOM_DRIVER_CACHE",
 				"LOOM_SLAVE_CACHE",
 				"LOOM_DRIVER_SKILLS_CACHE",
 				"SUPERPOWER_SKILLS_CACHE",
 				"LOOM_DRIVER_CODEX_PROMPTS_CACHE",
-				"vscode-installer.exe",
 				"packaging/windows/ensure-vscode.ps1",
+				"packaging/windows/ensure-codex.ps1",
+				"packaging/windows/codex-manifest.json",
 				"packaging/windows/ensure-codex-desktop.ps1",
 				"packaging/windows/install-driver-support.ps1",
 				"packaging/windows/write-install-mode.ps1",
 				"packaging/windows/machine.ps1",
-				"packaging/windows/vscode-manifest.json",
 				"codex-desktop-installer.exe",
 				"slave-agent.exe",
 				"dist/windows/uninstall.exe",
 				"dist/windows/token-refresher.exe",
-				"cp \"$VSCODE_CACHE\"",
 				"cp \"$CODEX_DESKTOP_CACHE\"",
 				"cp \"$LOOM_DRIVER_CACHE\"",
 				"cp \"$LOOM_SLAVE_CACHE\"",
@@ -167,9 +279,10 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"cp \"$SUPERPOWER_SKILLS_CACHE\"",
 				"cp \"$LOOM_DRIVER_CODEX_PROMPTS_CACHE\"",
 				"cp packaging/windows/ensure-vscode.ps1",
+				"cp packaging/windows/ensure-codex.ps1",
+				"cp packaging/windows/codex-manifest.json",
 				"cp packaging/windows/install-driver-support.ps1",
 				"cp packaging/windows/machine.ps1",
-				"cp packaging/windows/vscode-manifest.json",
 				"cp dist/windows/uninstall.exe",
 				"cp dist/windows/token-refresher.exe",
 			},
@@ -189,21 +302,18 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"driver-superpower-skills.tar.gz",
 				"driver-codex-prompts.tar.gz",
 				"install-driver-support.ps1",
-				"codex-x86_64-pc-windows-msvc.exe",
-				"DestName: \"codex.exe\"",
-				"VSCodeUserSetup-x64-1.96.0.exe",
-				"DestName: \"vscode-installer.exe\"",
 				"Codex Installer.exe",
 				"DestName: \"codex-desktop-installer.exe\"",
 				"MessagesFile: \"ChineseSimplified.isl\"",
 				"ensure-vscode.ps1",
-				"install-driver-support.ps1",
+				"ensure-codex.ps1",
+				"codex-manifest.json",
 				"minimalvscode",
 				"ensure-codex-desktop.ps1",
 				"write-install-mode.ps1",
-				"vscode-manifest.json",
 				"powershell",
 				"ensure-vscode.ps1",
+				"RunEstimatedPowerShellStep('codex-runtime'",
 				"ShouldInstallCodexDesktop",
 				"codex_desktop",
 				"minimal_vscode",
@@ -216,8 +326,6 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			name: "package-windows.sh",
 			path: "../../scripts/package-windows.sh",
 			want: []string{
-				"CODEX_CACHE",
-				"VSCODE_CACHE",
 				"CODEX_DESKTOP_CACHE",
 				"LOOM_RELEASE=\"v0.0.4\"",
 				"LOOM_DRIVER_CACHE",
@@ -225,15 +333,14 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"LOOM_DRIVER_SKILLS_CACHE",
 				"SUPERPOWER_SKILLS_CACHE",
 				"LOOM_DRIVER_CODEX_PROMPTS_CACHE",
-				"codex-x86_64-pc-windows-msvc.exe",
 				"driver-agent.windows-amd64.exe",
 				"slave-agent.windows-amd64.exe",
 				"driver-skills.tar.gz",
 				"driver-superpower-skills.tar.gz",
 				"driver-codex-prompts.tar.gz",
-				"VSCodeUserSetup-x64-$VSCODE_VERSION.exe",
 				"Codex Installer.exe",
-				"packaging/windows/vscode-manifest.json",
+				"packaging/windows/ensure-codex.ps1",
+				"packaging/windows/codex-manifest.json",
 				"packaging/windows/ensure-codex-desktop.ps1",
 				"packaging/windows/install-driver-support.ps1",
 				"packaging/windows/write-install-mode.ps1",
@@ -244,12 +351,11 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"ISCC=()",
 				"ISCC=(\"wine\" \"$HOME/.wine/drive_c/Program Files (x86)/Inno Setup 6/ISCC.exe\")",
 				"\"${ISCC[@]}\" installer.iss",
-				"\"$VSCODE_CACHE\"",
-				"\"$CODEX_CACHE\"",
 				"\"$CODEX_DESKTOP_CACHE\"",
 				"\"$LOOM_DRIVER_CACHE\"",
 				"\"$LOOM_SLAVE_CACHE\"",
 				"\"$LOOM_DRIVER_SKILLS_CACHE\"",
+				"\"$SUPERPOWER_SKILLS_CACHE\"",
 				"\"$LOOM_DRIVER_CODEX_PROMPTS_CACHE\"",
 			},
 		},
@@ -268,14 +374,143 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 	}
 }
 
-func TestWindowsPortableMinimalVSCodeUsesBundledInstaller(t *testing.T) {
-	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+func TestWindowsPackagingDoesNotBundleCodexExeOrVSCodeInstaller(t *testing.T) {
+	for _, path := range []string{
+		"../../packaging/windows/installer.iss",
+		"../../packaging/windows/install.ps1",
+		"../../scripts/package-windows.sh",
+		"../../scripts/package-windows-zip.sh",
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(body)
+		for _, notWant := range []string{
+			"codex-x86_64-pc-windows-msvc" + ".exe",
+			"VSCode" + "UserSetup",
+			"vscode-installer" + ".exe",
+			"CODEX" + "_CACHE",
+			"VSCODE" + "_CACHE",
+			"vscode-manifest" + ".json",
+		} {
+			if strings.Contains(s, notWant) {
+				t.Fatalf("%s must not contain %q", path, notWant)
+			}
+		}
+	}
+}
+
+func TestWindowsPackagingIncludesCodexRuntimeEnsure(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{
+			path: "../../packaging/windows/installer.iss",
+			want: []string{
+				"ensure-codex.ps1",
+				"codex-manifest.json",
+				"RunEstimatedPowerShellStep('codex-runtime'",
+				"ensure-codex.ps1",
+				"RunEstimatedPowerShellStep('codex-mode'",
+				"RunEstimatedPowerShellStep('vscode-mode'",
+			},
+		},
+		{
+			path: "../../packaging/windows/install.ps1",
+			want: []string{
+				"'ensure-codex.ps1'",
+				"'codex-manifest.json'",
+				"Ensuring Codex runtime",
+				"install-mode.json",
+			},
+		},
+		{
+			path: "../../scripts/package-windows.sh",
+			want: []string{
+				"packaging/windows/ensure-codex.ps1",
+				"packaging/windows/codex-manifest.json",
+			},
+		},
+		{
+			path: "../../scripts/package-windows-zip.sh",
+			want: []string{
+				"cp packaging/windows/ensure-codex.ps1",
+				"cp packaging/windows/codex-manifest.json",
+			},
+		},
+	} {
+		body, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(string(body), want) {
+				t.Fatalf("%s missing %q", tc.path, want)
+			}
+		}
+	}
+}
+
+func TestWindowsInstallersDeleteObsoleteBundledPayloads(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want []string
+	}{
+		{
+			path: "../../packaging/windows/install.ps1",
+			want: []string{
+				"$obsoletePayloads = @(",
+				"'codex.exe'",
+				"('vscode-installer' + '.exe')",
+				"('vscode-manifest' + '.json')",
+				"Remove-Item -LiteralPath $obsoletePath -Force",
+			},
+		},
+		{
+			path: "../../packaging/windows/installer.iss",
+			want: []string{
+				"procedure DeleteObsoleteBundledPayloads();",
+				"DeleteFile(ExpandConstant('{app}\\codex.exe'))",
+				"DeleteFile(ExpandConstant('{app}\\vscode-installer' + '.exe'))",
+				"DeleteFile(ExpandConstant('{app}\\vscode-manifest' + '.json'))",
+			},
+		},
+	} {
+		body, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(string(body), want) {
+				t.Fatalf("%s missing %q", tc.path, want)
+			}
+		}
+	}
+}
+
+func TestWindowsEnsureCodexScriptCallsAgentctlInstallCodex(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-codex.ps1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "& (Join-Path $InstallDir 'ensure-vscode.ps1') -ManifestPath (Join-Path $InstallDir 'vscode-manifest.json') -LocalInstallerPath (Join-Path $srcDir 'vscode-installer.exe')"
-	if !strings.Contains(string(body), want) {
-		t.Fatalf("install.ps1 should pass the portable bundled VS Code installer to ensure-vscode.ps1; missing %q", want)
+	s := string(body)
+	for _, want := range []string{
+		"param(",
+		"ManifestPath",
+		"AgentctlPath",
+		"install-codex",
+		"--manifest",
+		"--dest-root",
+		"--cache-dir",
+		"agentserver-app",
+		"cache\\codex",
+		"Set-ScriptOutputEncoding",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-codex.ps1 missing %q", want)
+		}
 	}
 }
 
@@ -387,7 +622,14 @@ func TestWindowsDriverCodexPromptsPackageUsesConcisePrompt(t *testing.T) {
 	}
 
 	out := filepath.Join(t.TempDir(), "driver-codex-prompts.tar.gz")
-	cmd := exec.Command("python3", "../../scripts/package-driver-codex-prompts.py", out)
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("python3 is not available in the Windows-target test environment")
+		}
+		t.Fatal(err)
+	}
+	cmd := exec.Command(python, "../../scripts/package-driver-codex-prompts.py", out)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("package-driver-codex-prompts.py: %v\n%s", err, output)
 	}
@@ -518,34 +760,6 @@ func TestWindowsPortableInstallerPromptsWithExistingMachineNameDefault(t *testin
 	}
 }
 
-func TestWindowsPortableInstallerStagesBundledCodexForAllModesBeforeFrontend(t *testing.T) {
-	body, err := os.ReadFile("../../packaging/windows/install.ps1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(body)
-	for _, want := range []string{
-		"$codexSrc = Join-Path $srcDir 'codex.exe'",
-		"$codexBinDir = Join-Path $env:LOCALAPPDATA \"agentserver-app\\bin\"",
-		"$codexDst = Join-Path $codexBinDir 'codex.exe'",
-		"Copy-Item $codexSrc $codexDst -Force",
-	} {
-		if !strings.Contains(s, want) {
-			t.Fatalf("install.ps1 should stage bundled codex.exe for local slaves; missing %q", want)
-		}
-	}
-
-	stage := strings.Index(s, "$codexSrc = Join-Path $srcDir 'codex.exe'")
-	minimalBranch := strings.Index(s, "if ($MinimalVSCode)")
-	codexDesktopMode := strings.Index(s, "Writing install mode codex_desktop")
-	if stage < 0 || minimalBranch < 0 || codexDesktopMode < 0 {
-		t.Fatal("install.ps1 missing codex staging, frontend branch, or codex_desktop setup marker")
-	}
-	if stage > minimalBranch || stage > codexDesktopMode {
-		t.Fatal("install.ps1 must stage bundled codex.exe before mode-specific frontend setup so default Codex Desktop installs support local slaves")
-	}
-}
-
 func TestWindowsPortableInstallerDoesNotAbortWhenShortcutCreationFails(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/install.ps1")
 	if err != nil {
@@ -598,37 +812,6 @@ func TestWindowsInnoInstallerInitializesMachineBeforeFrontend(t *testing.T) {
 	}
 }
 
-func TestWindowsInnoInstallerStagesBundledCodexForAllModesBeforeFrontend(t *testing.T) {
-	body, err := os.ReadFile("../../packaging/windows/installer.iss")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(body)
-	for _, want := range []string{
-		"procedure StageBundledCodexForLocalSlaves();",
-		"CodexBinDir := AddBackslash(LocalAppData) + 'agentserver-app\\bin';",
-		"CodexSrc := ExpandConstant('{app}\\codex.exe');",
-		"CodexDst := AddBackslash(CodexBinDir) + 'codex.exe';",
-		"FileCopy(CodexSrc, CodexDst, False)",
-		"StageBundledCodexForLocalSlaves();",
-	} {
-		if !strings.Contains(s, want) {
-			t.Fatalf("installer.iss should stage bundled codex.exe for local slaves; missing %q", want)
-		}
-	}
-
-	machine := strings.Index(s, "RunEstimatedPowerShellStep('machine'")
-	stage := strings.LastIndex(s, "StageBundledCodexForLocalSlaves();")
-	codexFrontend := strings.Index(s, "RunEstimatedPowerShellStep('codex-mode'")
-	vscodeFrontend := strings.Index(s, "RunEstimatedPowerShellStep('vscode-mode'")
-	if machine < 0 || stage < 0 || codexFrontend < 0 || vscodeFrontend < 0 {
-		t.Fatal("installer.iss missing machine setup, codex staging, or frontend setup marker")
-	}
-	if machine > stage || stage > codexFrontend || stage > vscodeFrontend {
-		t.Fatal("installer.iss must stage bundled codex.exe after machine setup and before mode-specific frontend setup")
-	}
-}
-
 func TestWindowsInnoInstallerInstallsDriverSupportBeforeFrontend(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
@@ -646,15 +829,15 @@ func TestWindowsInnoInstallerInstallsDriverSupportBeforeFrontend(t *testing.T) {
 			t.Fatalf("installer.iss should install driver support during install; missing %q", want)
 		}
 	}
-	stage := strings.LastIndex(s, "StageBundledCodexForLocalSlaves();")
+	runtime := strings.Index(s, "RunEstimatedPowerShellStep('codex-runtime'")
 	support := strings.Index(s, "RunEstimatedPowerShellStep('driver-support'")
 	codexFrontend := strings.Index(s, "RunEstimatedPowerShellStep('codex-mode'")
 	vscodeFrontend := strings.Index(s, "RunEstimatedPowerShellStep('vscode-mode'")
-	if stage < 0 || support < 0 || codexFrontend < 0 || vscodeFrontend < 0 {
-		t.Fatal("installer.iss missing stage/support/frontend markers")
+	if runtime < 0 || support < 0 || codexFrontend < 0 || vscodeFrontend < 0 {
+		t.Fatal("installer.iss missing codex runtime/support/frontend markers")
 	}
-	if stage > support || support > codexFrontend || support > vscodeFrontend {
-		t.Fatal("installer.iss must install driver support after staging codex.exe and before mode-specific frontend setup")
+	if runtime > support || support > codexFrontend || support > vscodeFrontend {
+		t.Fatal("installer.iss must install driver support after preparing Codex runtime and before mode-specific frontend setup")
 	}
 }
 
@@ -848,38 +1031,6 @@ func TestWindowsPortableInstallerStopsRunningProcessesBeforeCopy(t *testing.T) {
 	copyStart := strings.Index(s, "# Mkdir + copy")
 	if stopCall < 0 || copyStart < 0 || stopCall >= copyStart {
 		t.Fatal("install.ps1 must stop running processes before copying payload files")
-	}
-}
-
-func TestWindowsPackageScriptsDeleteBadVSCodePartFiles(t *testing.T) {
-	for _, path := range []string{
-		"../../scripts/package-windows.sh",
-		"../../scripts/package-windows-zip.sh",
-	} {
-		t.Run(path, func(t *testing.T) {
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s := string(body)
-			for _, marker := range []string{
-				`if [[ "$local_size" != "$VSCODE_SIZE" ]]; then`,
-				`if [[ "$local_sum" != "$VSCODE_SHA256" ]]; then`,
-			} {
-				start := strings.Index(s, marker)
-				if start < 0 {
-					t.Fatalf("%s missing validation block %q", path, marker)
-				}
-				end := strings.Index(s[start:], "\n  fi")
-				if end < 0 {
-					t.Fatalf("%s validation block %q missing fi", path, marker)
-				}
-				block := s[start : start+end]
-				if !strings.Contains(block, `rm -f "$VSCODE_CACHE.part"`) {
-					t.Fatalf("%s validation block %q should delete bad partial file:\n%s", path, marker, block)
-				}
-			}
-		})
 	}
 }
 
@@ -1109,7 +1260,7 @@ func TestPlanInstall_Unsupported(t *testing.T) {
 func TestInstallAndDetect_InstallOK_DetectOK(t *testing.T) {
 	install := func(context.Context, string, InstallPlan) error { return nil }
 	detect := func() (Detected, error) {
-		return Detected{Installed: true, Path: "/x/code", Version: LockedVersion}, nil
+		return Detected{Installed: true, Path: "/x/code", Version: "1.85.0"}, nil
 	}
 	det, err := InstallAndDetect(context.Background(), "/tmp/x.exe", InstallPlan{}, install, detect)
 	if err != nil {
@@ -1140,13 +1291,13 @@ func TestInstallAndDetect_InstallFails_DetectFindsIt(t *testing.T) {
 		return errors.New("exit status 0xc0000409")
 	}
 	detect := func() (Detected, error) {
-		return Detected{Installed: true, Path: "/x/code", Version: LockedVersion}, nil
+		return Detected{Installed: true, Path: "/x/code", Version: "1.85.0"}, nil
 	}
 	det, err := InstallAndDetect(context.Background(), "/tmp/x.exe", InstallPlan{}, install, detect)
 	if err != nil {
 		t.Fatalf("expected fallback success, got: %v", err)
 	}
-	if det.Path != "/x/code" || det.Version != LockedVersion {
+	if det.Path != "/x/code" || det.Version != "1.85.0" {
 		t.Errorf("got %+v", det)
 	}
 }
@@ -1165,20 +1316,26 @@ func TestInstallAndDetect_InstallFails_DetectDoesntFindIt(t *testing.T) {
 	if !strings.Contains(err.Error(), "ERROR 5: access denied") {
 		t.Errorf("install err should be wrapped: %v", err)
 	}
+	if strings.Contains(err.Error(), "1.96.0") {
+		t.Errorf("Store bootstrapper error should not mention a locked VS Code version: %v", err)
+	}
 }
 
-func TestInstallAndDetect_InstallFails_DetectFindsWrongVersion(t *testing.T) {
-	// e.g. user already had VS Code 1.85 installed; install fails for real;
-	// don't pretend it succeeded.
+func TestInstallAndDetect_InstallFails_DetectFindsAnyVersion(t *testing.T) {
+	// Store bootstrapper installs the current Store version; if post-install
+	// detection finds VS Code, accept that instead of requiring a pinned build.
 	install := func(context.Context, string, InstallPlan) error {
-		return errors.New("disk full")
+		return errors.New("exit status 0xc0000409")
 	}
 	detect := func() (Detected, error) {
 		return Detected{Installed: true, Path: "/x/code", Version: "1.85.0"}, nil
 	}
-	_, err := InstallAndDetect(context.Background(), "/tmp/x.exe", InstallPlan{}, install, detect)
-	if err == nil {
-		t.Fatal("expected error when detected version != LockedVersion")
+	det, err := InstallAndDetect(context.Background(), "/tmp/x.exe", InstallPlan{}, install, detect)
+	if err != nil {
+		t.Fatalf("expected fallback success with detected VS Code, got: %v", err)
+	}
+	if det.Path != "/x/code" || det.Version != "1.85.0" {
+		t.Errorf("got %+v", det)
 	}
 }
 

@@ -17,7 +17,6 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
-	"github.com/agentserver/agentserver-pkg/internal/download"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
@@ -50,30 +49,15 @@ func runTestInstallVSCode() {
 		return
 	}
 	plan := vscode.PlanInstall()
-	cache := filepath.Join(p.CacheDir, "vscode-"+vscode.LockedVersion+plan.FileExt)
+	cache := filepath.Join(p.CacheDir, "vscode-store-bootstrapper"+plan.FileExt)
 	if err := os.MkdirAll(p.CacheDir, 0o755); err != nil {
 		die(err)
 	}
-	fmt.Printf("Downloading VS Code %s from %s ...\n", vscode.LockedVersion, plan.URL)
-	progress := make(chan download.ProgressEvent, 16)
-	done := make(chan struct{})
-	go func() {
-		var last time.Time
-		for ev := range progress {
-			if time.Since(last) < 2*time.Second {
-				continue
-			}
-			last = time.Now()
-			fmt.Printf("  %s\n", ev.String())
-		}
-		close(done)
-	}()
-	if err := download.DownloadResumable(ctx, plan.URL, cache, plan.SHA256, progress); err != nil {
-		die(fmt.Errorf("download: %w", err))
+	fmt.Printf("Downloading VS Code Microsoft Store bootstrapper from %s ...\n", plan.BootstrapperURL)
+	if err := vscode.DownloadBootstrapper(ctx, plan.BootstrapperURL, cache, nil); err != nil {
+		die(fmt.Errorf("download bootstrapper: %w", err))
 	}
-	close(progress)
-	<-done
-	fmt.Println("Download done, running installer...")
+	fmt.Println("Download done, running Microsoft Store bootstrapper...")
 	det2, err := vscode.InstallAndDetect(ctx, cache, plan, vscode.SilentInstall, vscode.Detect)
 	if err != nil {
 		die(fmt.Errorf("install: %w", err))
@@ -98,11 +82,8 @@ func recordTestVSCodeInstall(s *state.State, p paths.Paths, det vscode.Detected,
 	s.Onboarding.AddCompleted("vscode_installed")
 }
 
-// runTestDownloadCodex fetches codex.exe to the configured bin path. Idempotent.
+// runTestDownloadCodex fetches the Codex runtime to the configured bin path. Idempotent.
 func runTestDownloadCodex() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
 	p, err := paths.Default()
 	if err != nil {
 		die(err)
@@ -111,32 +92,11 @@ func runTestDownloadCodex() {
 		fmt.Printf("codex.exe already at %s\n", p.CodexExePath)
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(p.CodexExePath), 0o755); err != nil {
+	exe, _ := os.Executable()
+	manifest := filepath.Join(filepath.Dir(exe), "codex-manifest.json")
+	if err := runInstallCodex([]string{"--manifest", manifest}); err != nil {
 		die(err)
 	}
-	url := "https://github.com/openai/codex/releases/download/rust-v0.136.0/" +
-		"codex-x86_64-pc-windows-msvc.exe"
-	fmt.Printf("Downloading codex.exe from %s ...\n", url)
-	progress := make(chan download.ProgressEvent, 16)
-	done := make(chan struct{})
-	go func() {
-		var last time.Time
-		for ev := range progress {
-			if time.Since(last) < 2*time.Second {
-				continue
-			}
-			last = time.Now()
-			fmt.Printf("  %s\n", ev.String())
-		}
-		close(done)
-	}()
-	if err := download.DownloadResumable(ctx, url, p.CodexExePath, "", progress); err != nil {
-		die(fmt.Errorf("download codex: %w", err))
-	}
-	close(progress)
-	<-done
-	info, _ := os.Stat(p.CodexExePath)
-	fmt.Printf("codex.exe downloaded to %s (%d bytes)\n", p.CodexExePath, info.Size())
 }
 
 // runTestConfigure writes settings.json, config.toml, local proxy env, and installs extensions.

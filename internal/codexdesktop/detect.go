@@ -11,7 +11,7 @@ type Detected struct {
 	Version   string
 }
 
-var ErrNotFound = errors.New("Codex Desktop not found")
+var ErrNotFound = errors.New("codex desktop not found")
 
 const detectNotFoundSentinel = "__codex_desktop_not_found__"
 
@@ -25,10 +25,10 @@ func detectedFromPowerShellOutput(out []byte, err error) (Detected, error) {
 		if output == detectNotFoundSentinel {
 			return Detected{Installed: false}, ErrNotFound
 		}
-		return Detected{Installed: false}, fmt.Errorf("detect Codex Desktop with PowerShell failed: %w; output: %s", err, output)
+		return Detected{Installed: false}, fmt.Errorf("detect codex desktop with PowerShell failed: %w; output: %s", err, output)
 	}
 	if output == "" {
-		return Detected{Installed: false}, errors.New("detect Codex Desktop with PowerShell returned empty output")
+		return Detected{Installed: false}, errors.New("detect codex desktop with PowerShell returned empty output")
 	}
 	if output == detectNotFoundSentinel {
 		return Detected{Installed: false}, ErrNotFound

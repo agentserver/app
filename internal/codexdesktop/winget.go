@@ -35,13 +35,13 @@ func ClassifyWingetError(err error, output string) error {
 	lower := strings.ToLower(output)
 	trimmed := strings.TrimSpace(output)
 	if errors.Is(err, ErrUnsupportedPlatform) {
-		return fmt.Errorf("Codex Desktop winget install is only supported on Windows: %w", err)
+		return fmt.Errorf("codex desktop winget install is only supported on Windows: %w", err)
 	}
 	if errors.Is(err, ErrWingetNotFound) {
 		return fmt.Errorf("未找到 winget；请安装或更新 Windows App Installer / Windows Package Manager 后重试: %w", err)
 	}
 	if isWingetSourceUnavailable(lower) {
-		return fmt.Errorf("Microsoft Store source 不可用；请检查 Store 源、网络或企业策略。winget 输出: %s", trimmed)
+		return fmt.Errorf("microsoft store source 不可用；请检查 Store 源、网络或企业策略。winget 输出: %s", trimmed)
 	}
 	if strings.Contains(lower, "network") || strings.Contains(lower, "internet") || strings.Contains(lower, "connection") {
 		return fmt.Errorf("网络不可用，无法通过 winget 安装 Codex Desktop。winget 输出: %s", trimmed)

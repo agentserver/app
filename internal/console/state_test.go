@@ -962,10 +962,9 @@ func TestQuotaWindowsRoundsRemainingAndClampsAtZero(t *testing.T) {
 }
 
 type testSlaveRunner struct {
-	pid           int
-	authURL       string
-	startedConfig string
-	stopped       map[int]bool
+	pid     int
+	authURL string
+	stopped map[int]bool
 }
 
 func writeConsoleSlaveConfig(t *testing.T, path, serverURL, workspaceID, sandboxID string) {

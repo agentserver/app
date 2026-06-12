@@ -84,7 +84,7 @@ func TestEnsureInstalledClassifiesWingetFailure(t *testing.T) {
 			return "source msstore was not found", errors.New("exit 1")
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "Microsoft Store source") {
+	if err == nil || !strings.Contains(err.Error(), "microsoft store source") {
 		t.Fatalf("err=%v", err)
 	}
 }

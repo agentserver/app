@@ -27,7 +27,7 @@ func TestClassifyWingetError(t *testing.T) {
 		want string
 	}{
 		{name: "missing", err: ErrWingetNotFound, want: "Windows App Installer"},
-		{name: "source", err: errors.New("exit 1"), out: "msstore source was not found", want: "Microsoft Store source"},
+		{name: "source", err: errors.New("exit 1"), out: "msstore source was not found", want: "microsoft store source"},
 		{name: "network", err: errors.New("exit 1"), out: "network failure", want: "网络"},
 		{name: "generic", err: errors.New("exit 7"), out: "plain failure", want: "winget install Codex"},
 	} {
@@ -49,7 +49,7 @@ func TestClassifyWingetErrorWrapsWingetNotFound(t *testing.T) {
 
 func TestClassifyWingetErrorDoesNotTreatAnyMsstoreOutputAsSourceFailure(t *testing.T) {
 	got := ClassifyWingetError(errors.New("exit 1"), "msstore package lookup returned no matching package")
-	if strings.Contains(got.Error(), "Microsoft Store source") {
+	if strings.Contains(got.Error(), "microsoft store source") {
 		t.Fatalf("err=%v, want generic winget failure", got)
 	}
 	if !strings.Contains(got.Error(), "winget install Codex") {
@@ -59,7 +59,7 @@ func TestClassifyWingetErrorDoesNotTreatAnyMsstoreOutputAsSourceFailure(t *testi
 
 func TestClassifyWingetErrorDoesNotTreatPackageNotFoundInSourceAsSourceFailure(t *testing.T) {
 	got := ClassifyWingetError(errors.New("exit 1"), "package Codex was not found in source msstore")
-	if strings.Contains(got.Error(), "Microsoft Store source") {
+	if strings.Contains(got.Error(), "microsoft store source") {
 		t.Fatalf("err=%v, want generic winget failure", got)
 	}
 	if !strings.Contains(got.Error(), "winget install Codex") {

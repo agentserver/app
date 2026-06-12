@@ -481,13 +481,6 @@ func completedAgentserverBaseURL(store *state.Store) string {
 	return strings.TrimSpace(st.Agentserver.BaseURL)
 }
 
-func newCompletedStateOrchestrator(store *state.Store) ui.Orchestrator {
-	return completedStateOrchestrator{
-		Orchestrator: ui.NewNoopOrchestrator(),
-		store:        store,
-	}
-}
-
 func (o completedStateOrchestrator) State(ctx context.Context) (ui.SanitizedState, error) {
 	if o.store == nil {
 		return o.Orchestrator.State(ctx)
@@ -592,6 +585,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		EmbeddedVSIXPath:                  joinExe(installDir, "agentserver-app.vsix"),
 		CodexAbsPath:                      p.CodexExePath,
 		BundledCodexPath:                  joinExe(installDir, "codex.exe"),
+		CodexManifestPath:                 joinExe(installDir, "codex-manifest.json"),
 		LoomDriverPath:                    joinExe(installDir, "driver-agent.exe"),
 		LoomConfigPath:                    filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml"),
 		LauncherExePath:                   joinExe(installDir, "launcher.exe"),

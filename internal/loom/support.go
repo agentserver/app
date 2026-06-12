@@ -115,7 +115,7 @@ func extractSkillsArchive(archivePath, destRoot string) error {
 		switch h.Typeflag {
 		case tar.TypeDir:
 			return os.MkdirAll(target, 0o755)
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
@@ -155,7 +155,7 @@ func readArchiveFile(archivePath, want string) ([]byte, bool, error) {
 		if cleanName != want {
 			return nil
 		}
-		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA {
+		if h.Typeflag != tar.TypeReg {
 			return fmt.Errorf("tar entry %s is not a regular file", h.Name)
 		}
 		out, err = io.ReadAll(r)

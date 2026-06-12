@@ -15,7 +15,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/branding"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
-	"github.com/agentserver/agentserver-pkg/internal/download"
+	"github.com/agentserver/agentserver-pkg/internal/codexruntime"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/loom"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
@@ -27,18 +27,6 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
-
-// codexDownloadURL is the URL we fetch codex.exe from. Pinned to a
-// specific release tag so the install is reproducible. Bumping the
-// version requires updating the tag below; openai/codex does NOT
-// publish a SHA256 for the standalone .exe (only for -package-.tar.gz),
-// so verification relies on HTTPS + GitHub trust.
-const codexReleaseTag = "rust-v0.136.0"
-
-func codexDownloadURL() string {
-	return "https://github.com/openai/codex/releases/download/" +
-		codexReleaseTag + "/codex-x86_64-pc-windows-msvc.exe"
-}
 
 type Deps struct {
 	State                             *state.Store
@@ -55,13 +43,13 @@ type Deps struct {
 	EmbeddedVSIXPath                  string
 	CodexAbsPath                      string
 	BundledCodexPath                  string
+	CodexManifestPath                 string
+	CodexRuntimeEnsure                func(context.Context, string, string, string) error
 	LoomDriverPath                    string
 	LoomConfigPath                    string
 	// CodexDesktopCodexPath is the codex CLI used by loom's internal planner.
 	// Minimal VS Code mode uses CodexAbsPath when this is empty.
 	CodexDesktopCodexPath string
-	// CodexDownloadURL overrides the default GitHub Releases URL when set.
-	CodexDownloadURL string
 
 	CodexDesktopEnsure func(context.Context) (codexdesktop.Detected, error)
 	CodexDesktopOpen   func(string) error
@@ -392,10 +380,12 @@ func (r *realOrchestrator) EnsureVSCode(ctx context.Context, ch chan<- ProgressE
 	}
 	plan := vscode.PlanInstall()
 	cache := filepath.Join(r.d.VSCodeUserDataDir, "..", "cache",
-		"vscode-"+vscode.LockedVersion+plan.FileExt)
-	if err := download.DownloadResumable(ctx, plan.URL, cache, plan.SHA256,
-		downloadAdapter(ch)); err != nil {
-		return fmt.Errorf("download VS Code: %w", err)
+		"vscode-store-bootstrapper"+plan.FileExt)
+	if ch != nil {
+		ch <- ProgressEvent{Stage: "download", Msg: "正在下载 VS Code 微软商店引导器..."}
+	}
+	if err := vscode.DownloadBootstrapper(ctx, plan.BootstrapperURL, cache, nil); err != nil {
+		return fmt.Errorf("download VS Code Microsoft Store bootstrapper: %w", err)
 	}
 	det2, err := vscode.InstallAndDetect(ctx, cache, plan, vscode.SilentInstall, vscode.Detect)
 	if err != nil {
@@ -408,22 +398,6 @@ func (r *realOrchestrator) EnsureVSCode(ctx context.Context, ch chan<- ProgressE
 		s.Onboarding.AddCompleted("vscode_installed")
 		return nil
 	})
-}
-
-func downloadAdapter(ui chan<- ProgressEvent) chan<- download.ProgressEvent {
-	if ui == nil {
-		return nil
-	}
-	out := make(chan download.ProgressEvent, 16)
-	go func() {
-		for ev := range out {
-			ui <- ProgressEvent{
-				Stage: ev.Stage, Downloaded: ev.Downloaded, Total: ev.Total,
-				SpeedBps: ev.SpeedBps, Msg: ev.Msg,
-			}
-		}
-	}()
-	return out
 }
 
 func (r *realOrchestrator) configureSharedCodex(ctx context.Context) error {
@@ -613,17 +587,21 @@ func (r *realOrchestrator) ConfigureVSCode(ctx context.Context) error {
 			}
 		}
 		if _, statErr := os.Stat(r.d.CodexAbsPath); os.IsNotExist(statErr) {
-			url := r.d.CodexDownloadURL
-			if url == "" {
-				url = codexDownloadURL()
+			ensure := r.d.CodexRuntimeEnsure
+			if ensure == nil {
+				ensure = func(ctx context.Context, manifestPath, destRoot, cacheDir string) error {
+					_, err := codexruntime.Ensure(ctx, codexruntime.Options{
+						ManifestPath: manifestPath,
+						DestRoot:     destRoot,
+						CacheDir:     cacheDir,
+					})
+					return err
+				}
 			}
-			// SHA256 left empty: openai/codex publishes SHA256SUMS only for
-			// the -package- .tar.gz variants, not the standalone .exe.
-			// We trust HTTPS + GitHub Releases. Upgrade path: pin a sha
-			// once OpenAI publishes one for the .exe.
-			if err := download.DownloadResumable(ctx, url,
-				r.d.CodexAbsPath, "", nil); err != nil {
-				return fmt.Errorf("download codex: %w", err)
+			destRoot := filepath.Dir(filepath.Dir(r.d.CodexAbsPath))
+			cacheDir := filepath.Join(destRoot, "cache", "codex")
+			if err := ensure(ctx, r.d.CodexManifestPath, destRoot, cacheDir); err != nil {
+				return fmt.Errorf("ensure codex runtime: %w", err)
 			}
 		}
 	}
