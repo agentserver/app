@@ -1,6 +1,10 @@
 package updater
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestManifestValidateAcceptsAssetsHTTPSInstaller(t *testing.T) {
 	m := Manifest{
@@ -179,5 +183,15 @@ func TestManifestValidateRejectsURLOutsideAssetsHost(t *testing.T) {
 	}
 	if err := m.Validate(); err == nil {
 		t.Fatal("expected host allowlist error")
+	}
+}
+
+func TestManifestProductionCodeHasNoInstallerHostOverride(t *testing.T) {
+	body, err := os.ReadFile("manifest.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "extraAllowedInstallerHosts") {
+		t.Fatalf("manifest.go should not contain a production installer host override:\n%s", body)
 	}
 }

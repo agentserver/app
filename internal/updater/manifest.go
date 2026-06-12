@@ -9,8 +9,6 @@ import (
 
 const AssetsHost = "assets.agent.cs.ac.cn"
 
-var extraAllowedInstallerHosts = map[string]bool{}
-
 type Manifest struct {
 	Version string `json:"version"`
 	URL     string `json:"url"`
@@ -34,7 +32,7 @@ func (m Manifest) Validate() error {
 		return fmt.Errorf("installer url must use https")
 	}
 	host := strings.ToLower(u.Hostname())
-	if host != AssetsHost && !extraAllowedInstallerHosts[host] {
+	if host != AssetsHost {
 		return fmt.Errorf("installer url host %q is not allowed", u.Hostname())
 	}
 	if err := validateSHA256(m.SHA256); err != nil {

@@ -6,9 +6,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,7 +37,7 @@ func TestServiceCheckReportsAvailableUpdate(t *testing.T) {
 		CurrentVersion: "0.1.1",
 		ManifestURL:    server.URL,
 		State:          store,
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		Now:            func() time.Time { return now },
 	}
 	got, err := svc.Check(context.Background(), false)
@@ -85,7 +85,7 @@ func TestServiceCheckReturnsErrorStateOnCorruptPersistedState(t *testing.T) {
 		CurrentVersion: "0.1.1",
 		ManifestURL:    server.URL,
 		State:          NewStateStore(statePath),
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 	}.Check(context.Background(), false)
 	if err == nil {
 		t.Fatal("expected corrupt state load error")
@@ -120,7 +120,7 @@ func TestServiceCheckReportsLatestForEqualVersion(t *testing.T) {
 		CurrentVersion: "0.1.1",
 		ManifestURL:    server.URL,
 		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		Now:            func() time.Time { return now },
 	}.Check(context.Background(), false)
 	if err != nil {
@@ -166,7 +166,7 @@ func TestServiceCheckReturnsErrorStateWhenFinalSaveFails(t *testing.T) {
 		CurrentVersion: "0.1.1",
 		ManifestURL:    server.URL,
 		State:          NewStateStore(statePath),
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 	}.Check(context.Background(), false)
 	if err == nil {
 		t.Fatal("expected final save error")
@@ -205,7 +205,7 @@ func TestServiceAutomaticCheckSkipsWhenRecentlyChecked(t *testing.T) {
 		CurrentVersion: "0.1.1",
 		ManifestURL:    server.URL,
 		State:          store,
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		Now:            func() time.Time { return now },
 		AutoCheckEvery: time.Hour,
 	}.Check(context.Background(), true)
@@ -244,7 +244,7 @@ func TestServiceAutomaticCheckReturnsErrorStateWhenRefreshedStateSaveFails(t *te
 			},
 			saveErrs: []error{saveErr, nil},
 		},
-		Client: server.Client(),
+		Client: assetsHostClient(t, server),
 		Now:    func() time.Time { return now },
 	}.Check(context.Background(), true)
 	if err == nil {
@@ -283,7 +283,7 @@ func TestServiceAutomaticCheckDefaultsToDailyThrottle(t *testing.T) {
 		CurrentVersion: "0.1.1",
 		ManifestURL:    server.URL,
 		State:          store,
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		Now:            func() time.Time { return now },
 	}.Check(context.Background(), true)
 	if err != nil {
@@ -311,7 +311,7 @@ func TestServiceCheckReturnsErrorStateWhenCheckingStateSaveFails(t *testing.T) {
 		CurrentVersion: "0.1.1",
 		ManifestURL:    server.URL,
 		State:          &fakeStateStore{loadState: State{Status: StatusIdle}, saveErrs: []error{saveErr, nil}},
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		Now:            func() time.Time { return now },
 	}.Check(context.Background(), false)
 	if err == nil {
@@ -340,11 +340,9 @@ func TestServiceDownloadVerifiesSHA256AndStartsInstaller(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	allowTestInstallerHost(t, server.URL)
-
 	manifest := Manifest{
 		Version: "0.1.2",
-		URL:     server.URL + "/agentserver-app-0.1.2-setup.exe",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
 		SHA256:  hex.EncodeToString(sum[:]),
 		Size:    int64(len(body)),
 	}
@@ -354,7 +352,7 @@ func TestServiceDownloadVerifiesSHA256AndStartsInstaller(t *testing.T) {
 		CurrentVersion: "0.1.1",
 		CacheDir:       cacheDir,
 		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		Now:            func() time.Time { return now },
 		StartInstaller: func(ctx context.Context, path string) error {
 			startCalled = true
@@ -398,8 +396,6 @@ func TestServiceDownloadDoesNotFollowPredictablePartSymlink(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	allowTestInstallerHost(t, server.URL)
-
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatalf("Mkdir cache: %v", err)
@@ -418,13 +414,13 @@ func TestServiceDownloadDoesNotFollowPredictablePartSymlink(t *testing.T) {
 		CurrentVersion: "0.1.1",
 		CacheDir:       cacheDir,
 		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		StartInstaller: func(ctx context.Context, path string) error {
 			return nil
 		},
 	}.DownloadAndStart(context.Background(), Manifest{
 		Version: "0.1.2",
-		URL:     server.URL + "/agentserver-app-0.1.2-setup.exe",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
 		SHA256:  hex.EncodeToString(sum[:]),
 		Size:    int64(len(body)),
 	})
@@ -457,21 +453,19 @@ func TestServiceDownloadRejectsZeroSize(t *testing.T) {
 		t.Fatal("download should not start for zero manifest size")
 	}))
 	t.Cleanup(server.Close)
-	allowTestInstallerHost(t, server.URL)
-
 	startCalled := false
 	got, err := Service{
 		CurrentVersion: "0.1.1",
 		CacheDir:       filepath.Join(t.TempDir(), "cache"),
 		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		StartInstaller: func(ctx context.Context, path string) error {
 			startCalled = true
 			return nil
 		},
 	}.DownloadAndStart(context.Background(), Manifest{
 		Version: "0.1.2",
-		URL:     server.URL + "/agentserver-app-0.1.2-setup.exe",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
 		SHA256:  hex.EncodeToString(sum[:]),
 	})
 	if err == nil {
@@ -497,20 +491,18 @@ func TestServiceDownloadRejectsSizeMismatch(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	allowTestInstallerHost(t, server.URL)
-
 	got, err := Service{
 		CurrentVersion: "0.1.1",
 		CacheDir:       filepath.Join(t.TempDir(), "cache"),
 		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		StartInstaller: func(ctx context.Context, path string) error {
 			t.Fatal("StartInstaller should not be called on size mismatch")
 			return nil
 		},
 	}.DownloadAndStart(context.Background(), Manifest{
 		Version: "0.1.2",
-		URL:     server.URL + "/agentserver-app-0.1.2-setup.exe",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
 		SHA256:  hex.EncodeToString(sum[:]),
 		Size:    int64(len(body) + 1),
 	})
@@ -535,21 +527,19 @@ func TestServiceDownloadRejectsOversizedResponseBeforeVerification(t *testing.T)
 		}
 	}))
 	t.Cleanup(server.Close)
-	allowTestInstallerHost(t, server.URL)
-
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 	got, err := Service{
 		CurrentVersion: "0.1.1",
 		CacheDir:       cacheDir,
 		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		StartInstaller: func(ctx context.Context, path string) error {
 			t.Fatal("StartInstaller should not be called on oversized response")
 			return nil
 		},
 	}.DownloadAndStart(context.Background(), Manifest{
 		Version: "0.1.2",
-		URL:     server.URL + "/agentserver-app-0.1.2-setup.exe",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
 		SHA256:  hex.EncodeToString(sum[:]),
 		Size:    int64(len(declaredBody)),
 	})
@@ -574,22 +564,20 @@ func TestServiceDownloadDeletesPartOnHashMismatch(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	allowTestInstallerHost(t, server.URL)
-
 	cacheDir := filepath.Join(t.TempDir(), "cache")
 	store := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
 	got, err := Service{
 		CurrentVersion: "0.1.1",
 		CacheDir:       cacheDir,
 		State:          store,
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		StartInstaller: func(ctx context.Context, path string) error {
 			t.Fatal("StartInstaller should not be called on hash mismatch")
 			return nil
 		},
 	}.DownloadAndStart(context.Background(), Manifest{
 		Version: "0.1.2",
-		URL:     server.URL + "/agentserver-app-0.1.2-setup.exe",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
 		SHA256:  hex.EncodeToString(wrong[:]),
 		Size:    int64(len(body)),
 	})
@@ -614,8 +602,6 @@ func TestServiceDownloadReturnsStateSaveErrorBeforeInstallerStart(t *testing.T) 
 		}
 	}))
 	t.Cleanup(server.Close)
-	allowTestInstallerHost(t, server.URL)
-
 	stateParentConflict := filepath.Join(t.TempDir(), "state-parent-conflict")
 	if err := os.WriteFile(stateParentConflict, []byte("not a directory"), 0o644); err != nil {
 		t.Fatalf("Write state conflict: %v", err)
@@ -625,14 +611,14 @@ func TestServiceDownloadReturnsStateSaveErrorBeforeInstallerStart(t *testing.T) 
 		CurrentVersion: "0.1.1",
 		CacheDir:       filepath.Join(t.TempDir(), "cache"),
 		State:          NewStateStore(filepath.Join(stateParentConflict, "state.json")),
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		StartInstaller: func(ctx context.Context, path string) error {
 			startCalled = true
 			return nil
 		},
 	}.DownloadAndStart(context.Background(), Manifest{
 		Version: "0.1.2",
-		URL:     server.URL + "/agentserver-app-0.1.2-setup.exe",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
 		SHA256:  hex.EncodeToString(sum[:]),
 		Size:    int64(len(body)),
 	})
@@ -682,8 +668,6 @@ func TestServiceDownloadReturnsFinalStateSaveError(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	allowTestInstallerHost(t, server.URL)
-
 	started := false
 	stateRoot := filepath.Join(t.TempDir(), "state-root")
 	statePath := filepath.Join(stateRoot, "state.json")
@@ -691,7 +675,7 @@ func TestServiceDownloadReturnsFinalStateSaveError(t *testing.T) {
 		CurrentVersion: "0.1.1",
 		CacheDir:       filepath.Join(t.TempDir(), "cache"),
 		State:          NewStateStore(statePath),
-		Client:         server.Client(),
+		Client:         assetsHostClient(t, server),
 		StartInstaller: func(ctx context.Context, path string) error {
 			started = true
 			if err := os.Remove(statePath); err != nil {
@@ -707,7 +691,7 @@ func TestServiceDownloadReturnsFinalStateSaveError(t *testing.T) {
 		},
 	}.DownloadAndStart(context.Background(), Manifest{
 		Version: "0.1.2",
-		URL:     server.URL + "/agentserver-app-0.1.2-setup.exe",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
 		SHA256:  hex.EncodeToString(sum[:]),
 		Size:    int64(len(body)),
 	})
@@ -726,23 +710,6 @@ func TestServiceDownloadReturnsFinalStateSaveError(t *testing.T) {
 	if !strings.Contains(err.Error(), "state-root") {
 		t.Fatalf("error=%q, want final state save error", err)
 	}
-}
-
-func allowTestInstallerHost(t *testing.T, rawURL string) {
-	t.Helper()
-	u, err := http.NewRequest(http.MethodGet, rawURL, nil)
-	if err != nil {
-		t.Fatalf("parse URL %q: %v", rawURL, err)
-	}
-	host, _, err := net.SplitHostPort(u.URL.Host)
-	if err != nil {
-		host = u.URL.Hostname()
-	}
-	host = strings.ToLower(host)
-	extraAllowedInstallerHosts[host] = true
-	t.Cleanup(func() {
-		delete(extraAllowedInstallerHosts, host)
-	})
 }
 
 func assertCacheDirEmpty(t *testing.T, cacheDir string) {
@@ -782,4 +749,41 @@ func (s *fakeStateStore) Save(state State) error {
 	err := s.saveErrs[0]
 	s.saveErrs = s.saveErrs[1:]
 	return err
+}
+
+func assetsInstallerURL(path string) string {
+	return "https://" + AssetsHost + path
+}
+
+func assetsHostClient(t *testing.T, server *httptest.Server) *http.Client {
+	t.Helper()
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	client := server.Client()
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Transport = assetsHostRewriteTransport{base: base, target: target}
+	return client
+}
+
+type assetsHostRewriteTransport struct {
+	base   http.RoundTripper
+	target *url.URL
+}
+
+func (t assetsHostRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.EqualFold(req.URL.Hostname(), AssetsHost) {
+		clone := req.Clone(req.Context())
+		u := *clone.URL
+		u.Scheme = t.target.Scheme
+		u.Host = t.target.Host
+		clone.URL = &u
+		clone.Host = ""
+		return t.base.RoundTrip(clone)
+	}
+	return t.base.RoundTrip(req)
 }
