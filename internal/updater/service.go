@@ -22,11 +22,16 @@ type Service struct {
 	CurrentVersion string
 	ManifestURL    string
 	CacheDir       string
-	State          *StateStore
+	State          stateStore
 	Client         *http.Client
 	StartInstaller func(context.Context, string) error
 	Now            func() time.Time
 	AutoCheckEvery time.Duration
+}
+
+type stateStore interface {
+	Load() (State, error)
+	Save(State) error
 }
 
 func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
@@ -136,10 +141,12 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 	promoted = true
 
 	start := s.StartInstaller
+	startContext := ctx
 	if start == nil {
 		start = StartInstaller
+		startContext = context.Background()
 	}
-	if err := start(ctx, finalPath); err != nil {
+	if err := start(startContext, finalPath); err != nil {
 		return s.saveError(now, err)
 	}
 	state := State{

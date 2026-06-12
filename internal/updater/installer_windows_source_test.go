@@ -15,8 +15,10 @@ func TestWindowsStartInstallerDetachesFromCallerContext(t *testing.T) {
 	if strings.Contains(source, "exec.CommandContext") {
 		t.Fatalf("installer_windows.go should not tie installer process lifetime to caller context:\n%s", source)
 	}
+	if strings.Contains(source, "ctx.Err()") {
+		t.Fatalf("installer_windows.go should not gate startup on caller context cancellation:\n%s", source)
+	}
 	for _, want := range []string{
-		"ctx.Err()",
 		"exec.Command(",
 		"process.HideWindow(cmd)",
 		"cmd.Start()",

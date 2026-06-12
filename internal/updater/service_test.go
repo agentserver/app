@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -224,6 +225,7 @@ func TestServiceAutomaticCheckSkipsWhenRecentlyChecked(t *testing.T) {
 
 func TestServiceAutomaticCheckReturnsErrorStateWhenRefreshedStateSaveFails(t *testing.T) {
 	now := time.Date(2026, 6, 12, 13, 15, 0, 0, time.UTC)
+	saveErr := errors.New("refreshed state save failed")
 	called := false
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -231,39 +233,19 @@ func TestServiceAutomaticCheckReturnsErrorStateWhenRefreshedStateSaveFails(t *te
 	}))
 	t.Cleanup(server.Close)
 
-	stateRoot := filepath.Join(t.TempDir(), "state-root")
-	statePath := filepath.Join(stateRoot, "state.json")
-	store := NewStateStore(statePath)
-	if err := store.Save(State{
-		CurrentVersion: "0.1.0",
-		LastCheckedAt:  now.Add(-time.Hour),
-		Status:         StatusLatest,
-	}); err != nil {
-		t.Fatalf("Save prior state: %v", err)
-	}
-	saveHookCalled := false
-	store.beforeSave = func() {
-		if saveHookCalled {
-			return
-		}
-		saveHookCalled = true
-		if err := os.Remove(statePath); err != nil {
-			t.Fatalf("Remove state file: %v", err)
-		}
-		if err := os.Remove(stateRoot); err != nil {
-			t.Fatalf("Remove state dir: %v", err)
-		}
-		if err := os.WriteFile(stateRoot, []byte("not a directory"), 0o644); err != nil {
-			t.Fatalf("Write state root conflict: %v", err)
-		}
-	}
-
 	got, err := Service{
 		CurrentVersion: "0.1.1",
 		ManifestURL:    server.URL,
-		State:          store,
-		Client:         server.Client(),
-		Now:            func() time.Time { return now },
+		State: &fakeStateStore{
+			loadState: State{
+				CurrentVersion: "0.1.0",
+				LastCheckedAt:  now.Add(-time.Hour),
+				Status:         StatusLatest,
+			},
+			saveErrs: []error{saveErr, nil},
+		},
+		Client: server.Client(),
+		Now:    func() time.Time { return now },
 	}.Check(context.Background(), true)
 	if err == nil {
 		t.Fatal("expected refreshed state save error")
@@ -274,7 +256,7 @@ func TestServiceAutomaticCheckReturnsErrorStateWhenRefreshedStateSaveFails(t *te
 	if got.Status != StatusError {
 		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
 	}
-	if !strings.Contains(got.LastError, "state-root") {
+	if !strings.Contains(got.LastError, saveErr.Error()) {
 		t.Fatalf("LastError=%q, want state save error", got.LastError)
 	}
 }
@@ -317,6 +299,7 @@ func TestServiceAutomaticCheckDefaultsToDailyThrottle(t *testing.T) {
 
 func TestServiceCheckReturnsErrorStateWhenCheckingStateSaveFails(t *testing.T) {
 	now := time.Date(2026, 6, 12, 13, 45, 0, 0, time.UTC)
+	saveErr := errors.New("checking state save failed")
 	called := false
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -324,24 +307,10 @@ func TestServiceCheckReturnsErrorStateWhenCheckingStateSaveFails(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	stateRoot := filepath.Join(t.TempDir(), "state-root")
-	statePath := filepath.Join(stateRoot, "state.json")
-	store := NewStateStore(statePath)
-	saveHookCalled := false
-	store.beforeSave = func() {
-		if saveHookCalled {
-			return
-		}
-		saveHookCalled = true
-		if err := os.WriteFile(stateRoot, []byte("not a directory"), 0o644); err != nil {
-			t.Fatalf("Write state root conflict: %v", err)
-		}
-	}
-
 	got, err := Service{
 		CurrentVersion: "0.1.1",
 		ManifestURL:    server.URL,
-		State:          store,
+		State:          &fakeStateStore{loadState: State{Status: StatusIdle}, saveErrs: []error{saveErr, nil}},
 		Client:         server.Client(),
 		Now:            func() time.Time { return now },
 	}.Check(context.Background(), false)
@@ -354,7 +323,7 @@ func TestServiceCheckReturnsErrorStateWhenCheckingStateSaveFails(t *testing.T) {
 	if got.Status != StatusError {
 		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
 	}
-	if !strings.Contains(got.LastError, "state-root") {
+	if !strings.Contains(got.LastError, saveErr.Error()) {
 		t.Fatalf("LastError=%q, want checking state save error", got.LastError)
 	}
 }
@@ -789,4 +758,28 @@ func assertCacheDirEmpty(t *testing.T, cacheDir string) {
 		}
 		t.Fatalf("cache files remain: %v", names)
 	}
+}
+
+type fakeStateStore struct {
+	loadState State
+	loadErr   error
+	saveErrs  []error
+	saved     []State
+}
+
+func (s *fakeStateStore) Load() (State, error) {
+	if s.loadErr != nil {
+		return State{}, s.loadErr
+	}
+	return s.loadState, nil
+}
+
+func (s *fakeStateStore) Save(state State) error {
+	s.saved = append(s.saved, state)
+	if len(s.saveErrs) == 0 {
+		return nil
+	}
+	err := s.saveErrs[0]
+	s.saveErrs = s.saveErrs[1:]
+	return err
 }

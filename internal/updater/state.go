@@ -38,8 +38,7 @@ type State struct {
 }
 
 type StateStore struct {
-	path       string
-	beforeSave func()
+	path string
 }
 
 func NewStateStore(path string) *StateStore {
@@ -65,9 +64,6 @@ func (s *StateStore) Load() (State, error) {
 }
 
 func (s *StateStore) Save(state State) error {
-	if s.beforeSave != nil {
-		s.beforeSave()
-	}
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
