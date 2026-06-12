@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/updater"
@@ -31,10 +32,10 @@ func (c *Controller) InstallUpdate(ctx context.Context, m updater.Manifest) (upd
 	if c.d.Slaves != nil && c.d.PendingSlaveRestartsPath != "" {
 		_, slaves, err := c.d.Slaves.List(ctx)
 		if err != nil {
-			return updater.State{}, err
+			return updater.State{}, fmt.Errorf("list slaves before update: %w", err)
 		}
 		if err := slave.WritePendingRestarts(c.d.PendingSlaveRestartsPath, m.Version, slaves, c.d.Now); err != nil {
-			return updater.State{}, err
+			return updater.State{}, fmt.Errorf("record pending slave restarts: %w", err)
 		}
 	}
 	return c.d.Updates.DownloadAndStart(ctx, m)

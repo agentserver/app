@@ -86,9 +86,9 @@ func TestControllerCheckUpdateDelegatesToUpdaterService(t *testing.T) {
 func TestControllerInstallUpdateRecordsEligibleSlavesBeforeDownloadError(t *testing.T) {
 	dir := t.TempDir()
 	manager := newConsoleUpdateSlaveManager(t, dir)
-	createConsoleUpdateSlave(t, manager, "running", slave.StatusRunning)
-	createConsoleUpdateSlave(t, manager, "starting", slave.StatusStarting)
-	createConsoleUpdateSlave(t, manager, "auth", slave.StatusAuthRequired)
+	runningID := createConsoleUpdateSlave(t, manager, "running", slave.StatusRunning)
+	startingID := createConsoleUpdateSlave(t, manager, "starting", slave.StatusStarting)
+	authID := createConsoleUpdateSlave(t, manager, "auth", slave.StatusAuthRequired)
 	createConsoleUpdateSlave(t, manager, "paused", slave.StatusPaused)
 	createConsoleUpdateSlave(t, manager, "stopped", slave.StatusStopped)
 	createConsoleUpdateSlave(t, manager, "error", slave.StatusError)
@@ -125,8 +125,36 @@ func TestControllerInstallUpdateRecordsEligibleSlavesBeforeDownloadError(t *test
 	if pending.Version != manifest.Version {
 		t.Fatalf("pending version=%q, want %q", pending.Version, manifest.Version)
 	}
-	if want := []string{"running", "starting", "auth"}; !reflect.DeepEqual(pending.SlaveIDs, want) {
+	if want := []string{runningID, startingID, authID}; !reflect.DeepEqual(pending.SlaveIDs, want) {
 		t.Fatalf("pending SlaveIDs=%v, want %v", pending.SlaveIDs, want)
+	}
+}
+
+func TestControllerInstallUpdateWrapsSlaveListFailureAndDoesNotStartDownload(t *testing.T) {
+	dir := t.TempDir()
+	transport := &recordingRoundTripper{}
+	c := NewController(Deps{
+		Slaves: slave.NewManager(slave.ManagerDeps{
+			Registry: slave.NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		}),
+		PendingSlaveRestartsPath: filepath.Join(dir, "pending.json"),
+		Updates: &updater.Service{
+			CurrentVersion: "1.0.0",
+			CacheDir:       filepath.Join(dir, "cache"),
+			State:          updater.NewStateStore(filepath.Join(dir, "updates.json")),
+			Client:         &http.Client{Transport: transport},
+		},
+	})
+
+	_, err := c.InstallUpdate(context.Background(), validConsoleUpdateManifest())
+	if err == nil {
+		t.Fatal("expected slave list error")
+	}
+	if !strings.Contains(err.Error(), "list slaves before update") {
+		t.Fatalf("error=%q, want list context", err)
+	}
+	if transport.called {
+		t.Fatal("updater download started after slave list failed")
 	}
 }
 
@@ -158,6 +186,9 @@ func TestControllerInstallUpdateDoesNotStartDownloadWhenPendingRestartWriteFails
 	})
 	if err == nil {
 		t.Fatal("expected pending restart write error")
+	}
+	if !strings.Contains(err.Error(), "record pending slave restarts") {
+		t.Fatalf("error=%q, want pending restart context", err)
 	}
 	if transport.called {
 		t.Fatal("updater download started after pending restart write failed")
@@ -198,9 +229,9 @@ func newConsoleUpdateSlaveManager(t *testing.T, dir string) *slave.Manager {
 	return manager
 }
 
-func createConsoleUpdateSlave(t *testing.T, manager *slave.Manager, id string, status slave.Status) {
+func createConsoleUpdateSlave(t *testing.T, manager *slave.Manager, name string, status slave.Status) string {
 	t.Helper()
-	folder := filepath.Join(t.TempDir(), id)
+	folder := filepath.Join(t.TempDir(), name)
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -208,16 +239,25 @@ func createConsoleUpdateSlave(t *testing.T, manager *slave.Manager, id string, s
 	if err != nil {
 		t.Fatalf("Load machine: %v", err)
 	}
-	sl, err := manager.Registry.Create(machine, slave.CreateInput{Folder: folder, Name: id})
+	sl, err := manager.Registry.Create(machine, slave.CreateInput{Folder: folder, Name: name})
 	if err != nil {
-		t.Fatalf("Create slave %s: %v", id, err)
+		t.Fatalf("Create slave %s: %v", name, err)
 	}
 	if _, err := manager.Registry.Update(sl.ID, func(s *slave.Slave) error {
-		s.ID = id
 		s.Status = status
 		return nil
 	}); err != nil {
-		t.Fatalf("Update slave %s: %v", id, err)
+		t.Fatalf("Update slave %s: %v", name, err)
+	}
+	return sl.ID
+}
+
+func validConsoleUpdateManifest() updater.Manifest {
+	return updater.Manifest{
+		Version: "1.2.0",
+		URL:     "https://assets.agent.cs.ac.cn/agentserver-app.exe",
+		SHA256:  strings.Repeat("c", 64),
+		Size:    1,
 	}
 }
 
