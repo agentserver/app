@@ -5,11 +5,15 @@ import * as api from '../api';
 import QuotaCard from './QuotaCard.vue';
 
 const state = ref<api.ConsoleState | null>(null);
+const updateState = ref<api.ConsoleUpdateState | null>(null);
 const statusError = ref('');
+const updateError = ref('');
 const frontendError = ref('');
 const subscriptionError = ref('');
 const logoutModelserverError = ref('');
 const refreshing = ref(false);
+const checkingUpdate = ref(false);
+const installingUpdate = ref(false);
 const opening = ref(false);
 const openingSubscription = ref(false);
 const loggingOutModelserver = ref(false);
@@ -38,6 +42,7 @@ let dashboardMounted = false;
 
 const visibleErrors = computed(() => [
   { key: 'status', message: statusError.value },
+  { key: 'update', message: updateError.value },
   { key: 'frontend', message: frontendError.value },
   { key: 'subscription', message: subscriptionError.value },
   { key: 'logout-modelserver', message: logoutModelserverError.value },
@@ -63,6 +68,21 @@ const slaveDisplayPreview = computed(() => {
   return `${machineDisplayName.value}-${name}`;
 });
 
+const updateStatusText = computed(() => {
+  const update = updateState.value;
+  if (!update) return '正在读取更新状态';
+  if (update.status === 'available' && update.update) return `发现新版本 ${update.update.version}`;
+  if (update.status === 'latest') return '已是最新版本';
+  if (update.status === 'checking') return '正在检查更新';
+  if (update.status === 'downloading') return '正在下载更新';
+  if (update.status === 'ready') return '更新已就绪';
+  if (update.status === 'installer_started') return '安装程序已启动';
+  if (update.status === 'error') return update.last_error || '更新检查失败';
+  return '未检查更新';
+});
+
+const updateButtonDisabled = computed(() => checkingUpdate.value || installingUpdate.value);
+
 function shortId(id: string) {
   return id.length <= 8 ? id : id.slice(-8);
 }
@@ -77,6 +97,15 @@ async function load() {
     statusError.value = '';
   } catch (e) {
     statusError.value = errorMessage(e);
+  }
+}
+
+async function loadUpdate() {
+  try {
+    updateState.value = await api.getConsoleUpdate();
+    updateError.value = '';
+  } catch (e) {
+    updateError.value = errorMessage(e);
   }
 }
 
@@ -95,6 +124,35 @@ async function loadSlaves() {
     if (seq !== slaveLoadSeq) return;
     slaveError.value = errorMessage(e);
     syncSlavePolling();
+  }
+}
+
+async function checkUpdate() {
+  if (checkingUpdate.value) return;
+  checkingUpdate.value = true;
+  try {
+    updateState.value = await api.checkConsoleUpdate();
+    updateError.value = '';
+  } catch (e) {
+    updateError.value = errorMessage(e);
+  } finally {
+    checkingUpdate.value = false;
+  }
+}
+
+async function installUpdate() {
+  if (installingUpdate.value || !updateState.value?.update) return;
+  const version = updateState.value.update.version;
+  const confirmed = window.confirm(`安装 Console 更新 ${version}？安装程序启动后可能需要按提示完成更新。`);
+  if (!confirmed) return;
+  installingUpdate.value = true;
+  try {
+    updateState.value = await api.installConsoleUpdate();
+    updateError.value = '';
+  } catch (e) {
+    updateError.value = errorMessage(e);
+  } finally {
+    installingUpdate.value = false;
   }
 }
 
@@ -388,6 +446,7 @@ function slaveStatusLabel(status: api.ConsoleSlaveStatus | string) {
 onMounted(() => {
   dashboardMounted = true;
   void load();
+  void loadUpdate();
   void loadSlaves();
 });
 
@@ -489,6 +548,44 @@ onBeforeUnmount(() => {
       <div class="info-block">
         <span>agentserver 工作空间</span>
         <strong>{{ workspaceDisplayName }}</strong>
+      </div>
+    </section>
+
+    <section class="update-panel">
+      <div class="section-head">
+        <h2>Console 更新</h2>
+        <p>
+          <span v-if="updateState">当前版本 {{ updateState.current_version }}</span>
+          <span v-else>正在读取当前版本</span>
+          <span v-if="updateState?.last_checked_at">上次检查 {{ updateState.last_checked_at }}</span>
+        </p>
+      </div>
+      <div class="update-row">
+        <div class="update-summary">
+          <strong>{{ updateStatusText }}</strong>
+          <span v-if="updateState?.update?.notes">{{ updateState.update.notes }}</span>
+          <span v-if="updateState?.last_error">{{ updateState.last_error }}</span>
+        </div>
+        <div class="update-actions">
+          <el-button
+            data-test="check-console-update"
+            :loading="checkingUpdate"
+            :disabled="updateButtonDisabled"
+            @click="checkUpdate"
+          >
+            检查更新
+          </el-button>
+          <el-button
+            v-if="updateState?.status === 'available' && updateState.update"
+            data-test="install-console-update"
+            type="primary"
+            :loading="installingUpdate"
+            :disabled="updateButtonDisabled"
+            @click="installUpdate"
+          >
+            安装更新
+          </el-button>
+        </div>
       </div>
     </section>
 
@@ -692,6 +789,7 @@ onBeforeUnmount(() => {
   font-size: 15px;
 }
 
+.update-panel,
 .slave-panel {
   display: flex;
   flex-direction: column;
@@ -712,6 +810,41 @@ onBeforeUnmount(() => {
   color: #606266;
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+.section-head p span + span {
+  margin-left: 12px;
+}
+
+.update-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.update-summary {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.update-summary strong,
+.update-summary span {
+  overflow-wrap: anywhere;
+}
+
+.update-summary span {
+  color: #606266;
+  font-size: 13px;
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .slave-create {
@@ -807,7 +940,8 @@ onBeforeUnmount(() => {
 }
 
 .slave-actions :deep(.el-button),
-.slave-create :deep(.el-button) {
+.slave-create :deep(.el-button),
+.update-actions :deep(.el-button) {
   margin-left: 0;
   white-space: nowrap;
 }
@@ -823,7 +957,8 @@ onBeforeUnmount(() => {
   }
 
   .slave-create,
-  .slave-row {
+  .slave-row,
+  .update-row {
     grid-template-columns: 1fr;
   }
 
@@ -831,7 +966,8 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 
-  .slave-actions {
+  .slave-actions,
+  .update-actions {
     justify-content: flex-start;
   }
 }
