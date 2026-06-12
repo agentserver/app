@@ -39,7 +39,7 @@ func ExtractRuntime(r io.Reader, destRoot string, opts ExtractOptions) error {
 		if !ok {
 			continue
 		}
-		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA {
+		if h.Typeflag != tar.TypeReg {
 			return fmt.Errorf("unsupported tar entry %s type %d", h.Name, h.Typeflag)
 		}
 		dst, err := safeJoin(destRoot, rel)
@@ -71,7 +71,7 @@ func ExtractRuntime(r io.Reader, destRoot string, opts ExtractOptions) error {
 			return err
 		}
 		if _, err := os.Stat(dst); err != nil {
-			return fmt.Errorf("Codex npm package missing required file %s: %w", req, err)
+			return fmt.Errorf("codex npm package missing required file %s: %w", req, err)
 		}
 	}
 	return nil

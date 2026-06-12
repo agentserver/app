@@ -53,6 +53,7 @@ func TestWindowsDetectCandidatesIncludeStoreAliases(t *testing.T) {
 }
 
 func TestDownloadBootstrapperUsesGETBecauseMicrosoftEndpointRejectsHEAD(t *testing.T) {
+	stubBootstrapperSignatureValidator(t)
 	body := fakeBootstrapperBody()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodHead {
@@ -120,11 +121,60 @@ func TestDownloadBootstrapperAbortsStalledBodyAfterIdleTimeout(t *testing.T) {
 	}
 }
 
+func TestEnsureVSCodeScriptBoundsBootstrapperProcessAndPublisher(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-vscode.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"ExpectedBootstrapperPublisherPattern",
+		"SignerCertificate.Subject",
+		"X509Chain",
+		"O=Microsoft Corporation",
+		"function Wait-ProcessWithProgress([System.Diagnostics.Process]$Process, [string]$Activity, [string]$Status, [int]$TimeoutSeconds)",
+		"Stop-Process -Id $Process.Id -Force",
+		"Wait-ProcessWithProgress $proc \"Installing VS Code\" \"正在通过微软商店引导器安装 VS Code，请稍候...\" $InstallTimeoutSeconds",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-vscode.ps1 missing %q", want)
+		}
+	}
+}
+
+func TestWindowsBootstrapperGoValidatorChecksAuthenticodePublisher(t *testing.T) {
+	body, err := os.ReadFile("install_authenticode_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"Get-AuthenticodeSignature",
+		"ExpectedBootstrapperPublisherPattern",
+		"SignerCertificate.Subject",
+		"X509Chain",
+		"O=Microsoft Corporation",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install_authenticode_windows.go missing %q", want)
+		}
+	}
+}
+
 func fakeBootstrapperBody() []byte {
 	body := bytes.Repeat([]byte{0}, int(minBootstrapperSize))
 	body[0] = 'M'
 	body[1] = 'Z'
 	return body
+}
+
+func stubBootstrapperSignatureValidator(t *testing.T) {
+	t.Helper()
+	old := bootstrapperSignatureValidator
+	bootstrapperSignatureValidator = func(context.Context, string) error { return nil }
+	t.Cleanup(func() {
+		bootstrapperSignatureValidator = old
+	})
 }
 
 func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {

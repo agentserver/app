@@ -481,13 +481,6 @@ func completedAgentserverBaseURL(store *state.Store) string {
 	return strings.TrimSpace(st.Agentserver.BaseURL)
 }
 
-func newCompletedStateOrchestrator(store *state.Store) ui.Orchestrator {
-	return completedStateOrchestrator{
-		Orchestrator: ui.NewNoopOrchestrator(),
-		store:        store,
-	}
-}
-
 func (o completedStateOrchestrator) State(ctx context.Context) (ui.SanitizedState, error) {
 	if o.store == nil {
 		return o.Orchestrator.State(ctx)

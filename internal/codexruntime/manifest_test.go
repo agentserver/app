@@ -67,6 +67,35 @@ func TestLoadManifestRejectsMissingRequiredFields(t *testing.T) {
 	}
 }
 
+func TestLightInstallerDocsDoNotDescribeUnpinnedLatestFallback(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("..", "..", "docs", "superpowers", "specs", "2026-06-11-light-windows-installer-design.md"),
+		filepath.Join("..", "..", "docs", "superpowers", "plans", "2026-06-12-light-windows-installer.md"),
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(body)
+		for _, forbidden := range []string{
+			"latest_metadata_urls",
+			"package_metadata_url_templates",
+			"@openai/codex/latest",
+			"ResolveLatest",
+			"Latest Fallback",
+			"pinned-or-latest",
+			"falls back to latest",
+			"fallback to latest",
+			"Source = \"latest\"",
+			"Source:   \"latest\"",
+		} {
+			if strings.Contains(s, forbidden) {
+				t.Fatalf("%s still describes unpinned latest fallback via %q", path, forbidden)
+			}
+		}
+	}
+}
+
 func contains(values []string, want string) bool {
 	for _, v := range values {
 		if v == want {

@@ -16,7 +16,6 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/codexruntime"
-	"github.com/agentserver/agentserver-pkg/internal/download"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/loom"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
@@ -399,22 +398,6 @@ func (r *realOrchestrator) EnsureVSCode(ctx context.Context, ch chan<- ProgressE
 		s.Onboarding.AddCompleted("vscode_installed")
 		return nil
 	})
-}
-
-func downloadAdapter(ui chan<- ProgressEvent) chan<- download.ProgressEvent {
-	if ui == nil {
-		return nil
-	}
-	out := make(chan download.ProgressEvent, 16)
-	go func() {
-		for ev := range out {
-			ui <- ProgressEvent{
-				Stage: ev.Stage, Downloaded: ev.Downloaded, Total: ev.Total,
-				SpeedBps: ev.SpeedBps, Msg: ev.Msg,
-			}
-		}
-	}()
-	return out
 }
 
 func (r *realOrchestrator) configureSharedCodex(ctx context.Context) error {

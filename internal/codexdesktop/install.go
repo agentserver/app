@@ -39,12 +39,12 @@ func EnsureInstalled(ctx context.Context, opts Options) (Detected, error) {
 	det, err = detect()
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return Detected{}, fmt.Errorf("Codex Desktop 安装后仍未检测到；winget 输出: %s: %w", out, err)
+			return Detected{}, fmt.Errorf("codex desktop 安装后仍未检测到；winget 输出: %s: %w", out, err)
 		}
-		return Detected{}, fmt.Errorf("Codex Desktop 安装后检测失败: %w；winget 输出: %s", err, out)
+		return Detected{}, fmt.Errorf("codex desktop 安装后检测失败: %w；winget 输出: %s", err, out)
 	}
 	if !det.Installed {
-		return Detected{}, fmt.Errorf("Codex Desktop 安装后仍未检测到；winget 输出: %s: %w", out, ErrNotFound)
+		return Detected{}, fmt.Errorf("codex desktop 安装后仍未检测到；winget 输出: %s: %w", out, ErrNotFound)
 	}
 	return det, nil
 }

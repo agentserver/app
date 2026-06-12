@@ -82,7 +82,7 @@ func installCandidate(ctx context.Context, opts Options, m Manifest, c PackageCa
 		return InstallResult{}, err
 	}
 	if err := VerifyNPMIntegrity(cachePath, c.Integrity); err != nil {
-		return InstallResult{}, fmt.Errorf("Codex npm 包校验失败: %w", err)
+		return InstallResult{}, fmt.Errorf("codex npm 包校验失败: %w", err)
 	}
 	f, err := os.Open(cachePath)
 	if err != nil {
@@ -93,7 +93,7 @@ func installCandidate(ctx context.Context, opts Options, m Manifest, c PackageCa
 		StripPrefix:   m.StripPrefix,
 		RequiredFiles: m.RequiredFiles,
 	}); err != nil {
-		return InstallResult{}, fmt.Errorf("Codex npm 包内容不完整: %w", err)
+		return InstallResult{}, fmt.Errorf("codex npm 包内容不完整: %w", err)
 	}
 	codexExe := filepath.Join(opts.DestRoot, filepath.FromSlash(m.CodexExe))
 	versionOutput, err := opts.VersionCommand(ctx, codexExe)

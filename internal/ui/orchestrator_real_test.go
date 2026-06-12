@@ -736,16 +736,6 @@ func jwtWithMSProject(t *testing.T, projectID string) string {
 	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
 }
 
-func jwtWithASWorkspace(t *testing.T, workspaceID string) string {
-	t.Helper()
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
-	payload, err := json.Marshal(map[string]string{"workspace_id": workspaceID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
-}
-
 func TestPollAgentserverLoginRegistersAgentAndStoresWorkspaceName(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/oauth2/token", func(w http.ResponseWriter, r *http.Request) {

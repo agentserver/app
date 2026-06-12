@@ -35,6 +35,8 @@ const (
 	defaultBootstrapperIdleTimeout           = 30 * time.Second
 )
 
+var bootstrapperSignatureValidator = validateBootstrapperSignature
+
 func PlanInstall() InstallPlan {
 	return planInstallFor(runtime.GOOS, runtime.GOARCH)
 }
@@ -100,7 +102,7 @@ func downloadBootstrapper(ctx context.Context, url, dst string, client *http.Cli
 	if err := out.Close(); err != nil {
 		return err
 	}
-	if err := validateBootstrapperFile(tmp); err != nil {
+	if err := validateBootstrapperFile(ctx, tmp); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, dst); err != nil {
@@ -171,7 +173,7 @@ func copyWithIdleTimeout(ctx context.Context, dst io.Writer, src io.ReadCloser, 
 	}
 }
 
-func validateBootstrapperFile(path string) error {
+func validateBootstrapperFile(ctx context.Context, path string) error {
 	st, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -191,7 +193,7 @@ func validateBootstrapperFile(path string) error {
 	if string(magic) != "MZ" {
 		return fmt.Errorf("VS Code Microsoft Store bootstrapper missing MZ executable header")
 	}
-	return nil
+	return bootstrapperSignatureValidator(ctx, path)
 }
 
 // SilentInstall runs the downloaded installer with platform-appropriate args.
