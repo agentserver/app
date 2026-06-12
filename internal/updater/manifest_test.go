@@ -47,6 +47,23 @@ func TestManifestValidateRejectsMissingSHA256(t *testing.T) {
 	}
 }
 
+func TestManifestValidateRejectsPaddedSHA256(t *testing.T) {
+	tests := []string{
+		" 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef ",
+	}
+	for _, sha := range tests {
+		m := Manifest{
+			Version: "0.1.2",
+			URL:     "https://assets.agent.cs.ac.cn/agentserver-app.exe",
+			SHA256:  sha,
+		}
+		if err := m.Validate(); err == nil {
+			t.Fatalf("expected padded sha256 error for %q", sha)
+		}
+	}
+}
+
 func TestManifestValidateRejectsWrongLengthSHA256(t *testing.T) {
 	m := Manifest{
 		Version: "0.1.2",
@@ -77,6 +94,23 @@ func TestManifestValidateRejectsNonHTTPSURL(t *testing.T) {
 	}
 	if err := m.Validate(); err == nil {
 		t.Fatal("expected non-HTTPS URL error")
+	}
+}
+
+func TestManifestValidateRejectsPaddedURL(t *testing.T) {
+	tests := []string{
+		" https://assets.agent.cs.ac.cn/agentserver-app.exe",
+		"https://assets.agent.cs.ac.cn/agentserver-app.exe ",
+	}
+	for _, installerURL := range tests {
+		m := Manifest{
+			Version: "0.1.2",
+			URL:     installerURL,
+			SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		}
+		if err := m.Validate(); err == nil {
+			t.Fatalf("expected padded URL error for %q", installerURL)
+		}
 	}
 }
 

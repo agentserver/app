@@ -21,7 +21,10 @@ func (m Manifest) Validate() error {
 	if _, err := parseVersion(m.Version); err != nil {
 		return fmt.Errorf("invalid version: %w", err)
 	}
-	u, err := url.Parse(strings.TrimSpace(m.URL))
+	if m.URL != strings.TrimSpace(m.URL) {
+		return fmt.Errorf("installer url must not have leading or trailing whitespace")
+	}
+	u, err := url.Parse(m.URL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("invalid installer url")
 	}
@@ -41,7 +44,9 @@ func (m Manifest) Validate() error {
 }
 
 func validateSHA256(s string) error {
-	s = strings.TrimSpace(s)
+	if s != strings.TrimSpace(s) {
+		return fmt.Errorf("sha256 must not have leading or trailing whitespace")
+	}
 	if len(s) != 64 {
 		return fmt.Errorf("sha256 must be 64 hex characters")
 	}
