@@ -29,3 +29,23 @@ func TestCompareVersionsRejectsInvalidVersion(t *testing.T) {
 		t.Fatal("expected invalid version error")
 	}
 }
+
+func TestCompareVersionsRejectsInvalidSecondVersion(t *testing.T) {
+	if _, err := CompareVersions("0.1.1", "latest"); err == nil {
+		t.Fatal("expected invalid version error")
+	}
+}
+
+func TestCompareVersionsRejectsSignedComponents(t *testing.T) {
+	tests := []string{
+		"+1.2.3",
+		"1.+2.3",
+		"1.2.+3",
+		"1.2.-3",
+	}
+	for _, version := range tests {
+		if _, err := CompareVersions(version, "1.2.3"); err == nil {
+			t.Fatalf("expected invalid version error for %q", version)
+		}
+	}
+}

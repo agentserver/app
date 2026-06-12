@@ -40,11 +40,26 @@ func parseVersion(v string) (parsedVersion, error) {
 	}
 	nums := [3]int{}
 	for i, part := range parts {
+		if !isDigitsOnly(part) {
+			return parsedVersion{}, fmt.Errorf("version %q contains invalid component %q", v, part)
+		}
 		n, err := strconv.Atoi(part)
-		if err != nil || n < 0 {
+		if err != nil {
 			return parsedVersion{}, fmt.Errorf("version %q contains invalid component %q", v, part)
 		}
 		nums[i] = n
 	}
 	return parsedVersion{major: nums[0], minor: nums[1], patch: nums[2]}, nil
+}
+
+func isDigitsOnly(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
