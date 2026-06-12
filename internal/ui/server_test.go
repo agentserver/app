@@ -634,7 +634,7 @@ func TestServerConsoleMutationsRejectCrossOriginBrowserRequests(t *testing.T) {
 			}
 			if cc.createdInput.Folder != "" || cc.restartedID != "" || cc.pausedID != "" ||
 				cc.openedRemoteID != "" || cc.deletedID != "" || cc.selectedFolderCalled || cc.openedFrontend ||
-				cc.checkUpdateCalled || cc.installUpdateCalled {
+				cc.checkUpdateCalled || cc.updateStateCalls != 0 || cc.installUpdateCalled {
 				t.Fatalf("cross-origin request reached controller: %+v", cc)
 			}
 		})
