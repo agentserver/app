@@ -50,6 +50,23 @@ func TestPathsIncludesSlaveManagementFiles(t *testing.T) {
 	}
 }
 
+func TestDefaultIncludesUpdatePaths(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	p, err := Default()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.UpdateStateFile != filepath.Join(p.InstallRoot, "update-state.json") {
+		t.Fatalf("UpdateStateFile=%q", p.UpdateStateFile)
+	}
+	if p.UpdatesCacheDir != filepath.Join(p.CacheDir, "updates") {
+		t.Fatalf("UpdatesCacheDir=%q", p.UpdatesCacheDir)
+	}
+	if p.PendingSlaveRestartsFile != filepath.Join(p.InstallRoot, "pending-slave-restarts.json") {
+		t.Fatalf("PendingSlaveRestartsFile=%q", p.PendingSlaveRestartsFile)
+	}
+}
+
 func TestPathsIncludesCodexDesktopLocaleFiles(t *testing.T) {
 	p, err := Default()
 	if err != nil {

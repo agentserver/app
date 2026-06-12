@@ -21,6 +21,9 @@ type Paths struct {
 	MachineFile              string
 	SlavesFile               string
 	SlavesDir                string
+	UpdateStateFile          string
+	UpdatesCacheDir          string
+	PendingSlaveRestartsFile string
 	VSCodeUserDataDir        string
 	VSCodeExtDir             string
 
@@ -53,6 +56,9 @@ func Default() (Paths, error) {
 		MachineFile:                       filepath.Join(root, "machine.json"),
 		SlavesFile:                        filepath.Join(root, "slaves.json"),
 		SlavesDir:                         filepath.Join(root, "slaves"),
+		UpdateStateFile:                   filepath.Join(root, "update-state.json"),
+		UpdatesCacheDir:                   filepath.Join(root, "cache", "updates"),
+		PendingSlaveRestartsFile:          filepath.Join(root, "pending-slave-restarts.json"),
 		VSCodeUserDataDir:                 filepath.Join(root, "vscode-data"),
 		VSCodeExtDir:                      filepath.Join(root, "vscode-extensions"),
 		CodexDir:                          codex,
