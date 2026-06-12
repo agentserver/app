@@ -93,6 +93,57 @@ func TestEnsureDoesNotFetchUnpinnedMetadataWhenPinnedReturns404(t *testing.T) {
 	}
 }
 
+func TestEnsureInstallsRepoPinnedFallbackWhenPrimaryPinnedUnavailable(t *testing.T) {
+	fallbackPkg := runtimePackage(t, "fallback-codex")
+	fallbackIntegrity := npmIntegrity(fallbackPkg)
+	fallbackHits := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/primary.tgz", func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/fallback.tgz", func(w http.ResponseWriter, r *http.Request) {
+		fallbackHits++
+		w.Write(fallbackPkg)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	dir := t.TempDir()
+	manifestPath := writeManifest(t, dir, Manifest{
+		Package:       "@openai/codex",
+		Platform:      "win32-x64",
+		PinnedVersion: "0.136.0-win32-x64",
+		StripPrefix:   "vendor/x86_64-pc-windows-msvc/",
+		CodexExe:      "bin/codex.exe",
+		RequiredFiles: requiredRuntimeFiles(),
+		Pinned:        PinnedPackage{Integrity: "sha512-missing", URLs: []string{srv.URL + "/primary.tgz"}},
+		FallbackPinned: []PinnedPackage{
+			{
+				Version:   "0.139.0-win32-x64",
+				Integrity: fallbackIntegrity,
+				URLs:      []string{srv.URL + "/fallback.tgz"},
+			},
+		},
+	})
+	res, err := Ensure(context.Background(), Options{
+		ManifestPath: manifestPath,
+		DestRoot:     filepath.Join(dir, "root"),
+		CacheDir:     filepath.Join(dir, "cache"),
+		VersionCommand: func(context.Context, string) (string, error) {
+			return "codex-cli 0.139.0", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Version != "0.139.0-win32-x64" || res.Source != "fallback-pinned" || fallbackHits != 1 {
+		t.Fatalf("result=%+v fallbackHits=%d", res, fallbackHits)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "root", "bin", "codex.exe")); err != nil || string(got) != "fallback-codex" {
+		t.Fatalf("codex.exe=%q err=%v", got, err)
+	}
+}
+
 func TestEnsureTriesSecondPinnedMirrorAfterFirstHTTPError(t *testing.T) {
 	pkg := runtimePackage(t, "codex-from-second")
 	integrity := npmIntegrity(pkg)

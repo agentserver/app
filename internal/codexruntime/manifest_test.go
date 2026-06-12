@@ -49,6 +49,25 @@ func TestLoadManifestParsesPinnedMirrorsAndRuntimeFiles(t *testing.T) {
 	if !strings.Contains(m.Pinned.URLs[1], "npmreg.proxy.ustclug.org") {
 		t.Fatalf("second mirror should be USTC, got %q", m.Pinned.URLs[1])
 	}
+	if len(m.FallbackPinned) != 1 {
+		t.Fatalf("fallback_pinned=%#v", m.FallbackPinned)
+	}
+	fallback := m.FallbackPinned[0]
+	if fallback.Version != "0.139.0-win32-x64" {
+		t.Fatalf("fallback version=%q", fallback.Version)
+	}
+	if !strings.HasPrefix(fallback.Integrity, "sha512-") {
+		t.Fatalf("fallback integrity should be npm sha512, got %q", fallback.Integrity)
+	}
+	if len(fallback.URLs) != 2 {
+		t.Fatalf("fallback URLs=%#v", fallback.URLs)
+	}
+	if !strings.Contains(fallback.URLs[0], "registry.npmmirror.com") {
+		t.Fatalf("first fallback mirror should be npmmirror, got %q", fallback.URLs[0])
+	}
+	if !strings.Contains(fallback.URLs[1], "npmreg.proxy.ustclug.org") {
+		t.Fatalf("second fallback mirror should be USTC, got %q", fallback.URLs[1])
+	}
 }
 
 func TestLoadManifestRejectsMissingRequiredFields(t *testing.T) {

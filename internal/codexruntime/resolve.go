@@ -9,7 +9,7 @@ type PackageCandidate struct {
 }
 
 func PinnedCandidates(m Manifest) []PackageCandidate {
-	out := make([]PackageCandidate, 0, len(m.Pinned.URLs))
+	out := make([]PackageCandidate, 0, len(m.Pinned.URLs)+fallbackURLCount(m.FallbackPinned))
 	for _, u := range m.Pinned.URLs {
 		out = append(out, PackageCandidate{
 			Version:   m.PinnedVersion,
@@ -19,5 +19,24 @@ func PinnedCandidates(m Manifest) []PackageCandidate {
 			Source:    "pinned",
 		})
 	}
+	for _, fallback := range m.FallbackPinned {
+		for _, u := range fallback.URLs {
+			out = append(out, PackageCandidate{
+				Version:   fallback.Version,
+				URL:       u,
+				Integrity: fallback.Integrity,
+				Shasum:    fallback.Shasum,
+				Source:    "fallback-pinned",
+			})
+		}
+	}
 	return out
+}
+
+func fallbackURLCount(candidates []PinnedPackage) int {
+	n := 0
+	for _, candidate := range candidates {
+		n += len(candidate.URLs)
+	}
+	return n
 }

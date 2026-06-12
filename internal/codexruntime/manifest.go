@@ -8,16 +8,18 @@ import (
 )
 
 type Manifest struct {
-	Package       string        `json:"package"`
-	Platform      string        `json:"platform"`
-	PinnedVersion string        `json:"pinned_version"`
-	StripPrefix   string        `json:"strip_prefix"`
-	CodexExe      string        `json:"codex_exe"`
-	RequiredFiles []string      `json:"required_files"`
-	Pinned        PinnedPackage `json:"pinned"`
+	Package        string          `json:"package"`
+	Platform       string          `json:"platform"`
+	PinnedVersion  string          `json:"pinned_version"`
+	StripPrefix    string          `json:"strip_prefix"`
+	CodexExe       string          `json:"codex_exe"`
+	RequiredFiles  []string        `json:"required_files"`
+	Pinned         PinnedPackage   `json:"pinned"`
+	FallbackPinned []PinnedPackage `json:"fallback_pinned,omitempty"`
 }
 
 type PinnedPackage struct {
+	Version   string   `json:"version,omitempty"`
 	Integrity string   `json:"integrity"`
 	Shasum    string   `json:"shasum"`
 	URLs      []string `json:"urls"`
@@ -63,6 +65,18 @@ func (m Manifest) Validate() error {
 	}
 	if strings.TrimSpace(m.Pinned.Integrity) == "" {
 		missing = append(missing, "pinned.integrity")
+	}
+	for i, candidate := range m.FallbackPinned {
+		prefix := fmt.Sprintf("fallback_pinned[%d]", i)
+		if strings.TrimSpace(candidate.Version) == "" {
+			missing = append(missing, prefix+".version")
+		}
+		if len(candidate.URLs) == 0 {
+			missing = append(missing, prefix+".urls")
+		}
+		if strings.TrimSpace(candidate.Integrity) == "" {
+			missing = append(missing, prefix+".integrity")
+		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("codex manifest missing %s", strings.Join(missing, ", "))

@@ -19,7 +19,7 @@ The user-approved product behavior is:
 - Build installer artifacts without bundled `codex.exe`.
 - Build installer artifacts without bundled VS Code installer exe.
 - During `星池指挥官` installation, download Codex from domestic mirrors.
-- Install only repo-pinned Codex runtime candidates. If every pinned mirror is unavailable, fail with a visible retryable error rather than resolving mirror-provided latest metadata.
+- Install only repo-pinned Codex runtime candidates. If the primary pinned runtime is unavailable on every mirror, try the next repo-pinned fallback candidate rather than resolving mirror-provided latest metadata.
 - If the user chooses `极简风` / minimal VS Code, download the VS Code Microsoft Store bootstrapper during installation, run it to install VS Code, then let onboarding configure it.
 
 ## Mirror Findings
@@ -92,19 +92,31 @@ Add `packaging/windows/codex-manifest.json` and include it in both Inno and port
       "https://registry.npmmirror.com/@openai/codex/-/codex-0.136.0-win32-x64.tgz",
       "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.136.0-win32-x64.tgz"
     ]
-  }
+  },
+  "fallback_pinned": [
+    {
+      "version": "0.139.0-win32-x64",
+      "integrity": "sha512-lQrVLNz+90wdvWVNFDvCkHQRiAK9ZllmkTka3c8eqSDqdJk35Gpgppfv9Xtw5M2ZBtTq0sBdWBiCMyzGDBSpmQ==",
+      "shasum": "63514296579a97d2d69c8a7684dc9c67b6b17ae8",
+      "urls": [
+        "https://registry.npmmirror.com/@openai/codex/-/codex-0.139.0-win32-x64.tgz",
+        "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.139.0-win32-x64.tgz"
+      ]
+    }
+  ]
 }
 ```
 
-The manifest is the trust boundary. Every executable download URL and integrity value must be pinned in the repository. Transport errors first try the next pinned mirror. Integrity mismatches are hard failures for that downloaded payload and must not silently fall through to another unverified file.
+The manifest is the trust boundary. Every executable download URL, version, and integrity value must be pinned in the repository. Transport errors first try the next pinned mirror for the same candidate, then the next repo-pinned fallback candidate. Integrity mismatches are hard failures for that downloaded payload and must not silently fall through to another unverified file.
 
-### Pinned Mirror Fallback
+### Repo-Pinned Candidate Fallback
 
 If `0.136.0-win32-x64` cannot be found on every configured mirror:
 
-1. Stop the runtime install.
-2. Report that the pinned Codex runtime cannot be downloaded from domestic mirrors.
-3. Ask the user to retry later or ship a manifest update that pins a reviewed replacement version, URL list, and integrity.
+1. Try the next `fallback_pinned` candidate in manifest order.
+2. Verify that candidate with its repository-pinned npm integrity.
+3. Require `codex.exe --version` to match the installed candidate version.
+4. Stop only after every repo-pinned candidate and its mirrors are unavailable.
 
 The installer must not fetch mirror-provided package metadata to discover a future version. If a security or availability fix needs a newer Codex runtime, the repository manifest is updated first and the PR test suite validates that pinned artifact.
 
@@ -124,7 +136,7 @@ The extractor:
 - Confirms every `required_files` entry exists after extraction.
 - Prints the installed Codex package version and destination path.
 
-`agentctl install-codex` is idempotent. If all required files already exist and `bin/codex.exe --version` reports the pinned runtime version, it skips download. If the existing runtime is older or otherwise does not match the manifest pin, it reinstalls from pinned mirrors.
+`agentctl install-codex` is idempotent. If all required files already exist and `bin/codex.exe --version` reports one of the repo-pinned candidate versions, it skips download. If the existing runtime is older or otherwise does not match an accepted manifest candidate, it reinstalls from pinned mirrors.
 
 ## Windows Installer Changes
 
@@ -215,7 +227,7 @@ This is deliberate. VS Code configuration installs the bundled VSIX, writes VS C
 
 Codex runtime errors:
 
-- All mirrors unavailable for the pinned version: fail install with "无法从国内 npm 镜像下载 Codex pinned runtime".
+- All mirrors unavailable for every repo-pinned candidate: fail install with "无法从国内 npm 镜像下载 Codex pinned runtime".
 - Integrity mismatch: fail install with "Codex npm 包校验失败" and include expected and actual digest in logs.
 - Tarball missing `bin/codex.exe` or required resources: fail install with "Codex npm 包内容不完整".
 - Existing `bin/codex.exe` fails `--version`: reinstall runtime from mirrors.
@@ -231,7 +243,8 @@ VS Code Store bootstrapper errors:
 Go tests:
 
 - Codex manifest parses and contains pinned URLs, integrity, strip prefix, and required files.
-- Codex resolver tries pinned `0.136.0-win32-x64` candidates in manifest order.
+- Codex resolver tries pinned `0.136.0-win32-x64` candidates first, then repo-pinned fallback candidates in manifest order.
+- Codex installer can install `0.139.0-win32-x64` when the primary pinned runtime is unavailable.
 - Codex installer does not fetch unpinned package metadata when pinned URLs return 404.
 - Codex installer reinstalls an existing runtime when `codex.exe --version` does not match the manifest pin.
 - Tar extractor strips `vendor/x86_64-pc-windows-msvc/` and writes `bin/codex.exe`.

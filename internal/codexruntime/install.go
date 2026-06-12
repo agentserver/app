@@ -48,13 +48,15 @@ func Ensure(ctx context.Context, opts Options) (InstallResult, error) {
 	codexExe := filepath.Join(opts.DestRoot, filepath.FromSlash(m.CodexExe))
 	if runtimeComplete(opts.DestRoot, m.RequiredFiles) {
 		versionOutput, err := opts.VersionCommand(ctx, codexExe)
-		if err == nil && versionMatchesPinned(versionOutput, m) {
-			return InstallResult{
-				Version:  m.PinnedVersion,
-				Source:   "existing",
-				CodexExe: codexExe,
-				Skipped:  true,
-			}, nil
+		if err == nil {
+			if existingVersion, ok := matchedPinnedVersion(versionOutput, m); ok {
+				return InstallResult{
+					Version:  existingVersion,
+					Source:   "existing",
+					CodexExe: codexExe,
+					Skipped:  true,
+				}, nil
+			}
 		}
 	}
 	if err := os.MkdirAll(opts.CacheDir, 0o755); err != nil {
@@ -100,10 +102,37 @@ func installCandidate(ctx context.Context, opts Options, m Manifest, c PackageCa
 	if err != nil {
 		return InstallResult{}, fmt.Errorf("codex --version failed after install: %w", err)
 	}
-	if !versionMatchesPinned(versionOutput, m) {
-		return InstallResult{}, fmt.Errorf("codex --version %q does not match pinned runtime %s", strings.TrimSpace(versionOutput), m.PinnedVersion)
+	if !versionMatches(versionOutput, c.Version, m.Platform) {
+		return InstallResult{}, fmt.Errorf("codex --version %q does not match pinned runtime %s", strings.TrimSpace(versionOutput), c.Version)
 	}
 	return InstallResult{Version: c.Version, Source: c.Source, CodexExe: codexExe}, nil
+}
+
+func matchedPinnedVersion(versionOutput string, m Manifest) (string, bool) {
+	for _, candidate := range PinnedCandidates(m) {
+		if versionMatches(versionOutput, candidate.Version, m.Platform) {
+			return candidate.Version, true
+		}
+	}
+	return "", false
+}
+
+func versionMatches(versionOutput, pinnedVersion, platform string) bool {
+	versionOutput = strings.TrimSpace(versionOutput)
+	expectedCLI := strings.TrimSuffix(pinnedVersion, "-"+platform)
+	for _, candidate := range []string{pinnedVersion, expectedCLI} {
+		if versionOutput == candidate {
+			return true
+		}
+	}
+	for _, field := range strings.Fields(versionOutput) {
+		for _, candidate := range []string{pinnedVersion, expectedCLI} {
+			if field == candidate {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 const (
@@ -306,24 +335,6 @@ func runCodexVersion(ctx context.Context, exe string) (string, error) {
 		return versionOutput, fmt.Errorf("%w: %s", err, versionOutput)
 	}
 	return versionOutput, nil
-}
-
-func versionMatchesPinned(versionOutput string, m Manifest) bool {
-	versionOutput = strings.TrimSpace(versionOutput)
-	expectedCLI := strings.TrimSuffix(m.PinnedVersion, "-"+m.Platform)
-	for _, candidate := range []string{m.PinnedVersion, expectedCLI} {
-		if versionOutput == candidate {
-			return true
-		}
-	}
-	for _, field := range strings.Fields(versionOutput) {
-		for _, candidate := range []string{m.PinnedVersion, expectedCLI} {
-			if field == candidate {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 type unavailableError struct {

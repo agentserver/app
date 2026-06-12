@@ -17,5 +17,16 @@
       "https://registry.npmmirror.com/@openai/codex/-/codex-0.136.0-win32-x64.tgz",
       "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.136.0-win32-x64.tgz"
     ]
-  }
+  },
+  "fallback_pinned": [
+    {
+      "version": "0.139.0-win32-x64",
+      "integrity": "sha512-lQrVLNz+90wdvWVNFDvCkHQRiAK9ZllmkTka3c8eqSDqdJk35Gpgppfv9Xtw5M2ZBtTq0sBdWBiCMyzGDBSpmQ==",
+      "shasum": "63514296579a97d2d69c8a7684dc9c67b6b17ae8",
+      "urls": [
+        "https://registry.npmmirror.com/@openai/codex/-/codex-0.139.0-win32-x64.tgz",
+        "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.139.0-win32-x64.tgz"
+      ]
+    }
+  ]
 }
