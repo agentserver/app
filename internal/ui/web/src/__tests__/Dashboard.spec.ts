@@ -107,6 +107,82 @@ describe('Dashboard', () => {
     expect(w.text()).toContain('发现新版本 1.3.0');
   });
 
+  it('keeps a newer manual update check when the initial update load resolves later', async () => {
+    const staleInitial = deferred<api.ConsoleUpdateState>();
+    vi.spyOn(api, 'getConsoleUpdate').mockReturnValue(staleInitial.promise);
+    mockConsoleState();
+    vi.spyOn(api, 'checkConsoleUpdate').mockResolvedValue(consoleUpdate({
+      current_version: '1.2.3',
+      status: 'available',
+      update: { version: '1.4.0' },
+    }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await w.find('[data-test="check-console-update"]').trigger('click');
+    await flushPromises();
+    expect(w.text()).toContain('发现新版本 1.4.0');
+
+    staleInitial.resolve(consoleUpdate({
+      current_version: '1.2.3',
+      status: 'latest',
+    }));
+    await flushPromises();
+
+    expect(w.text()).toContain('发现新版本 1.4.0');
+    expect(w.text()).not.toContain('已是最新版本');
+  });
+
+  it('ignores duplicate manual update checks while one is pending', async () => {
+    mockConsoleState();
+    const check = deferred<api.ConsoleUpdateState>();
+    const checkSpy = vi.spyOn(api, 'checkConsoleUpdate').mockReturnValue(check.promise);
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    const checkButton = w.find('[data-test="check-console-update"]');
+    await checkButton.trigger('click');
+    await checkButton.trigger('click');
+
+    expect(checkSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start installing an update while a manual check is pending', async () => {
+    vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'available',
+      update: { version: '1.3.0' },
+    }));
+    mockConsoleState();
+    const check = deferred<api.ConsoleUpdateState>();
+    vi.spyOn(api, 'checkConsoleUpdate').mockReturnValue(check.promise);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const installSpy = vi.spyOn(api, 'installConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'installer_started',
+    }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await w.find('[data-test="check-console-update"]').trigger('click');
+    await w.find('[data-test="install-console-update"]').trigger('click');
+    await flushPromises();
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(installSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not render the same backend update error twice', async () => {
+    vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'error',
+      last_error: 'manifest unavailable',
+    }));
+    mockConsoleState();
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(w.text().match(/manifest unavailable/g)).toHaveLength(1);
+  });
+
   it('does not install an available console update when confirmation is cancelled', async () => {
     vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
       status: 'available',

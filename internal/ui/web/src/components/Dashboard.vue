@@ -35,6 +35,7 @@ const creatingSlave = ref(false);
 const selectingSlaveFolder = ref(false);
 const slaveBusy = ref<Record<string, boolean>>({});
 const slaveRemoteDeleteOpened = ref<Record<string, boolean>>({});
+let updateLoadSeq = 0;
 let slaveLoadSeq = 0;
 const slavePollIntervalMs = 3000;
 let slavePollTimer: number | undefined;
@@ -81,7 +82,13 @@ const updateStatusText = computed(() => {
   return '未检查更新';
 });
 
-const updateButtonDisabled = computed(() => checkingUpdate.value || installingUpdate.value);
+const updateBusy = computed(() => checkingUpdate.value || installingUpdate.value);
+const updateButtonDisabled = computed(() => updateBusy.value);
+const updateDetailError = computed(() => {
+  const update = updateState.value;
+  if (!update?.last_error) return '';
+  return update.status === 'error' ? '' : update.last_error;
+});
 
 function shortId(id: string) {
   return id.length <= 8 ? id : id.slice(-8);
@@ -101,10 +108,16 @@ async function load() {
 }
 
 async function loadUpdate() {
+  const seq = ++updateLoadSeq;
   try {
-    updateState.value = await api.getConsoleUpdate();
+    const update = await api.getConsoleUpdate();
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
+    updateState.value = update;
     updateError.value = '';
   } catch (e) {
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
     updateError.value = errorMessage(e);
   }
 }
@@ -128,31 +141,43 @@ async function loadSlaves() {
 }
 
 async function checkUpdate() {
-  if (checkingUpdate.value) return;
+  if (updateBusy.value) return;
+  const seq = ++updateLoadSeq;
   checkingUpdate.value = true;
   try {
-    updateState.value = await api.checkConsoleUpdate();
+    const update = await api.checkConsoleUpdate();
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
+    updateState.value = update;
     updateError.value = '';
   } catch (e) {
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
     updateError.value = errorMessage(e);
   } finally {
-    checkingUpdate.value = false;
+    if (dashboardMounted) checkingUpdate.value = false;
   }
 }
 
 async function installUpdate() {
-  if (installingUpdate.value || !updateState.value?.update) return;
+  if (updateBusy.value || !updateState.value?.update) return;
   const version = updateState.value.update.version;
-  const confirmed = window.confirm(`安装 Console 更新 ${version}？安装程序启动后可能需要按提示完成更新。`);
+  const confirmed = window.confirm(`安装星池指挥官更新 ${version}？安装程序启动后可能需要按提示完成更新。`);
   if (!confirmed) return;
+  const seq = ++updateLoadSeq;
   installingUpdate.value = true;
   try {
-    updateState.value = await api.installConsoleUpdate();
+    const update = await api.installConsoleUpdate();
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
+    updateState.value = update;
     updateError.value = '';
   } catch (e) {
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
     updateError.value = errorMessage(e);
   } finally {
-    installingUpdate.value = false;
+    if (dashboardMounted) installingUpdate.value = false;
   }
 }
 
@@ -553,7 +578,7 @@ onBeforeUnmount(() => {
 
     <section class="update-panel">
       <div class="section-head">
-        <h2>Console 更新</h2>
+        <h2>星池指挥官更新</h2>
         <p>
           <span v-if="updateState">当前版本 {{ updateState.current_version }}</span>
           <span v-else>正在读取当前版本</span>
@@ -564,7 +589,7 @@ onBeforeUnmount(() => {
         <div class="update-summary">
           <strong>{{ updateStatusText }}</strong>
           <span v-if="updateState?.update?.notes">{{ updateState.update.notes }}</span>
-          <span v-if="updateState?.last_error">{{ updateState.last_error }}</span>
+          <span v-if="updateDetailError">{{ updateDetailError }}</span>
         </div>
         <div class="update-actions">
           <el-button
