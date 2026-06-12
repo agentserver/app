@@ -202,7 +202,9 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	}); err != nil {
 		log.Printf("launcher: restore pending slave restarts: %v", err)
 	}
-	scheduleAutomaticUpdateCheck(ctx, updates, 30*time.Second)
+	consoleCtx, stopConsole := context.WithCancel(ctx)
+	defer stopConsole()
+	scheduleAutomaticUpdateCheck(consoleCtx, updates, 30*time.Second)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
