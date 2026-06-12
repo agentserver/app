@@ -40,8 +40,8 @@ func (m Manifest) Validate() error {
 	if err := validateSHA256(m.SHA256); err != nil {
 		return err
 	}
-	if m.Size < 0 {
-		return fmt.Errorf("size must not be negative")
+	if m.Size <= 0 {
+		return fmt.Errorf("size must be positive")
 	}
 	return nil
 }

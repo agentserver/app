@@ -56,3 +56,36 @@ func TestStateStoreRoundTripsState(t *testing.T) {
 		t.Fatalf("LastError=%q, want %q", got.LastError, want.LastError)
 	}
 }
+
+func TestStateStoreSaveOverwritesExistingState(t *testing.T) {
+	store := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	if err := store.Save(State{
+		CurrentVersion: "0.1.1",
+		Status:         StatusLatest,
+	}); err != nil {
+		t.Fatalf("Save initial state: %v", err)
+	}
+	if err := store.Save(State{
+		CurrentVersion: "0.1.2",
+		Status:         StatusAvailable,
+		Update: &AvailableUpdate{
+			Version: "0.1.3",
+		},
+	}); err != nil {
+		t.Fatalf("Save replacement state: %v", err)
+	}
+
+	got, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load replacement state: %v", err)
+	}
+	if got.CurrentVersion != "0.1.2" {
+		t.Fatalf("CurrentVersion=%q, want replacement version", got.CurrentVersion)
+	}
+	if got.Status != StatusAvailable {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusAvailable)
+	}
+	if got.Update == nil || got.Update.Version != "0.1.3" {
+		t.Fatalf("Update=%+v, want replacement update", got.Update)
+	}
+}

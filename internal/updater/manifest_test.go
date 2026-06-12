@@ -20,6 +20,7 @@ func TestManifestValidateAcceptsMixedCaseAssetsHost(t *testing.T) {
 		Version: "0.1.2",
 		URL:     "https://ASSETS.AGENT.CS.AC.CN/agentserver-app.exe",
 		SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Size:    123,
 	}
 	if err := m.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)

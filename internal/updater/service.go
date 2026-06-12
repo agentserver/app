@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,7 +32,7 @@ type Service struct {
 func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
 	now := s.now()
 	prior, _ := s.loadState()
-	if automatic && s.AutoCheckEvery > 0 && !prior.LastCheckedAt.IsZero() && now.Sub(prior.LastCheckedAt) < s.AutoCheckEvery {
+	if automatic && !prior.LastCheckedAt.IsZero() && now.Sub(prior.LastCheckedAt) < s.autoCheckEvery() {
 		prior.CurrentVersion = s.CurrentVersion
 		_ = s.saveState(prior)
 		return prior, nil
@@ -93,7 +94,9 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 		Status:         StatusDownloading,
 		Update:         availableFromManifest(m),
 	}
-	_ = s.saveState(downloading)
+	if err := s.saveState(downloading); err != nil {
+		return s.saveError(now, err)
+	}
 
 	finalPath, err := installerCachePath(s.CacheDir, m)
 	if err != nil {
@@ -108,8 +111,7 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 		_ = os.Remove(partPath)
 		return s.saveError(now, err)
 	}
-	_ = os.Remove(finalPath)
-	if err := os.Rename(partPath, finalPath); err != nil {
+	if err := replaceFile(partPath, finalPath); err != nil {
 		_ = os.Remove(partPath)
 		return s.saveError(now, err)
 	}
@@ -173,11 +175,23 @@ func (s Service) downloadInstaller(ctx context.Context, m Manifest, path string)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	n, err := io.Copy(f, io.LimitReader(resp.Body, m.Size+1))
+	if err != nil {
 		_ = f.Close()
 		return err
 	}
+	if n > m.Size {
+		_ = f.Close()
+		return fmt.Errorf("installer response larger than declared size: got more than %d bytes", m.Size)
+	}
 	return f.Close()
+}
+
+func (s Service) autoCheckEvery() time.Duration {
+	if s.AutoCheckEvery > 0 {
+		return s.AutoCheckEvery
+	}
+	return 24 * time.Hour
 }
 
 func verifyInstaller(path string, m Manifest) error {
@@ -191,7 +205,7 @@ func verifyInstaller(path string, m Manifest) error {
 	if err != nil {
 		return err
 	}
-	if m.Size > 0 && n != m.Size {
+	if n != m.Size {
 		return fmt.Errorf("installer size mismatch: got %d, want %d", n, m.Size)
 	}
 	got := hex.EncodeToString(h.Sum(nil))
@@ -262,6 +276,8 @@ func (s Service) saveError(now time.Time, err error) (State, error) {
 		Status:         StatusError,
 		LastError:      err.Error(),
 	}
-	_ = s.saveState(state)
+	if saveErr := s.saveState(state); saveErr != nil {
+		return state, errors.Join(err, fmt.Errorf("save error state: %w", saveErr))
+	}
 	return state, err
 }

@@ -88,7 +88,7 @@ func (s *StateStore) Save(state State) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, s.path); err != nil {
+	if err := replaceFile(tmpPath, s.path); err != nil {
 		return err
 	}
 	ok = true
