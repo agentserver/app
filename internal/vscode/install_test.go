@@ -1,14 +1,19 @@
 package vscode
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -73,7 +78,7 @@ func TestDownloadBootstrapperUsesGETBecauseMicrosoftEndpointRejectsHEAD(t *testi
 	}
 }
 
-func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
+func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		path string
@@ -87,11 +92,15 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"ensure-vscode.ps1",
 				"ensure-codex.ps1",
 				"ensure-codex-desktop.ps1",
+				"install-driver-support.ps1",
 				"write-install-mode.ps1",
 				"machine.ps1",
 				"codex-manifest.json",
 				"codex-desktop-installer.exe",
 				"slave-agent.exe",
+				"driver-skills.tar.gz",
+				"driver-superpower-skills.tar.gz",
+				"driver-codex-prompts.tar.gz",
 				"uninstall.exe",
 				"Ensuring Codex runtime",
 				"Ensuring VS Code is installed",
@@ -137,13 +146,17 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			name: "package-windows-zip.sh",
 			path: "../../scripts/package-windows-zip.sh",
 			want: []string{
-				"LOOM_RELEASE=\"v0.0.3\"",
+				"LOOM_RELEASE=\"v0.0.4\"",
 				"LOOM_DRIVER_CACHE",
 				"LOOM_SLAVE_CACHE",
+				"LOOM_DRIVER_SKILLS_CACHE",
+				"SUPERPOWER_SKILLS_CACHE",
+				"LOOM_DRIVER_CODEX_PROMPTS_CACHE",
 				"packaging/windows/ensure-vscode.ps1",
 				"packaging/windows/ensure-codex.ps1",
 				"packaging/windows/codex-manifest.json",
 				"packaging/windows/ensure-codex-desktop.ps1",
+				"packaging/windows/install-driver-support.ps1",
 				"packaging/windows/write-install-mode.ps1",
 				"packaging/windows/machine.ps1",
 				"codex-desktop-installer.exe",
@@ -153,9 +166,13 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"cp \"$CODEX_DESKTOP_CACHE\"",
 				"cp \"$LOOM_DRIVER_CACHE\"",
 				"cp \"$LOOM_SLAVE_CACHE\"",
+				"cp \"$LOOM_DRIVER_SKILLS_CACHE\"",
+				"cp \"$SUPERPOWER_SKILLS_CACHE\"",
+				"cp \"$LOOM_DRIVER_CODEX_PROMPTS_CACHE\"",
 				"cp packaging/windows/ensure-vscode.ps1",
 				"cp packaging/windows/ensure-codex.ps1",
 				"cp packaging/windows/codex-manifest.json",
+				"cp packaging/windows/install-driver-support.ps1",
 				"cp packaging/windows/machine.ps1",
 				"cp dist/windows/uninstall.exe",
 				"cp dist/windows/token-refresher.exe",
@@ -168,9 +185,14 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"uninstall.exe",
 				"token-refresher.exe",
 				"driver-agent.windows-amd64.exe",
+				"v0.0.4",
 				"DestName: \"driver-agent.exe\"",
 				"slave-agent.windows-amd64.exe",
 				"DestName: \"slave-agent.exe\"",
+				"driver-skills.tar.gz",
+				"driver-superpower-skills.tar.gz",
+				"driver-codex-prompts.tar.gz",
+				"install-driver-support.ps1",
 				"Codex Installer.exe",
 				"DestName: \"codex-desktop-installer.exe\"",
 				"MessagesFile: \"ChineseSimplified.isl\"",
@@ -196,15 +218,22 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 			path: "../../scripts/package-windows.sh",
 			want: []string{
 				"CODEX_DESKTOP_CACHE",
-				"LOOM_RELEASE=\"v0.0.3\"",
+				"LOOM_RELEASE=\"v0.0.4\"",
 				"LOOM_DRIVER_CACHE",
 				"LOOM_SLAVE_CACHE",
+				"LOOM_DRIVER_SKILLS_CACHE",
+				"SUPERPOWER_SKILLS_CACHE",
+				"LOOM_DRIVER_CODEX_PROMPTS_CACHE",
 				"driver-agent.windows-amd64.exe",
 				"slave-agent.windows-amd64.exe",
+				"driver-skills.tar.gz",
+				"driver-superpower-skills.tar.gz",
+				"driver-codex-prompts.tar.gz",
 				"Codex Installer.exe",
 				"packaging/windows/ensure-codex.ps1",
 				"packaging/windows/codex-manifest.json",
 				"packaging/windows/ensure-codex-desktop.ps1",
+				"packaging/windows/install-driver-support.ps1",
 				"packaging/windows/write-install-mode.ps1",
 				"packaging/windows/machine.ps1",
 				"packaging/windows/ChineseSimplified.isl",
@@ -216,6 +245,9 @@ func TestWindowsInstallScriptsIncludeVSCodeInstaller(t *testing.T) {
 				"\"$CODEX_DESKTOP_CACHE\"",
 				"\"$LOOM_DRIVER_CACHE\"",
 				"\"$LOOM_SLAVE_CACHE\"",
+				"\"$LOOM_DRIVER_SKILLS_CACHE\"",
+				"\"$SUPERPOWER_SKILLS_CACHE\"",
+				"\"$LOOM_DRIVER_CODEX_PROMPTS_CACHE\"",
 			},
 		},
 	} {
@@ -384,6 +416,141 @@ func TestWindowsPortableCodexDesktopUsesBundledInstaller(t *testing.T) {
 	}
 }
 
+func TestWindowsInstallScriptInstallsDriverSupportDuringInstall(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"install-driver-support.ps1",
+		"& (Join-Path $InstallDir 'install-driver-support.ps1') -InstallDir $InstallDir",
+		"[System.IO.Path]::GetFullPath($srcPath)",
+		"[System.IO.Path]::GetFullPath($dstPath)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install.ps1 should install driver support during install; missing %q", want)
+		}
+	}
+	copyIdx := strings.Index(s, `Write-Step "Copied $($required.Count) files."`)
+	supportIdx := strings.Index(s, "& (Join-Path $InstallDir 'install-driver-support.ps1') -InstallDir $InstallDir")
+	frontendIdx := strings.Index(s, "Writing install mode minimal_vscode")
+	if copyIdx < 0 || supportIdx < 0 || frontendIdx < 0 {
+		t.Fatalf("install.ps1 missing expected copy/support/frontend markers")
+	}
+	if supportIdx < copyIdx {
+		t.Fatal("Install-DriverSupport must run after payload files are copied into the install directory")
+	}
+	if supportIdx > frontendIdx {
+		t.Fatal("Install-DriverSupport should run before frontend setup so installed Codex sees fresh skills and AGENTS.md")
+	}
+}
+
+func TestWindowsDriverSupportScriptInstallsSkillsAndConcisePrompt(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install-driver-support.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"function Expand-SkillsArchive",
+		"function Read-SkillsManifest",
+		"function Write-SkillsManifest",
+		"function Install-ManagedSkillFile",
+		"function Read-DriverCodexPrompt",
+		"function Merge-DriverCodexAgentsPrompt",
+		"driver-superpower-skills.tar.gz",
+		".agentserver-managed-skills.json",
+		"Get-FileHash -Algorithm SHA256",
+		"$oldHash -and ($currentHash -eq $oldHash)",
+		"prompts-codex\\AGENTS.md",
+		"ReadAllText($promptPath)",
+		"agentserver-app loom driver prompt:start",
+		"tar.exe -xzf",
+		".agents\\skills",
+		".codex\\skills",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install-driver-support.ps1 missing %q", want)
+		}
+	}
+	for _, notWant := range []string{
+		"$CodexDriverPrompt",
+		"Copy-Item $_.FullName -Destination $DestRoot -Recurse -Force",
+	} {
+		if strings.Contains(s, notWant) {
+			t.Fatalf("install-driver-support.ps1 should not contain %q", notWant)
+		}
+	}
+}
+
+func TestWindowsDriverCodexPromptsPackageUsesConcisePrompt(t *testing.T) {
+	promptPath := "../../packaging/windows/driver-codex-prompts/prompts-codex/AGENTS.md"
+	body, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"# Agentserver Driver Workspace",
+		"Use the `multiagent` skill",
+		"`mcp_servers.driver`",
+		"use the installed Superpower skills",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("driver Codex prompt source missing %q:\n%s", want, s)
+		}
+	}
+	for _, notWant := range []string{
+		"# Multi-Agent Driver",
+		"## Core tools",
+		"mcp__driver__list_agents",
+		"## Permissions skill",
+	} {
+		if strings.Contains(s, notWant) {
+			t.Fatalf("driver Codex prompt source still contains verbose Loom prompt %q:\n%s", notWant, s)
+		}
+	}
+
+	out := filepath.Join(t.TempDir(), "driver-codex-prompts.tar.gz")
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("python3 is not available in the Windows-target test environment")
+		}
+		t.Fatal(err)
+	}
+	cmd := exec.Command(python, "../../scripts/package-driver-codex-prompts.py", out)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("package-driver-codex-prompts.py: %v\n%s", err, output)
+	}
+	got := readTarGzEntry(t, out, "prompts-codex/AGENTS.md")
+	if got != s {
+		t.Fatalf("packaged prompt differs from source\nwant:\n%s\ngot:\n%s", s, got)
+	}
+}
+
+func TestWindowsPackageScriptsBuildDriverCodexPromptsFromLocalConciseSource(t *testing.T) {
+	for _, path := range []string{
+		"../../scripts/package-windows.sh",
+		"../../scripts/package-windows-zip.sh",
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(body)
+		want := `python3 scripts/package-driver-codex-prompts.py "$LOOM_DRIVER_CODEX_PROMPTS_CACHE"`
+		if !strings.Contains(s, want) {
+			t.Fatalf("%s should build driver-codex-prompts.tar.gz from the local concise prompt; missing %q", path, want)
+		}
+		notWant := `download_loom_asset "$LOOM_DRIVER_CODEX_PROMPTS_ASSET"`
+		if strings.Contains(s, notWant) {
+			t.Fatalf("%s should not package the verbose upstream Loom prompt archive directly", path)
+		}
+	}
+}
+
 func TestWindowsMachineScriptCreatesStableMachineIDAndUpdatesComputerName(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/machine.ps1")
 	if err != nil {
@@ -533,6 +700,35 @@ func TestWindowsInnoInstallerInitializesMachineBeforeFrontend(t *testing.T) {
 	alternateFrontend := strings.Index(s, "RunEstimatedPowerShellStep('vscode-mode'")
 	if machine < 0 || frontend < 0 || alternateFrontend < 0 || machine > frontend || machine > alternateFrontend {
 		t.Fatal("installer.iss should initialize machine identity before frontend mode setup")
+	}
+}
+
+func TestWindowsInnoInstallerInstallsDriverSupportBeforeFrontend(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		`Source: "install-driver-support.ps1"; DestDir: "{app}"; Flags: ignoreversion`,
+		"RunEstimatedPowerShellStep('driver-support'",
+		"install-driver-support.ps1",
+		"-InstallDir",
+		"正在安装 driver skills 和 Codex 指令",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("installer.iss should install driver support during install; missing %q", want)
+		}
+	}
+	runtime := strings.Index(s, "RunEstimatedPowerShellStep('codex-runtime'")
+	support := strings.Index(s, "RunEstimatedPowerShellStep('driver-support'")
+	codexFrontend := strings.Index(s, "RunEstimatedPowerShellStep('codex-mode'")
+	vscodeFrontend := strings.Index(s, "RunEstimatedPowerShellStep('vscode-mode'")
+	if runtime < 0 || support < 0 || codexFrontend < 0 || vscodeFrontend < 0 {
+		t.Fatal("installer.iss missing codex runtime/support/frontend markers")
+	}
+	if runtime > support || support > codexFrontend || support > vscodeFrontend {
+		t.Fatal("installer.iss must install driver support after preparing Codex runtime and before mode-specific frontend setup")
 	}
 }
 
@@ -872,6 +1068,67 @@ func TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback(t *tes
 	}
 }
 
+func TestEnsureCodexDesktopScriptFallsBackToWingetWhenBundledInstallerFails(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-codex-desktop.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	if strings.Contains(s, "$p.ExitCode -eq 1612") {
+		t.Fatal("ensure-codex-desktop.ps1 must not treat exit code 1612 as a successful Microsoft Store handoff")
+	}
+	for _, want := range []string{
+		"try {",
+		"Start-Process -FilePath $LocalInstallerPath -Wait -PassThru",
+		"} catch {",
+		"Bundled Codex Desktop installer failed to start",
+		"Bundled Codex Desktop installer failed with exit code",
+		"falling back to winget",
+		"return $false",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-codex-desktop.ps1 missing %q", want)
+		}
+	}
+}
+
+func TestWindowsPackageScriptsRefreshCodexDesktopInstallerEveryBuild(t *testing.T) {
+	for _, path := range []string{
+		"../../scripts/package-windows.sh",
+		"../../scripts/package-windows-zip.sh",
+	} {
+		t.Run(path, func(t *testing.T) {
+			body, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := string(body)
+			fetch := strings.Index(s, "Fetching Codex Desktop installer")
+			if fetch < 0 {
+				t.Fatalf("%s missing Codex Desktop installer download block", path)
+			}
+			if strings.Contains(s[:fetch], `if [[ ! -f "$CODEX_DESKTOP_CACHE" ]]`) {
+				t.Fatalf("%s must refresh the Codex Desktop installer every build, not skip download when cache exists", path)
+			}
+			for _, want := range []string{
+				`CODEX_DESKTOP_MIN_SIZE=`,
+				`verify_codex_desktop_installer()`,
+				`head -c 2 "$path"`,
+				`[[ "$magic" == "MZ" ]]`,
+				`rm -f "$CODEX_DESKTOP_CACHE" "$CODEX_DESKTOP_CACHE.part"`,
+				`curl --fail --location --retry 2 --retry-delay 2 --output "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_URL"`,
+				`if ! verify_codex_desktop_installer "$CODEX_DESKTOP_CACHE.part"; then`,
+				`ERROR: invalid Codex Desktop installer download`,
+				`mv "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_CACHE"`,
+			} {
+				if !strings.Contains(s, want) {
+					t.Fatalf("%s should refresh Codex Desktop installer; missing %q", path, want)
+				}
+			}
+		})
+	}
+}
+
 func TestWindowsInnoInstallerScriptUsesUTF8BOM(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
@@ -970,5 +1227,37 @@ func TestInstallAndDetect_InstallFails_DetectFindsAnyVersion(t *testing.T) {
 	}
 	if det.Path != "/x/code" || det.Version != "1.85.0" {
 		t.Errorf("got %+v", det)
+	}
+}
+
+func readTarGzEntry(t *testing.T, archivePath, entryName string) string {
+	t.Helper()
+	f, err := os.Open(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			t.Fatalf("%s not found in %s", entryName, archivePath)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Name != entryName {
+			continue
+		}
+		b, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
 	}
 }

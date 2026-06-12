@@ -26,10 +26,13 @@ type Settings struct {
 }
 
 type MCPServer struct {
-	Command string
-	Args    []string
-	Env     map[string]string
-	Cwd     string
+	Command           string
+	Args              []string
+	Env               map[string]string
+	Cwd               string
+	StartupTimeoutSec int
+	ToolTimeoutSec    int
+	Enabled           *bool
 }
 
 func ModelserverSettings() Settings {
@@ -148,6 +151,15 @@ func UpdateMCPServer(path, name string, server MCPServer) error {
 		"command": server.Command,
 		"args":    append([]string(nil), server.Args...),
 	}
+	if server.StartupTimeoutSec > 0 {
+		entry["startup_timeout_sec"] = server.StartupTimeoutSec
+	}
+	if server.ToolTimeoutSec > 0 {
+		entry["tool_timeout_sec"] = server.ToolTimeoutSec
+	}
+	if server.Enabled != nil {
+		entry["enabled"] = *server.Enabled
+	}
 	if len(server.Env) > 0 {
 		entry["env"] = server.Env
 	}
@@ -157,6 +169,43 @@ func UpdateMCPServer(path, name string, server MCPServer) error {
 	servers[name] = entry
 	root["mcp_servers"] = servers
 
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
+		return fmt.Errorf("marshal config.toml: %w", err)
+	}
+	return os.WriteFile(path, buf.Bytes(), 0o644)
+}
+
+func RemoveMCPServer(path, name string) error {
+	if name == "" {
+		return errors.New("MCP server name required")
+	}
+	root := map[string]any{}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read config.toml: %w", err)
+	}
+	if _, err := toml.Decode(string(b), &root); err != nil {
+		return fmt.Errorf("parse existing config.toml: %w", err)
+	}
+	servers, _ := root["mcp_servers"].(map[string]any)
+	if servers == nil {
+		return nil
+	}
+	if _, ok := servers[name]; !ok {
+		return nil
+	}
+	backup := fmt.Sprintf("%s.bak.%d", path, time.Now().Unix())
+	_ = os.WriteFile(backup, b, 0o644)
+	delete(servers, name)
+	if len(servers) == 0 {
+		delete(root, "mcp_servers")
+	} else {
+		root["mcp_servers"] = servers
+	}
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
 		return fmt.Errorf("marshal config.toml: %w", err)

@@ -34,6 +34,9 @@ node_modules/
 extensions/*/out/
 extensions/*/*.vsix
 
+# Python
+__pycache__/
+
 # OS
 .DS_Store
 Thumbs.db
