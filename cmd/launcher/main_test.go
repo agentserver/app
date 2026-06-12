@@ -304,6 +304,48 @@ func TestAutomaticUpdateCheckLogsNonCanceledErrors(t *testing.T) {
 	t.Fatalf("automatic update check error was not logged; logs=%q", logs.String())
 }
 
+func TestAutomaticUpdateCheckTimesOutBlockingManifestRequest(t *testing.T) {
+	var logs lockedLogBuffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+	})
+
+	requestCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		close(requestCanceled)
+	}))
+	t.Cleanup(server.Close)
+
+	store := updater.NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	scheduleAutomaticUpdateCheckWithTiming(ctx, &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    server.URL,
+		State:          store,
+	}, 1*time.Millisecond, time.Hour, 25*time.Millisecond)
+
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("blocking manifest request was not canceled by automatic check timeout")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		saved, err := store.Load()
+		if err == nil && saved.Status == updater.StatusError && strings.Contains(saved.LastError, "context deadline exceeded") && strings.Contains(logs.String(), "launcher: automatic update check:") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	saved, _ := store.Load()
+	t.Fatalf("automatic update timeout was not logged and saved; state=%+v logs=%q", saved, logs.String())
+}
+
 type lockedLogBuffer struct {
 	mu sync.Mutex
 	b  strings.Builder
@@ -346,7 +388,7 @@ func TestRestorePendingSlaveRestartsCallsManager(t *testing.T) {
 	}
 	var got []string
 
-	err := restorePendingSlaveRestarts(context.Background(), path, func(_ context.Context, id string) error {
+	err := restorePendingSlaveRestarts(context.Background(), path, "0.1.2", func(_ context.Context, id string) error {
 		got = append(got, id)
 		return nil
 	})
@@ -356,6 +398,70 @@ func TestRestorePendingSlaveRestartsCallsManager(t *testing.T) {
 
 	if strings.Join(got, ",") != "a,b" {
 		t.Fatalf("restarted=%v, want [a b]", got)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending file err=%v, want removed", err)
+	}
+}
+
+func TestRestorePendingSlaveRestartsOlderCurrentVersionKeepsFileAndSkipsRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pending-slave-restarts.json")
+	if err := os.WriteFile(path, []byte(`{"reason":"app_update","version":"0.1.2","created_at":"2026-06-12T00:00:00Z","slave_ids":["a"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := restorePendingSlaveRestarts(context.Background(), path, "0.1.1", func(context.Context, string) error {
+		t.Fatal("restart should not be called when current version is older than pending target")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("pending file should remain for later app update: %v", err)
+	}
+}
+
+func TestRestorePendingSlaveRestartsNewerCurrentVersionRestoresAndRemovesFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pending-slave-restarts.json")
+	if err := os.WriteFile(path, []byte(`{"reason":"app_update","version":"0.1.2","created_at":"2026-06-12T00:00:00Z","slave_ids":["a","b"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+
+	err := restorePendingSlaveRestarts(context.Background(), path, "0.1.3", func(_ context.Context, id string) error {
+		got = append(got, id)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "a,b" {
+		t.Fatalf("restarted=%v, want [a b]", got)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending file err=%v, want removed", err)
+	}
+}
+
+func TestRestorePendingSlaveRestartsInvalidVersionReturnsErrorAndKeepsFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pending-slave-restarts.json")
+	if err := os.WriteFile(path, []byte(`{"reason":"app_update","version":"broken","created_at":"2026-06-12T00:00:00Z","slave_ids":["a"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := restorePendingSlaveRestarts(context.Background(), path, "0.1.2", func(context.Context, string) error {
+		t.Fatal("restart should not be called when version comparison fails")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected version comparison error")
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("pending file should remain after version comparison error: %v", statErr)
 	}
 }
 

@@ -29,14 +29,26 @@ func (c *Controller) InstallUpdate(ctx context.Context, m updater.Manifest) (upd
 	if c.d.Updates == nil {
 		return updater.State{}, errUpdaterUnavailable
 	}
-	if c.d.Slaves != nil && c.d.PendingSlaveRestartsPath != "" {
-		_, slaves, err := c.d.Slaves.List(ctx)
-		if err != nil {
-			return updater.State{}, fmt.Errorf("list slaves before update: %w", err)
-		}
-		if err := slave.WritePendingRestarts(c.d.PendingSlaveRestartsPath, m.Version, slaves, c.d.Now); err != nil {
-			return updater.State{}, fmt.Errorf("record pending slave restarts: %w", err)
+	updates := *c.d.Updates
+	priorBeforeInstallerStart := updates.BeforeInstallerStart
+	if priorBeforeInstallerStart != nil || (c.d.Slaves != nil && c.d.PendingSlaveRestartsPath != "") {
+		updates.BeforeInstallerStart = func(ctx context.Context, m updater.Manifest, installerPath string) error {
+			if priorBeforeInstallerStart != nil {
+				if err := priorBeforeInstallerStart(ctx, m, installerPath); err != nil {
+					return err
+				}
+			}
+			if c.d.Slaves != nil && c.d.PendingSlaveRestartsPath != "" {
+				_, slaves, err := c.d.Slaves.List(ctx)
+				if err != nil {
+					return fmt.Errorf("list slaves before update: %w", err)
+				}
+				if err := slave.WritePendingRestarts(c.d.PendingSlaveRestartsPath, m.Version, slaves, c.d.Now); err != nil {
+					return fmt.Errorf("record pending slave restarts: %w", err)
+				}
+			}
+			return nil
 		}
 	}
-	return c.d.Updates.DownloadAndStart(ctx, m)
+	return updates.DownloadAndStart(ctx, m)
 }

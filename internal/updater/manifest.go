@@ -24,7 +24,20 @@ func (m Manifest) Validate() error {
 	if m.URL != strings.TrimSpace(m.URL) {
 		return fmt.Errorf("installer url must not have leading or trailing whitespace")
 	}
-	u, err := url.Parse(m.URL)
+	if err := validateInstallerURL(m.URL); err != nil {
+		return err
+	}
+	if err := validateSHA256(m.SHA256); err != nil {
+		return err
+	}
+	if m.Size <= 0 {
+		return fmt.Errorf("size must be positive")
+	}
+	return nil
+}
+
+func validateInstallerURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return fmt.Errorf("invalid installer url")
 	}
@@ -34,12 +47,6 @@ func (m Manifest) Validate() error {
 	host := strings.ToLower(u.Hostname())
 	if host != AssetsHost {
 		return fmt.Errorf("installer url host %q is not allowed", u.Hostname())
-	}
-	if err := validateSHA256(m.SHA256); err != nil {
-		return err
-	}
-	if m.Size <= 0 {
-		return fmt.Errorf("size must be positive")
 	}
 	return nil
 }

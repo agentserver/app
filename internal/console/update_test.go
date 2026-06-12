@@ -2,9 +2,12 @@ package console
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -83,12 +86,12 @@ func TestControllerCheckUpdateDelegatesToUpdaterService(t *testing.T) {
 	}
 }
 
-func TestControllerInstallUpdateRecordsEligibleSlavesBeforeDownloadError(t *testing.T) {
+func TestControllerInstallUpdateDoesNotRecordPendingRestartsBeforeValidationError(t *testing.T) {
 	dir := t.TempDir()
 	manager := newConsoleUpdateSlaveManager(t, dir)
-	runningID := createConsoleUpdateSlave(t, manager, "running", slave.StatusRunning)
-	startingID := createConsoleUpdateSlave(t, manager, "starting", slave.StatusStarting)
-	authID := createConsoleUpdateSlave(t, manager, "auth", slave.StatusAuthRequired)
+	createConsoleUpdateSlave(t, manager, "running", slave.StatusRunning)
+	createConsoleUpdateSlave(t, manager, "starting", slave.StatusStarting)
+	createConsoleUpdateSlave(t, manager, "auth", slave.StatusAuthRequired)
 	createConsoleUpdateSlave(t, manager, "paused", slave.StatusPaused)
 	createConsoleUpdateSlave(t, manager, "stopped", slave.StatusStopped)
 	createConsoleUpdateSlave(t, manager, "error", slave.StatusError)
@@ -118,21 +121,131 @@ func TestControllerInstallUpdateRecordsEligibleSlavesBeforeDownloadError(t *test
 	if got.Status != updater.StatusError {
 		t.Fatalf("Status=%q, want %q", got.Status, updater.StatusError)
 	}
-	pending, readErr := slave.ReadPendingRestarts(pendingPath)
-	if readErr != nil {
-		t.Fatalf("ReadPendingRestarts: %v", readErr)
-	}
-	if pending.Version != manifest.Version {
-		t.Fatalf("pending version=%q, want %q", pending.Version, manifest.Version)
-	}
-	if want := []string{runningID, startingID, authID}; !reflect.DeepEqual(pending.SlaveIDs, want) {
-		t.Fatalf("pending SlaveIDs=%v, want %v", pending.SlaveIDs, want)
+	if _, readErr := slave.ReadPendingRestarts(pendingPath); !errors.Is(readErr, os.ErrNotExist) {
+		t.Fatalf("pending restart file err=%v, want missing", readErr)
 	}
 }
 
-func TestControllerInstallUpdateWrapsSlaveListFailureAndDoesNotStartDownload(t *testing.T) {
+func TestControllerInstallUpdateDoesNotRecordPendingRestartsBeforeHashError(t *testing.T) {
 	dir := t.TempDir()
-	transport := &recordingRoundTripper{}
+	manager := newConsoleUpdateSlaveManager(t, dir)
+	createConsoleUpdateSlave(t, manager, "running", slave.StatusRunning)
+	body := []byte("installer bytes")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write(body); err != nil {
+			t.Fatalf("Write body: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	pendingPath := filepath.Join(dir, "pending-restarts.json")
+	got, err := NewController(Deps{
+		Slaves:                   manager,
+		PendingSlaveRestartsPath: pendingPath,
+		Updates: &updater.Service{
+			CurrentVersion: "1.0.0",
+			CacheDir:       filepath.Join(dir, "cache"),
+			State:          updater.NewStateStore(filepath.Join(dir, "updates.json")),
+			Client:         consoleAssetsHostClient(t, server),
+		},
+	}).InstallUpdate(context.Background(), updater.Manifest{
+		Version: "1.2.0",
+		URL:     consoleAssetsInstallerURL("/agentserver-app.exe"),
+		SHA256:  strings.Repeat("d", 64),
+		Size:    int64(len(body)),
+	})
+	if err == nil {
+		t.Fatal("expected hash mismatch error")
+	}
+	if got.Status != updater.StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, updater.StatusError)
+	}
+	if _, readErr := slave.ReadPendingRestarts(pendingPath); !errors.Is(readErr, os.ErrNotExist) {
+		t.Fatalf("pending restart file err=%v, want missing", readErr)
+	}
+}
+
+func TestControllerInstallUpdateRecordsEligibleSlavesImmediatelyBeforeInstallerStart(t *testing.T) {
+	dir := t.TempDir()
+	manager := newConsoleUpdateSlaveManager(t, dir)
+	runningID := createConsoleUpdateSlave(t, manager, "running", slave.StatusRunning)
+	startingID := createConsoleUpdateSlave(t, manager, "starting", slave.StatusStarting)
+	authID := createConsoleUpdateSlave(t, manager, "auth", slave.StatusAuthRequired)
+	createConsoleUpdateSlave(t, manager, "paused", slave.StatusPaused)
+	body := []byte("installer bytes")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write(body); err != nil {
+			t.Fatalf("Write body: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	pendingPath := filepath.Join(dir, "pending-restarts.json")
+	manifest := validConsoleUpdateManifestForBody(body)
+	originalBeforeCalled := false
+	startCalled := false
+	svc := &updater.Service{
+		CurrentVersion: "1.0.0",
+		CacheDir:       filepath.Join(dir, "cache"),
+		State:          updater.NewStateStore(filepath.Join(dir, "updates.json")),
+		Client:         consoleAssetsHostClient(t, server),
+		BeforeInstallerStart: func(context.Context, updater.Manifest, string) error {
+			originalBeforeCalled = true
+			return nil
+		},
+		StartInstaller: func(ctx context.Context, path string) error {
+			startCalled = true
+			pending, err := slave.ReadPendingRestarts(pendingPath)
+			if err != nil {
+				t.Fatalf("ReadPendingRestarts before installer start: %v", err)
+			}
+			if pending.Version != manifest.Version {
+				t.Fatalf("pending version=%q, want %q", pending.Version, manifest.Version)
+			}
+			if want := []string{runningID, startingID, authID}; !reflect.DeepEqual(pending.SlaveIDs, want) {
+				t.Fatalf("pending SlaveIDs=%v, want %v", pending.SlaveIDs, want)
+			}
+			return nil
+		},
+	}
+	originalBeforePointer := reflect.ValueOf(svc.BeforeInstallerStart).Pointer()
+
+	got, err := NewController(Deps{
+		Slaves:                   manager,
+		PendingSlaveRestartsPath: pendingPath,
+		Now: func() time.Time {
+			return time.Date(2026, 6, 12, 9, 30, 0, 0, time.UTC)
+		},
+		Updates: svc,
+	}).InstallUpdate(context.Background(), manifest)
+	if err != nil {
+		t.Fatalf("InstallUpdate: %v", err)
+	}
+	if got.Status != updater.StatusInstallerStarted {
+		t.Fatalf("Status=%q, want %q", got.Status, updater.StatusInstallerStarted)
+	}
+	if !originalBeforeCalled {
+		t.Fatal("existing BeforeInstallerStart callback was not wrapped")
+	}
+	if !startCalled {
+		t.Fatal("StartInstaller was not called")
+	}
+	if gotPointer := reflect.ValueOf(svc.BeforeInstallerStart).Pointer(); gotPointer != originalBeforePointer {
+		t.Fatal("shared updater service callback was mutated")
+	}
+}
+
+func TestControllerInstallUpdateDownloadsThenStopsBeforeInstallerWhenSlaveListFails(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("installer bytes")
+	downloaded := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downloaded = true
+		if _, err := w.Write(body); err != nil {
+			t.Fatalf("Write body: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	startCalled := false
 	c := NewController(Deps{
 		Slaves: slave.NewManager(slave.ManagerDeps{
 			Registry: slave.NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
@@ -142,19 +255,26 @@ func TestControllerInstallUpdateWrapsSlaveListFailureAndDoesNotStartDownload(t *
 			CurrentVersion: "1.0.0",
 			CacheDir:       filepath.Join(dir, "cache"),
 			State:          updater.NewStateStore(filepath.Join(dir, "updates.json")),
-			Client:         &http.Client{Transport: transport},
+			Client:         consoleAssetsHostClient(t, server),
+			StartInstaller: func(context.Context, string) error {
+				startCalled = true
+				return nil
+			},
 		},
 	})
 
-	_, err := c.InstallUpdate(context.Background(), validConsoleUpdateManifest())
+	_, err := c.InstallUpdate(context.Background(), validConsoleUpdateManifestForBody(body))
 	if err == nil {
 		t.Fatal("expected slave list error")
 	}
 	if !strings.Contains(err.Error(), "list slaves before update") {
 		t.Fatalf("error=%q, want list context", err)
 	}
-	if transport.called {
-		t.Fatal("updater download started after slave list failed")
+	if !downloaded {
+		t.Fatal("installer was not downloaded before pending restart callback listed slaves")
+	}
+	if startCalled {
+		t.Fatal("installer started after slave list failed")
 	}
 }
 
@@ -162,11 +282,18 @@ func TestControllerInstallUpdateDoesNotStartDownloadWhenPendingRestartWriteFails
 	dir := t.TempDir()
 	manager := newConsoleUpdateSlaveManager(t, dir)
 	createConsoleUpdateSlave(t, manager, "running", slave.StatusRunning)
+	body := []byte("installer bytes")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write(body); err != nil {
+			t.Fatalf("Write body: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
 	blockingFile := filepath.Join(dir, "not-a-dir")
 	if err := os.WriteFile(blockingFile, []byte("file"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	transport := &recordingRoundTripper{}
+	startCalled := false
 	c := NewController(Deps{
 		Slaves:                   manager,
 		PendingSlaveRestartsPath: filepath.Join(blockingFile, "pending.json"),
@@ -174,24 +301,23 @@ func TestControllerInstallUpdateDoesNotStartDownloadWhenPendingRestartWriteFails
 			CurrentVersion: "1.0.0",
 			CacheDir:       filepath.Join(dir, "cache"),
 			State:          updater.NewStateStore(filepath.Join(dir, "updates.json")),
-			Client:         &http.Client{Transport: transport},
+			Client:         consoleAssetsHostClient(t, server),
+			StartInstaller: func(context.Context, string) error {
+				startCalled = true
+				return nil
+			},
 		},
 	})
 
-	_, err := c.InstallUpdate(context.Background(), updater.Manifest{
-		Version: "1.2.0",
-		URL:     "https://assets.agent.cs.ac.cn/agentserver-app.exe",
-		SHA256:  strings.Repeat("c", 64),
-		Size:    1,
-	})
+	_, err := c.InstallUpdate(context.Background(), validConsoleUpdateManifestForBody(body))
 	if err == nil {
 		t.Fatal("expected pending restart write error")
 	}
 	if !strings.Contains(err.Error(), "record pending slave restarts") {
 		t.Fatalf("error=%q, want pending restart context", err)
 	}
-	if transport.called {
-		t.Fatal("updater download started after pending restart write failed")
+	if startCalled {
+		t.Fatal("installer started after pending restart write failed")
 	}
 }
 
@@ -252,20 +378,49 @@ func createConsoleUpdateSlave(t *testing.T, manager *slave.Manager, name string,
 	return sl.ID
 }
 
-func validConsoleUpdateManifest() updater.Manifest {
+func validConsoleUpdateManifestForBody(body []byte) updater.Manifest {
+	sum := sha256.Sum256(body)
 	return updater.Manifest{
 		Version: "1.2.0",
-		URL:     "https://assets.agent.cs.ac.cn/agentserver-app.exe",
-		SHA256:  strings.Repeat("c", 64),
-		Size:    1,
+		URL:     consoleAssetsInstallerURL("/agentserver-app.exe"),
+		SHA256:  hex.EncodeToString(sum[:]),
+		Size:    int64(len(body)),
 	}
 }
 
-type recordingRoundTripper struct {
-	called bool
+func consoleAssetsInstallerURL(path string) string {
+	return "https://" + updater.AssetsHost + path
 }
 
-func (r *recordingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
-	r.called = true
-	return nil, errors.New("unexpected download")
+func consoleAssetsHostClient(t *testing.T, server *httptest.Server) *http.Client {
+	t.Helper()
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	client := server.Client()
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Transport = consoleAssetsHostRewriteTransport{base: base, target: target}
+	return client
+}
+
+type consoleAssetsHostRewriteTransport struct {
+	base   http.RoundTripper
+	target *url.URL
+}
+
+func (t consoleAssetsHostRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.EqualFold(req.URL.Hostname(), updater.AssetsHost) {
+		clone := req.Clone(req.Context())
+		u := *clone.URL
+		u.Scheme = t.target.Scheme
+		u.Host = t.target.Host
+		clone.URL = &u
+		clone.Host = ""
+		return t.base.RoundTrip(clone)
+	}
+	return t.base.RoundTrip(req)
 }

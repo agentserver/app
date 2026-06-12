@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -384,6 +385,203 @@ func TestServiceDownloadVerifiesSHA256AndStartsInstaller(t *testing.T) {
 	}
 	if string(gotBody) != string(body) {
 		t.Fatalf("installer body=%q, want %q", gotBody, body)
+	}
+}
+
+func TestServiceDownloadRejectsRedirectToDisallowedHostBeforeRequestingTarget(t *testing.T) {
+	body := []byte("installer bytes")
+	sum := sha256.Sum256(body)
+	redirectedHostRequested := false
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://downloads.example.test/agentserver-app-0.1.2-setup.exe", http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+	client := assetsHostClient(t, server)
+	client.Transport = disallowedRedirectRecordingTransport{
+		base: client.Transport,
+		onDisallowed: func(req *http.Request) (*http.Response, error) {
+			redirectedHostRequested = true
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(string(body))),
+				Request:    req,
+			}, nil
+		},
+	}
+
+	startCalled := false
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		CacheDir:       filepath.Join(t.TempDir(), "cache"),
+		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		Client:         client,
+		StartInstaller: func(context.Context, string) error {
+			startCalled = true
+			return nil
+		},
+	}.DownloadAndStart(context.Background(), Manifest{
+		Version: "0.1.2",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
+		SHA256:  hex.EncodeToString(sum[:]),
+		Size:    int64(len(body)),
+	})
+	if err == nil {
+		t.Fatal("expected redirect host rejection")
+	}
+	if got.Status != StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+	}
+	if redirectedHostRequested {
+		t.Fatal("download requested disallowed redirect target")
+	}
+	if startCalled {
+		t.Fatal("StartInstaller called after disallowed redirect")
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("error=%q, want allowlist rejection", err)
+	}
+}
+
+func TestServiceDownloadRejectsNonNewerUpdateBeforeNetwork(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		current       string
+		updateVersion string
+		wantErr       string
+	}{
+		{name: "equal", current: "0.1.2", updateVersion: "0.1.2", wantErr: "not newer"},
+		{name: "older", current: "0.1.3", updateVersion: "0.1.2", wantErr: "not newer"},
+		{name: "invalid current", current: "dev", updateVersion: "0.1.2", wantErr: "invalid"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &recordingInstallerTransport{}
+			startCalled := false
+			got, err := Service{
+				CurrentVersion: tt.current,
+				CacheDir:       filepath.Join(t.TempDir(), "cache"),
+				State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+				Client:         &http.Client{Transport: transport},
+				StartInstaller: func(context.Context, string) error {
+					startCalled = true
+					return nil
+				},
+			}.DownloadAndStart(context.Background(), Manifest{
+				Version: tt.updateVersion,
+				URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
+				SHA256:  strings.Repeat("a", 64),
+				Size:    1,
+			})
+			if err == nil {
+				t.Fatal("expected non-newer update rejection")
+			}
+			if got.Status != StatusError {
+				t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+			}
+			if transport.called {
+				t.Fatal("download started for non-newer update")
+			}
+			if startCalled {
+				t.Fatal("StartInstaller called for non-newer update")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error=%q, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestServiceDownloadCallsBeforeInstallerStartAfterPromotion(t *testing.T) {
+	body := []byte("installer bytes")
+	sum := sha256.Sum256(body)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write(body); err != nil {
+			t.Fatalf("Write body: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var beforePath string
+	var startedPath string
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		CacheDir:       filepath.Join(t.TempDir(), "cache"),
+		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		Client:         assetsHostClient(t, server),
+		BeforeInstallerStart: func(ctx context.Context, m Manifest, installerPath string) error {
+			beforePath = installerPath
+			if _, err := os.Stat(installerPath); err != nil {
+				t.Fatalf("installer was not promoted before callback: %v", err)
+			}
+			if m.Version != "0.1.2" {
+				t.Fatalf("callback manifest version=%q, want 0.1.2", m.Version)
+			}
+			return nil
+		},
+		StartInstaller: func(ctx context.Context, path string) error {
+			startedPath = path
+			return nil
+		},
+	}.DownloadAndStart(context.Background(), Manifest{
+		Version: "0.1.2",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
+		SHA256:  hex.EncodeToString(sum[:]),
+		Size:    int64(len(body)),
+	})
+	if err != nil {
+		t.Fatalf("DownloadAndStart: %v", err)
+	}
+	if got.Status != StatusInstallerStarted {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusInstallerStarted)
+	}
+	if beforePath == "" {
+		t.Fatal("BeforeInstallerStart was not called")
+	}
+	if startedPath != beforePath {
+		t.Fatalf("StartInstaller path=%q, want callback path %q", startedPath, beforePath)
+	}
+}
+
+func TestServiceDownloadDoesNotStartInstallerWhenBeforeInstallerStartFails(t *testing.T) {
+	body := []byte("installer bytes")
+	sum := sha256.Sum256(body)
+	beforeErr := errors.New("before start failed")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write(body); err != nil {
+			t.Fatalf("Write body: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	startCalled := false
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		CacheDir:       filepath.Join(t.TempDir(), "cache"),
+		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		Client:         assetsHostClient(t, server),
+		BeforeInstallerStart: func(context.Context, Manifest, string) error {
+			return beforeErr
+		},
+		StartInstaller: func(context.Context, string) error {
+			startCalled = true
+			return nil
+		},
+	}.DownloadAndStart(context.Background(), Manifest{
+		Version: "0.1.2",
+		URL:     assetsInstallerURL("/agentserver-app-0.1.2-setup.exe"),
+		SHA256:  hex.EncodeToString(sum[:]),
+		Size:    int64(len(body)),
+	})
+	if !errors.Is(err, beforeErr) {
+		t.Fatalf("error=%v, want %v", err, beforeErr)
+	}
+	if got.Status != StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+	}
+	if startCalled {
+		t.Fatal("StartInstaller called after BeforeInstallerStart failed")
 	}
 }
 
@@ -786,4 +984,25 @@ func (t assetsHostRewriteTransport) RoundTrip(req *http.Request) (*http.Response
 		return t.base.RoundTrip(clone)
 	}
 	return t.base.RoundTrip(req)
+}
+
+type disallowedRedirectRecordingTransport struct {
+	base         http.RoundTripper
+	onDisallowed func(*http.Request) (*http.Response, error)
+}
+
+func (t disallowedRedirectRecordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !strings.EqualFold(req.URL.Hostname(), AssetsHost) && t.onDisallowed != nil {
+		return t.onDisallowed(req)
+	}
+	return t.base.RoundTrip(req)
+}
+
+type recordingInstallerTransport struct {
+	called bool
+}
+
+func (t *recordingInstallerTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	t.called = true
+	return nil, errors.New("unexpected installer download")
 }

@@ -19,14 +19,15 @@ import (
 const DefaultManifestURL = "https://assets.agent.cs.ac.cn/agentserver-app/windows/latest.json"
 
 type Service struct {
-	CurrentVersion string
-	ManifestURL    string
-	CacheDir       string
-	State          stateStore
-	Client         *http.Client
-	StartInstaller func(context.Context, string) error
-	Now            func() time.Time
-	AutoCheckEvery time.Duration
+	CurrentVersion       string
+	ManifestURL          string
+	CacheDir             string
+	State                stateStore
+	Client               *http.Client
+	StartInstaller       func(context.Context, string) error
+	BeforeInstallerStart func(context.Context, Manifest, string) error
+	Now                  func() time.Time
+	AutoCheckEvery       time.Duration
 }
 
 type stateStore interface {
@@ -94,6 +95,13 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 	if err := m.Validate(); err != nil {
 		return s.saveError(now, err)
 	}
+	cmp, err := CompareVersions(m.Version, s.CurrentVersion)
+	if err != nil {
+		return s.saveError(now, fmt.Errorf("invalid current version: %w", err))
+	}
+	if cmp <= 0 {
+		return s.saveError(now, fmt.Errorf("update version %s is not newer than current version %s", m.Version, s.CurrentVersion))
+	}
 	if s.CacheDir == "" {
 		return s.saveError(now, fmt.Errorf("cache dir is required"))
 	}
@@ -139,6 +147,12 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 		return s.saveError(now, err)
 	}
 	promoted = true
+
+	if s.BeforeInstallerStart != nil {
+		if err := s.BeforeInstallerStart(ctx, m, finalPath); err != nil {
+			return s.saveError(now, err)
+		}
+	}
 
 	start := s.StartInstaller
 	startContext := ctx
@@ -189,7 +203,8 @@ func (s Service) downloadInstaller(ctx context.Context, m Manifest, w io.Writer)
 	if err != nil {
 		return err
 	}
-	resp, err := s.client().Do(req)
+	client := s.installerDownloadClient()
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -205,6 +220,22 @@ func (s Service) downloadInstaller(ctx context.Context, m Manifest, w io.Writer)
 		return fmt.Errorf("installer response larger than declared size: got more than %d bytes", m.Size)
 	}
 	return nil
+}
+
+func (s Service) installerDownloadClient() *http.Client {
+	base := s.client()
+	client := *base
+	priorCheckRedirect := base.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := validateInstallerURL(req.URL.String()); err != nil {
+			return err
+		}
+		if priorCheckRedirect != nil {
+			return priorCheckRedirect(req, via)
+		}
+		return nil
+	}
+	return &client
 }
 
 func (s Service) autoCheckEvery() time.Duration {

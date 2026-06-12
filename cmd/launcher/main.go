@@ -196,7 +196,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		return err
 	}
 	updates := newCompletedUpdater(in.Paths)
-	if err := restorePendingSlaveRestarts(ctx, in.Paths.PendingSlaveRestartsFile, func(ctx context.Context, id string) error {
+	if err := restorePendingSlaveRestarts(ctx, in.Paths.PendingSlaveRestartsFile, appversion.Version, func(ctx context.Context, id string) error {
 		_, err := slaveManager.Restart(ctx, id)
 		return err
 	}); err != nil {
@@ -329,13 +329,37 @@ func newCompletedUpdater(p paths.Paths) *updater.Service {
 	}
 }
 
-func restorePendingSlaveRestarts(ctx context.Context, path string, restart func(context.Context, string) error) error {
+func restorePendingSlaveRestarts(ctx context.Context, path, currentVersion string, restart func(context.Context, string) error) error {
+	pending, err := slave.ReadPendingRestarts(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	cmp, err := updater.CompareVersions(currentVersion, pending.Version)
+	if err != nil {
+		return fmt.Errorf("compare pending slave restart version: %w", err)
+	}
+	if cmp < 0 {
+		return nil
+	}
 	return slave.RestorePendingRestarts(ctx, path, restart)
 }
 
 func scheduleAutomaticUpdateCheck(ctx context.Context, svc *updater.Service, delay time.Duration) {
+	scheduleAutomaticUpdateCheckWithTiming(ctx, svc, delay, 24*time.Hour, 30*time.Second)
+}
+
+func scheduleAutomaticUpdateCheckWithTiming(ctx context.Context, svc *updater.Service, delay, interval, timeout time.Duration) {
 	if svc == nil {
 		return
+	}
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
 	}
 	go func() {
 		timer := time.NewTimer(delay)
@@ -347,11 +371,14 @@ func scheduleAutomaticUpdateCheck(ctx context.Context, svc *updater.Service, del
 			case <-timer.C:
 			}
 
-			if _, err := svc.Check(ctx, true); err != nil && !errors.Is(err, context.Canceled) {
+			checkCtx, cancelCheck := context.WithTimeout(ctx, timeout)
+			_, err := svc.Check(checkCtx, true)
+			cancelCheck()
+			if err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("launcher: automatic update check: %v", err)
 			}
 
-			timer.Reset(24 * time.Hour)
+			timer.Reset(interval)
 		}
 	}()
 }
