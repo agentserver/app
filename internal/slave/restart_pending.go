@@ -115,7 +115,7 @@ func writePendingRestartFile(path string, pending PendingRestarts) error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := replaceFile(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}

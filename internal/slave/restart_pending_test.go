@@ -71,6 +71,31 @@ func TestWritePendingRestartsRemovesStaleFileWhenNoEligibleSlaves(t *testing.T) 
 	}
 }
 
+func TestWritePendingRestartsReplacesExistingPendingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pending-slave-restarts.json")
+	if err := os.WriteFile(path, []byte(`{"reason":"stale","version":"old","created_at":"2026-01-01T00:00:00Z","slave_ids":["stale"]}`), 0o644); err != nil {
+		t.Fatalf("write stale file: %v", err)
+	}
+
+	err := WritePendingRestarts(path, "0.1.2", []Slave{{ID: "fresh", Status: StatusRunning}}, func() time.Time {
+		return time.Unix(20, 0)
+	})
+	if err != nil {
+		t.Fatalf("WritePendingRestarts: %v", err)
+	}
+
+	got, err := ReadPendingRestarts(path)
+	if err != nil {
+		t.Fatalf("ReadPendingRestarts: %v", err)
+	}
+	if got.Reason != "app_update" || got.Version != "0.1.2" {
+		t.Fatalf("pending metadata=%+v, want app_update 0.1.2", got)
+	}
+	if want := []string{"fresh"}; !reflect.DeepEqual(got.SlaveIDs, want) {
+		t.Fatalf("SlaveIDs=%v, want %v", got.SlaveIDs, want)
+	}
+}
+
 func TestWritePendingRestartsLeavesNoFileWhenNoEligibleSlaves(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pending-slave-restarts.json")
 
@@ -174,5 +199,22 @@ func TestRestorePendingRestartsNilCallbackWithIDsReturnsErrorAndKeepsFile(t *tes
 	}
 	if _, statErr := os.Stat(path); statErr != nil {
 		t.Fatalf("pending file was not kept: %v", statErr)
+	}
+}
+
+func TestWindowsReplaceFileUsesMoveFileExWithReplaceAndWriteThrough(t *testing.T) {
+	source, err := os.ReadFile("replace_file_windows.go")
+	if err != nil {
+		t.Fatalf("read windows replace helper: %v", err)
+	}
+	text := string(source)
+	for _, want := range []string{
+		"windows.MoveFileEx",
+		"windows.MOVEFILE_REPLACE_EXISTING",
+		"windows.MOVEFILE_WRITE_THROUGH",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("replace_file_windows.go does not contain %q", want)
+		}
 	}
 }
