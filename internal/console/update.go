@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/updater"
@@ -30,14 +31,10 @@ func (c *Controller) InstallUpdate(ctx context.Context, m updater.Manifest) (upd
 		return updater.State{}, errUpdaterUnavailable
 	}
 	updates := *c.d.Updates
-	priorBeforeInstallerStart := updates.BeforeInstallerStart
-	if priorBeforeInstallerStart != nil || (c.d.Slaves != nil && c.d.PendingSlaveRestartsPath != "") {
-		updates.BeforeInstallerStart = func(ctx context.Context, m updater.Manifest, installerPath string) error {
-			if priorBeforeInstallerStart != nil {
-				if err := priorBeforeInstallerStart(ctx, m, installerPath); err != nil {
-					return err
-				}
-			}
+	priorStartInstaller := updates.StartInstaller
+	if priorStartInstaller != nil || (c.d.Slaves != nil && c.d.PendingSlaveRestartsPath != "") {
+		updates.StartInstaller = func(ctx context.Context, installerPath string) error {
+			wrotePendingRestarts := false
 			if c.d.Slaves != nil && c.d.PendingSlaveRestartsPath != "" {
 				_, slaves, err := c.d.Slaves.List(ctx)
 				if err != nil {
@@ -46,6 +43,21 @@ func (c *Controller) InstallUpdate(ctx context.Context, m updater.Manifest) (upd
 				if err := slave.WritePendingRestarts(c.d.PendingSlaveRestartsPath, m.Version, slaves, c.d.Now); err != nil {
 					return fmt.Errorf("record pending slave restarts: %w", err)
 				}
+				wrotePendingRestarts = true
+			}
+			startCtx := ctx
+			start := priorStartInstaller
+			if start == nil {
+				start = updater.StartInstaller
+				startCtx = context.Background()
+			}
+			if err := start(startCtx, installerPath); err != nil {
+				if wrotePendingRestarts {
+					if removeErr := os.Remove(c.d.PendingSlaveRestartsPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+						return errors.Join(err, fmt.Errorf("remove pending slave restarts after installer start failure: %w", removeErr))
+					}
+				}
+				return err
 			}
 			return nil
 		}
