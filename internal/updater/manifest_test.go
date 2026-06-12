@@ -48,6 +48,17 @@ func TestManifestValidateRejectsPaddedVersion(t *testing.T) {
 	}
 }
 
+func TestManifestValidateRejectsZeroPaddedVersion(t *testing.T) {
+	m := Manifest{
+		Version: "01.2.3",
+		URL:     "https://assets.agent.cs.ac.cn/agentserver-app.exe",
+		SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}
+	if err := m.Validate(); err == nil {
+		t.Fatal("expected zero-padded version error")
+	}
+}
+
 func TestManifestValidateRejectsMissingSHA256(t *testing.T) {
 	m := Manifest{
 		Version: "0.1.2",

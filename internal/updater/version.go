@@ -46,6 +46,9 @@ func parseVersion(v string) (parsedVersion, error) {
 		if !isDigitsOnly(part) {
 			return parsedVersion{}, fmt.Errorf("version %q contains invalid component %q", v, part)
 		}
+		if len(part) > 1 && strings.HasPrefix(part, "0") {
+			return parsedVersion{}, fmt.Errorf("version %q contains zero-padded component %q", v, part)
+		}
 		n, err := strconv.Atoi(part)
 		if err != nil {
 			return parsedVersion{}, fmt.Errorf("version %q contains invalid component %q", v, part)
