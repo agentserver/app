@@ -265,6 +265,64 @@ func TestInstallDriverSkipsDeviceFlowWhenAlreadyRegistered(t *testing.T) {
 	}
 }
 
+func TestInstallDriverRepairsExistingDriverState(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	sec := secrets.New(p.SecretsFile)
+	if err := sec.Set("agentserver_ws_api_key", "proxy-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sec.Set("agentserver_tunnel_token", "tunnel-token"); err != nil {
+		t.Fatal(err)
+	}
+	writeDriverState(t, p, state.AgentserverState{
+		SandboxID:   "sb-1",
+		WorkspaceID: "ws-1",
+	})
+	fakeAS := &fakeDriverAgentserver{
+		whoami: agentserver.Identity{
+			Workspace: agentserver.Workspace{ID: "ws-1", Name: "Workspace One"},
+		},
+	}
+
+	err := InstallDriver(context.Background(), DriverOptions{
+		Paths:   p,
+		Package: testDriverPackage(temp),
+		Secrets: sec,
+		AS:      fakeAS,
+		ASOAuth: oauth.Config{Endpoint: "https://agent.test"},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			t.Fatal("RequestDeviceCode called for existing registration")
+			return oauth.DeviceCodeChallenge{}, nil
+		},
+		PollToken: driverPollToken,
+		Stdout:    ioDiscard{},
+	})
+	if err != nil {
+		t.Fatalf("InstallDriver: %v", err)
+	}
+
+	st, err := state.NewStore(p.StateFile).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Agentserver.BaseURL != "https://agent.test" {
+		t.Fatalf("BaseURL=%q, want https://agent.test", st.Agentserver.BaseURL)
+	}
+	if st.Agentserver.ShortID != "sb-1" {
+		t.Fatalf("ShortID=%q, want sandbox fallback", st.Agentserver.ShortID)
+	}
+	if st.Agentserver.WorkspaceName != "Workspace One" {
+		t.Fatalf("WorkspaceName=%q, want Workspace One", st.Agentserver.WorkspaceName)
+	}
+	if st.Agentserver.WorkspaceAPIKeySuffix != "oken" {
+		t.Fatalf("WorkspaceAPIKeySuffix=%q, want oken", st.Agentserver.WorkspaceAPIKeySuffix)
+	}
+	if fakeAS.whoamiToken != "proxy-token" {
+		t.Fatalf("Whoami token=%q, want proxy-token", fakeAS.whoamiToken)
+	}
+}
+
 func TestInstallDriverErrorsIfSecretsNil(t *testing.T) {
 	err := InstallDriver(context.Background(), DriverOptions{
 		Paths:   testDriverPaths(t.TempDir()),
@@ -326,6 +384,7 @@ type fakeDriverAgentserver struct {
 	reg          agentserver.AgentRegistration
 	whoami       agentserver.Identity
 	whoamiErr    error
+	whoamiToken  string
 	registerName string
 	registerType string
 }
@@ -336,7 +395,8 @@ func (f *fakeDriverAgentserver) RegisterAgent(_ context.Context, _ string, name,
 	return f.reg, nil
 }
 
-func (f *fakeDriverAgentserver) Whoami(context.Context, string) (agentserver.Identity, error) {
+func (f *fakeDriverAgentserver) Whoami(_ context.Context, token string) (agentserver.Identity, error) {
+	f.whoamiToken = token
 	if f.whoamiErr != nil {
 		return agentserver.Identity{}, f.whoamiErr
 	}

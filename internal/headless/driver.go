@@ -105,6 +105,8 @@ func ensureDriver(ctx context.Context, opts DriverOptions, forceLogin bool) erro
 		if err := registerDriver(ctx, opts); err != nil {
 			return err
 		}
+	} else if err := repairRegisteredDriverState(ctx, opts); err != nil {
+		return err
 	}
 	return refreshDriverFiles(opts.Paths, opts.Package, opts.Secrets)
 }
@@ -211,6 +213,38 @@ func resolveDriverWorkspace(ctx context.Context, as AgentRegistrar, reg agentser
 		return ws
 	}
 	return agentserver.Workspace{ID: reg.WorkspaceID}
+}
+
+func repairRegisteredDriverState(ctx context.Context, opts DriverOptions) error {
+	proxyToken, _, err := driverSecrets(opts.Secrets)
+	if err != nil {
+		return err
+	}
+	var workspace agentserver.Workspace
+	if opts.AS != nil {
+		if identity, err := opts.AS.Whoami(ctx, proxyToken); err == nil {
+			workspace = identity.Workspace
+		}
+	}
+	return state.NewStore(opts.Paths.StateFile).Update(func(s *state.State) error {
+		if s.Agentserver.BaseURL == "" {
+			s.Agentserver.BaseURL = defaultASBaseURL(opts.ASOAuth)
+		}
+		if s.Agentserver.ShortID == "" {
+			s.Agentserver.ShortID = s.Agentserver.SandboxID
+		}
+		if s.Agentserver.WorkspaceID == "" && workspace.ID != "" {
+			s.Agentserver.WorkspaceID = workspace.ID
+		}
+		if s.Agentserver.WorkspaceName == "" && workspace.Name != "" &&
+			(workspace.ID == "" || s.Agentserver.WorkspaceID == "" || workspace.ID == s.Agentserver.WorkspaceID) {
+			s.Agentserver.WorkspaceName = workspace.Name
+		}
+		if s.Agentserver.WorkspaceAPIKeySuffix == "" {
+			s.Agentserver.WorkspaceAPIKeySuffix = lastN(proxyToken, 4)
+		}
+		return nil
+	})
 }
 
 func driverRegistered(p paths.Paths, sec secrets.Store) (bool, error) {
