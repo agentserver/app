@@ -3,6 +3,7 @@ package headless
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -41,11 +42,33 @@ func PackagePaths(agentserverExe string) Package {
 }
 
 func (p Package) CodexManifestPath() string {
-	name := "codex-manifest-linux-amd64.json"
-	if runtime.GOARCH == "arm64" {
-		name = "codex-manifest-linux-arm64.json"
+	path, err := p.codexManifestPath(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return ""
 	}
-	return filepath.Join(p.PackageDir, name)
+	return path
+}
+
+func (p Package) codexManifestPath(goos, goarch string) (string, error) {
+	name, err := codexManifestName(goos, goarch)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(p.PackageDir, name), nil
+}
+
+func codexManifestName(goos, goarch string) (string, error) {
+	if goos != "linux" {
+		return "", fmt.Errorf("unsupported Codex runtime platform %s/%s", goos, goarch)
+	}
+	switch goarch {
+	case "amd64":
+		return "codex-manifest-linux-amd64.json", nil
+	case "arm64":
+		return "codex-manifest-linux-arm64.json", nil
+	default:
+		return "", fmt.Errorf("unsupported Codex runtime platform %s/%s", goos, goarch)
+	}
 }
 
 func ResolveCodex(ctx context.Context, opts CodexResolveOptions) (CodexRuntime, error) {
@@ -74,8 +97,15 @@ func ResolveCodex(ctx context.Context, opts CodexResolveOptions) (CodexRuntime, 
 			return res.CodexExe, nil
 		}
 	}
-	destRoot := filepath.Dir(filepath.Dir(opts.Paths.CodexExePath))
-	codexPath, err := ensureRuntime(ctx, opts.Package.CodexManifestPath(), destRoot, opts.Paths.CacheDir)
+	manifestPath, err := opts.Package.codexManifestPath(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return CodexRuntime{}, err
+	}
+	destRoot, err := managedCodexDestRoot(opts.Paths.CodexExePath)
+	if err != nil {
+		return CodexRuntime{}, err
+	}
+	codexPath, err := ensureRuntime(ctx, manifestPath, destRoot, opts.Paths.CacheDir)
 	if err != nil {
 		return CodexRuntime{}, err
 	}
@@ -88,6 +118,9 @@ func validateManagedCodexOptions(opts CodexResolveOptions) error {
 	}
 	if !filepath.IsAbs(opts.Paths.CodexExePath) {
 		return errors.New("CodexExePath must be absolute")
+	}
+	if _, err := managedCodexDestRoot(opts.Paths.CodexExePath); err != nil {
+		return err
 	}
 	if opts.Paths.CacheDir == "" {
 		return errors.New("CacheDir required")
@@ -102,6 +135,23 @@ func validateManagedCodexOptions(opts CodexResolveOptions) error {
 		return errors.New("PackageDir must be absolute")
 	}
 	return nil
+}
+
+func managedCodexDestRoot(codexExePath string) (string, error) {
+	cleanPath := filepath.Clean(codexExePath)
+	codexExeName := packageExeName("codex")
+	if filepath.Base(cleanPath) != codexExeName {
+		return "", fmt.Errorf("CodexExePath must use managed runtime layout <root>/bin/%s", codexExeName)
+	}
+	binDir := filepath.Dir(cleanPath)
+	if filepath.Base(binDir) != "bin" {
+		return "", fmt.Errorf("CodexExePath must use managed runtime layout <root>/bin/%s", codexExeName)
+	}
+	destRoot := filepath.Dir(binDir)
+	if destRoot == string(filepath.Separator) {
+		return "", errors.New("CodexExePath managed runtime root must not be filesystem root")
+	}
+	return destRoot, nil
 }
 
 func packageExeName(name string) string {

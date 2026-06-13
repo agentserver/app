@@ -170,6 +170,42 @@ func TestResolveCodexRequiresManagedRuntimePathsWhenPathMissing(t *testing.T) {
 			wantErr: "CodexExePath",
 		},
 		{
+			name: "codex exe path at filesystem root",
+			paths: paths.Paths{
+				CodexExePath: filepath.Join(string(filepath.Separator), exeName("codex")),
+				CacheDir:     validPaths.CacheDir,
+			},
+			pkg:     validPackage,
+			wantErr: "CodexExePath",
+		},
+		{
+			name: "codex exe path without bin directory",
+			paths: paths.Paths{
+				CodexExePath: filepath.Join(string(filepath.Separator), "tmp", exeName("codex")),
+				CacheDir:     validPaths.CacheDir,
+			},
+			pkg:     validPackage,
+			wantErr: "CodexExePath",
+		},
+		{
+			name: "codex exe path with wrong executable name",
+			paths: paths.Paths{
+				CodexExePath: filepath.Join(string(filepath.Separator), "tmp", "bin", "not-codex"),
+				CacheDir:     validPaths.CacheDir,
+			},
+			pkg:     validPackage,
+			wantErr: "CodexExePath",
+		},
+		{
+			name: "codex exe path derives root dest root",
+			paths: paths.Paths{
+				CodexExePath: filepath.Join(string(filepath.Separator), "bin", exeName("codex")),
+				CacheDir:     validPaths.CacheDir,
+			},
+			pkg:     validPackage,
+			wantErr: "CodexExePath",
+		},
+		{
 			name: "relative cache dir",
 			paths: paths.Paths{
 				CodexExePath: validPaths.CodexExePath,
@@ -232,6 +268,59 @@ func TestResolveCodexRequiresManagedRuntimePathsWhenPathMissing(t *testing.T) {
 	}
 }
 
+func TestCodexManifestNameSupportsOnlyLinuxCodexRuntimes(t *testing.T) {
+	tests := []struct {
+		goos     string
+		goarch   string
+		wantName string
+		wantErr  string
+	}{
+		{
+			goos:     "linux",
+			goarch:   "amd64",
+			wantName: "codex-manifest-linux-amd64.json",
+		},
+		{
+			goos:     "linux",
+			goarch:   "arm64",
+			wantName: "codex-manifest-linux-arm64.json",
+		},
+		{
+			goos:    "linux",
+			goarch:  "riscv64",
+			wantErr: "unsupported Codex runtime platform linux/riscv64",
+		},
+		{
+			goos:    "darwin",
+			goarch:  "amd64",
+			wantErr: "unsupported Codex runtime platform darwin/amd64",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.goos+"/"+tt.goarch, func(t *testing.T) {
+			got, err := codexManifestName(tt.goos, tt.goarch)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err=%v, want containing %q", err, tt.wantErr)
+				}
+				if got != "" {
+					t.Fatalf("name=%q, want empty", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.wantName {
+				t.Fatalf("name=%q, want %q", got, tt.wantName)
+			}
+		})
+	}
+}
+
 func TestLinuxCodexManifestPath(t *testing.T) {
 	pkg := PackagePaths(filepath.Join(string(filepath.Separator), "opt", "agentserver", exeName("agentserver")))
 
@@ -250,17 +339,42 @@ func TestLinuxCodexManifestPath(t *testing.T) {
 }
 
 func TestLinuxCodexManifestsLoad(t *testing.T) {
-	for _, name := range []string{
-		"codex-manifest-linux-amd64.json",
-		"codex-manifest-linux-arm64.json",
-	} {
-		t.Run(name, func(t *testing.T) {
-			m, err := codexruntime.LoadManifest(filepath.Join("..", "..", "packaging", "linux", name))
+	tests := []struct {
+		name          string
+		platform      string
+		pinnedVersion string
+		stripPrefix   string
+	}{
+		{
+			name:          "codex-manifest-linux-amd64.json",
+			platform:      "linux-x64",
+			pinnedVersion: "0.139.0-linux-x64",
+			stripPrefix:   "vendor/x86_64-unknown-linux-musl/",
+		},
+		{
+			name:          "codex-manifest-linux-arm64.json",
+			platform:      "linux-arm64",
+			pinnedVersion: "0.139.0-linux-arm64",
+			stripPrefix:   "vendor/aarch64-unknown-linux-musl/",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m, err := codexruntime.LoadManifest(filepath.Join("..", "..", "packaging", "linux", tt.name))
 			if err != nil {
 				t.Fatal(err)
 			}
 			if m.Package != "@openai/codex" {
 				t.Fatalf("Package=%q", m.Package)
+			}
+			if m.Platform != tt.platform {
+				t.Fatalf("Platform=%q, want %q", m.Platform, tt.platform)
+			}
+			if m.PinnedVersion != tt.pinnedVersion {
+				t.Fatalf("PinnedVersion=%q, want %q", m.PinnedVersion, tt.pinnedVersion)
+			}
+			if m.StripPrefix != tt.stripPrefix {
+				t.Fatalf("StripPrefix=%q, want %q", m.StripPrefix, tt.stripPrefix)
 			}
 		})
 	}
