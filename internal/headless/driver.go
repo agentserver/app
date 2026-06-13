@@ -234,9 +234,7 @@ func repairRegisteredDriverState(ctx context.Context, opts DriverOptions) error 
 		}
 	}
 	return state.NewStore(opts.Paths.StateFile).Update(func(s *state.State) error {
-		if s.Agentserver.BaseURL == "" {
-			s.Agentserver.BaseURL = defaultASBaseURL(opts.ASOAuth)
-		}
+		s.Agentserver.BaseURL = defaultASBaseURL(opts.ASOAuth)
 		if s.Agentserver.ShortID == "" {
 			s.Agentserver.ShortID = s.Agentserver.SandboxID
 		}
@@ -246,9 +244,7 @@ func repairRegisteredDriverState(ctx context.Context, opts DriverOptions) error 
 		if workspace.Name != "" && workspace.ID == s.Agentserver.WorkspaceID {
 			s.Agentserver.WorkspaceName = workspace.Name
 		}
-		if s.Agentserver.WorkspaceAPIKeySuffix == "" {
-			s.Agentserver.WorkspaceAPIKeySuffix = lastN(proxyToken, 4)
-		}
+		s.Agentserver.WorkspaceAPIKeySuffix = lastN(proxyToken, 4)
 		return nil
 	})
 }
