@@ -69,13 +69,25 @@ func RestorePendingRestarts(ctx context.Context, path string, restart func(conte
 	}
 
 	var errs []error
+	failedIDs := make([]string, 0, len(pending.SlaveIDs))
 	for _, id := range pending.SlaveIDs {
 		if id == "" {
 			continue
 		}
-		if err := restart(ctx, id); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := restart(ctx, id); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			failedIDs = append(failedIDs, id)
 			errs = append(errs, err)
 		}
+	}
+	if len(failedIDs) > 0 {
+		pending.SlaveIDs = failedIDs
+		if err := writePendingRestartFile(path, pending); err != nil {
+			errs = append(errs, err)
+		}
+		return errors.Join(errs...)
 	}
 	if err := os.Remove(path); err != nil {
 		errs = append(errs, err)

@@ -352,32 +352,53 @@ func (s *server) handleConsoleUpdateInstall(w http.ResponseWriter, r *http.Reque
 	if !requirePostTrustedMutation(w, r) {
 		return
 	}
-	st, err := s.c.UpdateState(r.Context())
+	confirmed, err := s.c.UpdateState(r.Context())
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	if st.Status != updater.StatusAvailable || st.Update == nil {
+	if confirmed.Status != updater.StatusAvailable || confirmed.Update == nil {
 		writeErr(w, http.StatusConflict, errors.New("console: no update available"))
 		return
 	}
 	manifest := updater.Manifest{
-		Version: st.Update.Version,
-		URL:     st.Update.URL,
-		SHA256:  st.Update.SHA256,
-		Size:    st.Update.Size,
-		Notes:   st.Update.Notes,
+		Version: confirmed.Update.Version,
+		URL:     confirmed.Update.URL,
+		SHA256:  confirmed.Update.SHA256,
+		Size:    confirmed.Update.Size,
+		Notes:   confirmed.Update.Notes,
 	}
 	if err := manifest.Validate(); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	st, err = s.c.InstallUpdate(r.Context(), manifest)
+	fresh, err := s.c.CheckUpdate(r.Context(), false)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	if fresh.Status != updater.StatusAvailable || fresh.Update == nil {
+		writeErr(w, http.StatusConflict, errors.New("console: update is no longer available"))
+		return
+	}
+	if !sameAvailableUpdate(*confirmed.Update, *fresh.Update) {
+		writeErr(w, http.StatusConflict, errors.New("console: update changed; check again before installing"))
+		return
+	}
+	st, err := s.c.InstallUpdate(r.Context(), manifest)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
 	writeJSON(w, 200, st)
+}
+
+func sameAvailableUpdate(a, b updater.AvailableUpdate) bool {
+	return a.Version == b.Version &&
+		a.URL == b.URL &&
+		a.SHA256 == b.SHA256 &&
+		a.Size == b.Size &&
+		a.Notes == b.Notes
 }
 
 func (s *server) handleConsoleSlaves(w http.ResponseWriter, r *http.Request) {

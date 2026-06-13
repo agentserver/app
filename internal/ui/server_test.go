@@ -384,6 +384,11 @@ func TestServerConsoleUpdateInstallEndpointInstallsPersistedAvailableUpdate(t *t
 			Status:         updater.StatusAvailable,
 			Update:         &available,
 		},
+		checkUpdateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusAvailable,
+			Update:         &available,
+		},
 		installUpdateState: updater.State{
 			CurrentVersion: "1.2.3",
 			Status:         updater.StatusInstallerStarted,
@@ -406,8 +411,8 @@ func TestServerConsoleUpdateInstallEndpointInstallsPersistedAvailableUpdate(t *t
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if cc.updateStateCalls != 1 || !cc.installUpdateCalled {
-		t.Fatalf("updateStateCalls=%d installUpdateCalled=%v", cc.updateStateCalls, cc.installUpdateCalled)
+	if cc.updateStateCalls != 1 || !cc.checkUpdateCalled || cc.checkUpdateAutomatic || !cc.installUpdateCalled {
+		t.Fatalf("updateStateCalls=%d checkUpdateCalled=%v automatic=%v installUpdateCalled=%v", cc.updateStateCalls, cc.checkUpdateCalled, cc.checkUpdateAutomatic, cc.installUpdateCalled)
 	}
 	if cc.installedManifest.Version != available.Version ||
 		cc.installedManifest.URL != available.URL ||
@@ -418,6 +423,41 @@ func TestServerConsoleUpdateInstallEndpointInstallsPersistedAvailableUpdate(t *t
 	}
 	if got.Status != updater.StatusInstallerStarted {
 		t.Fatalf("body=%+v", got)
+	}
+}
+
+func TestServerConsoleUpdateInstallEndpointConflictsWhenFreshCheckNoLongerMatches(t *testing.T) {
+	stale := updater.AvailableUpdate{
+		Version: "1.2.4",
+		URL:     "https://assets.agent.cs.ac.cn/downloads/stale.exe",
+		SHA256:  strings.Repeat("a", 64),
+		Size:    123456,
+		Notes:   "bad release",
+	}
+	cc := &fakeConsoleController{
+		updateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusAvailable,
+			Update:         &stale,
+		},
+		checkUpdateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusLatest,
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/console/update/install", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status=%d, want %d", resp.StatusCode, http.StatusConflict)
+	}
+	if cc.updateStateCalls != 1 || !cc.checkUpdateCalled || cc.installUpdateCalled {
+		t.Fatalf("updateStateCalls=%d checkUpdateCalled=%v installUpdateCalled=%v", cc.updateStateCalls, cc.checkUpdateCalled, cc.installUpdateCalled)
 	}
 }
 

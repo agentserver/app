@@ -136,9 +136,15 @@ func TestRestorePendingRestartsRestartsEveryRecordedSlaveAndDeletesFile(t *testi
 	}
 }
 
-func TestRestorePendingRestartsContinuesPastMissingAndReturnsJoinedErrorsAfterDeletingFile(t *testing.T) {
+func TestRestorePendingRestartsKeepsFailedIDsForRetryAndDropsMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pending-slave-restarts.json")
-	if err := writePendingRestartFile(path, PendingRestarts{SlaveIDs: []string{"a", "missing", "b", "c"}}); err != nil {
+	createdAt := time.Unix(10, 0).UTC()
+	if err := writePendingRestartFile(path, PendingRestarts{
+		Reason:    "app_update",
+		Version:   "0.1.2",
+		CreatedAt: createdAt,
+		SlaveIDs:  []string{"a", "missing", "b", "c"},
+	}); err != nil {
 		t.Fatalf("write pending: %v", err)
 	}
 	errB := errors.New("restart b failed")
@@ -168,8 +174,15 @@ func TestRestorePendingRestartsContinuesPastMissingAndReturnsJoinedErrorsAfterDe
 	if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), os.ErrNotExist.Error()) {
 		t.Fatalf("RestorePendingRestarts error=%v, should not include os.ErrNotExist", err)
 	}
-	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("pending file exists after failed restore: %v", statErr)
+	pending, readErr := ReadPendingRestarts(path)
+	if readErr != nil {
+		t.Fatalf("ReadPendingRestarts after failed restore: %v", readErr)
+	}
+	if pending.Reason != "app_update" || pending.Version != "0.1.2" || !pending.CreatedAt.Equal(createdAt) {
+		t.Fatalf("pending metadata=%+v", pending)
+	}
+	if want := []string{"b", "c"}; !reflect.DeepEqual(pending.SlaveIDs, want) {
+		t.Fatalf("pending slave IDs=%v, want %v", pending.SlaveIDs, want)
 	}
 }
 
