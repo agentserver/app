@@ -1,0 +1,428 @@
+package headless
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/agentserver/agentserver-pkg/internal/agentserver"
+	"github.com/agentserver/agentserver-pkg/internal/oauth"
+	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/secrets"
+	"github.com/agentserver/agentserver-pkg/internal/state"
+)
+
+func TestInstallDriverRegistersAgentAndMCPEntrypoint(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	sec := secrets.New(p.SecretsFile)
+	fakeAS := &fakeDriverAgentserver{
+		reg: agentserver.AgentRegistration{
+			SandboxID:   "sb-1",
+			TunnelToken: "tunnel-token",
+			ProxyToken:  "sandbox-proxy-token",
+			WorkspaceID: "ws-reg",
+			ShortID:     "abc123",
+		},
+		whoami: agentserver.Identity{
+			Workspace: agentserver.Workspace{ID: "ws-1", Name: "Workspace One"},
+		},
+	}
+	var out bytes.Buffer
+
+	err := InstallDriver(context.Background(), DriverOptions{
+		Paths:        p,
+		Package:      testDriverPackage(temp),
+		Secrets:      sec,
+		ComputerName: "host",
+		AS:           fakeAS,
+		ASOAuth:      oauth.Config{Endpoint: "https://agent.test"},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			return oauth.DeviceCodeChallenge{
+				DeviceCode:              "device",
+				UserCode:                "AS-CODE",
+				VerificationURIComplete: "https://agent.test/device?user_code=AS-CODE",
+			}, nil
+		},
+		PollToken: func(context.Context, oauth.Config, oauth.DeviceCodeChallenge) (oauth.Token, error) {
+			return oauth.Token{AccessToken: "oauth-token"}, nil
+		},
+		Stdout: &out,
+		QR:     driverMarkerQR("fake QR"),
+	})
+	if err != nil {
+		t.Fatalf("InstallDriver: %v", err)
+	}
+
+	if fakeAS.registerName != "host-星池指挥官" {
+		t.Fatalf("register name=%q, want host-星池指挥官", fakeAS.registerName)
+	}
+	if fakeAS.registerType != "custom" {
+		t.Fatalf("register type=%q, want custom", fakeAS.registerType)
+	}
+	if !strings.Contains(out.String(), "AS-CODE") || !strings.Contains(out.String(), "fake QR") {
+		t.Fatalf("output missing device code or QR marker:\n%s", out.String())
+	}
+	if got, _ := sec.Get("agentserver_ws_api_key"); got != "sandbox-proxy-token" {
+		t.Fatalf("agentserver_ws_api_key=%q", got)
+	}
+	if got, _ := sec.Get("agentserver_tunnel_token"); got != "tunnel-token" {
+		t.Fatalf("agentserver_tunnel_token=%q", got)
+	}
+
+	st, err := state.NewStore(p.StateFile).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Agentserver.WorkspaceID != "ws-1" || st.Agentserver.WorkspaceName != "Workspace One" {
+		t.Fatalf("workspace state=%+v", st.Agentserver)
+	}
+
+	config := readTextFile(t, p.CodexConfigFile)
+	for _, want := range []string{
+		`[mcp_servers.driver]`,
+		`command = "` + filepath.ToSlash(testDriverPackage(temp).AgentserverExe) + `"`,
+		`args = ["serve-driver-mcp"]`,
+		`startup_timeout_sec = 30`,
+		`tool_timeout_sec = 120`,
+		`enabled = true`,
+	} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("config missing %q:\n%s", want, config)
+		}
+	}
+}
+
+func TestServeDriverMCPWritesSessionConfigWithCurrentWorkdir(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	pkg := testDriverPackage(temp)
+	sec := secrets.New(p.SecretsFile)
+	if err := sec.Set("agentserver_ws_api_key", "proxy-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sec.Set("agentserver_tunnel_token", "tunnel-token"); err != nil {
+		t.Fatal(err)
+	}
+	writeDriverState(t, p, state.AgentserverState{
+		BaseURL:       "https://agent.test",
+		SandboxID:     "sb-1",
+		ShortID:       "abc123",
+		WorkspaceID:   "ws-1",
+		WorkspaceName: "Workspace One",
+	})
+	sessionDir := filepath.Join(temp, "repo")
+	if err := os.Mkdir(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	execCalled := false
+
+	err := ServeDriverMCP(context.Background(), DriverMCPOptions{
+		Paths:   p,
+		Package: pkg,
+		Secrets: sec,
+		WorkDir: sessionDir,
+		Exec: func(_ context.Context, exe string, args []string) error {
+			execCalled = true
+			if exe != pkg.DriverAgent {
+				t.Fatalf("exe=%q, want %q", exe, pkg.DriverAgent)
+			}
+			if len(args) != 3 || args[0] != "serve-mcp" || args[1] != "--config" {
+				t.Fatalf("args=%v, want serve-mcp --config <path>", args)
+			}
+			wantPrefix := filepath.Join(p.InstallRoot, "driver-mcp", "driver-")
+			if !strings.HasPrefix(args[2], wantPrefix) || filepath.Ext(args[2]) != ".yaml" {
+				t.Fatalf("config path=%q, want %s*.yaml", args[2], wantPrefix)
+			}
+			body := readTextFile(t, args[2])
+			wantWorkdir := `workdir: "` + filepath.ToSlash(sessionDir) + `"`
+			if !strings.Contains(body, wantWorkdir) {
+				t.Fatalf("config missing %q:\n%s", wantWorkdir, body)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ServeDriverMCP: %v", err)
+	}
+	if !execCalled {
+		t.Fatal("Exec was not called")
+	}
+}
+
+func TestSwitchWorkspaceForcesDeviceLogin(t *testing.T) {
+	t.Run("empty state", func(t *testing.T) {
+		temp := t.TempDir()
+		p := testDriverPaths(temp)
+		calls := 0
+
+		err := SwitchWorkspace(context.Background(), DriverOptions{
+			Paths:        p,
+			Package:      testDriverPackage(temp),
+			Secrets:      secrets.New(p.SecretsFile),
+			ComputerName: "host",
+			AS:           fakeRegisteredDriverAS(),
+			ASOAuth:      oauth.Config{Endpoint: "https://agent.test"},
+			RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+				calls++
+				return driverChallenge(), nil
+			},
+			PollToken: driverPollToken,
+			Stdout:    ioDiscard{},
+			QR:        driverMarkerQR("fake QR"),
+		})
+		if err != nil {
+			t.Fatalf("SwitchWorkspace: %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("RequestDeviceCode calls=%d, want 1", calls)
+		}
+	})
+
+	t.Run("existing registration", func(t *testing.T) {
+		temp := t.TempDir()
+		p := testDriverPaths(temp)
+		sec := secrets.New(p.SecretsFile)
+		if err := sec.Set("agentserver_ws_api_key", "proxy-old"); err != nil {
+			t.Fatal(err)
+		}
+		if err := sec.Set("agentserver_tunnel_token", "tunnel-old"); err != nil {
+			t.Fatal(err)
+		}
+		writeDriverState(t, p, state.AgentserverState{
+			BaseURL:     "https://agent.old",
+			SandboxID:   "sb-old",
+			ShortID:     "old123",
+			WorkspaceID: "ws-old",
+		})
+		calls := 0
+
+		err := SwitchWorkspace(context.Background(), DriverOptions{
+			Paths:        p,
+			Package:      testDriverPackage(temp),
+			Secrets:      sec,
+			ComputerName: "host",
+			AS:           fakeRegisteredDriverAS(),
+			ASOAuth:      oauth.Config{Endpoint: "https://agent.test"},
+			RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+				calls++
+				return driverChallenge(), nil
+			},
+			PollToken: driverPollToken,
+			Stdout:    ioDiscard{},
+			QR:        driverMarkerQR("fake QR"),
+		})
+		if err != nil {
+			t.Fatalf("SwitchWorkspace: %v", err)
+		}
+		if calls != 1 {
+			t.Fatalf("RequestDeviceCode calls=%d, want forced login", calls)
+		}
+	})
+}
+
+func TestInstallDriverSkipsDeviceFlowWhenAlreadyRegistered(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	sec := secrets.New(p.SecretsFile)
+	if err := sec.Set("agentserver_ws_api_key", "proxy-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sec.Set("agentserver_tunnel_token", "tunnel-token"); err != nil {
+		t.Fatal(err)
+	}
+	writeDriverState(t, p, state.AgentserverState{
+		BaseURL:     "https://agent.test",
+		SandboxID:   "sb-1",
+		ShortID:     "abc123",
+		WorkspaceID: "ws-1",
+	})
+
+	err := InstallDriver(context.Background(), DriverOptions{
+		Paths:   p,
+		Package: testDriverPackage(temp),
+		Secrets: sec,
+		AS:      fakeRegisteredDriverAS(),
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			t.Fatal("RequestDeviceCode called for existing registration")
+			return oauth.DeviceCodeChallenge{}, nil
+		},
+		PollToken: driverPollToken,
+		Stdout:    ioDiscard{},
+	})
+	if err != nil {
+		t.Fatalf("InstallDriver: %v", err)
+	}
+	config := readTextFile(t, p.CodexConfigFile)
+	if !strings.Contains(config, `[mcp_servers.driver]`) {
+		t.Fatalf("Codex MCP config was not written:\n%s", config)
+	}
+}
+
+func TestInstallDriverErrorsIfSecretsNil(t *testing.T) {
+	err := InstallDriver(context.Background(), DriverOptions{
+		Paths:   testDriverPaths(t.TempDir()),
+		Package: testDriverPackage(t.TempDir()),
+	})
+	if err == nil {
+		t.Fatal("InstallDriver succeeded with nil Secrets")
+	}
+	if !strings.Contains(err.Error(), "secrets store required") {
+		t.Fatalf("error=%v, want secrets store required", err)
+	}
+}
+
+func TestInstallDriverStoresWorkspaceFallbackFromAccessTokenClaim(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	sec := secrets.New(p.SecretsFile)
+	fakeAS := &fakeDriverAgentserver{
+		reg: agentserver.AgentRegistration{
+			SandboxID:   "sb-1",
+			TunnelToken: "tunnel-token",
+			ProxyToken:  "sandbox-proxy-token",
+			WorkspaceID: "ws-reg",
+			ShortID:     "abc123",
+		},
+		whoamiErr: errors.New("whoami unavailable"),
+	}
+
+	err := InstallDriver(context.Background(), DriverOptions{
+		Paths:        p,
+		Package:      testDriverPackage(temp),
+		Secrets:      sec,
+		ComputerName: "host",
+		AS:           fakeAS,
+		ASOAuth:      oauth.Config{Endpoint: "https://agent.test"},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			return driverChallenge(), nil
+		},
+		PollToken: func(context.Context, oauth.Config, oauth.DeviceCodeChallenge) (oauth.Token, error) {
+			return oauth.Token{AccessToken: workspaceToken("ws-claim", "Claim Workspace")}, nil
+		},
+		Stdout: ioDiscard{},
+		QR:     driverMarkerQR("fake QR"),
+	})
+	if err != nil {
+		t.Fatalf("InstallDriver: %v", err)
+	}
+
+	st, err := state.NewStore(p.StateFile).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Agentserver.WorkspaceID != "ws-claim" || st.Agentserver.WorkspaceName != "Claim Workspace" {
+		t.Fatalf("workspace state=%+v", st.Agentserver)
+	}
+}
+
+type fakeDriverAgentserver struct {
+	reg          agentserver.AgentRegistration
+	whoami       agentserver.Identity
+	whoamiErr    error
+	registerName string
+	registerType string
+}
+
+func (f *fakeDriverAgentserver) RegisterAgent(_ context.Context, _ string, name, typ string) (agentserver.AgentRegistration, error) {
+	f.registerName = name
+	f.registerType = typ
+	return f.reg, nil
+}
+
+func (f *fakeDriverAgentserver) Whoami(context.Context, string) (agentserver.Identity, error) {
+	if f.whoamiErr != nil {
+		return agentserver.Identity{}, f.whoamiErr
+	}
+	return f.whoami, nil
+}
+
+func fakeRegisteredDriverAS() *fakeDriverAgentserver {
+	return &fakeDriverAgentserver{
+		reg: agentserver.AgentRegistration{
+			SandboxID:   "sb-new",
+			TunnelToken: "tunnel-new",
+			ProxyToken:  "proxy-new",
+			WorkspaceID: "ws-new",
+			ShortID:     "new123",
+		},
+		whoami: agentserver.Identity{
+			Workspace: agentserver.Workspace{ID: "ws-new", Name: "New Workspace"},
+		},
+	}
+}
+
+func testDriverPaths(root string) paths.Paths {
+	home := filepath.Join(root, "home")
+	installRoot := filepath.Join(home, ".agentserver-app")
+	return paths.Paths{
+		UserHome:        home,
+		InstallRoot:     installRoot,
+		StateFile:       filepath.Join(installRoot, "state.json"),
+		SecretsFile:     filepath.Join(installRoot, "secrets.json"),
+		CodexConfigFile: filepath.Join(home, ".codex", "config.toml"),
+	}
+}
+
+func testDriverPackage(root string) Package {
+	packageDir := filepath.Join(root, "pkg")
+	return Package{
+		AgentserverExe: filepath.Join(packageDir, exeName("agentserver")),
+		PackageDir:     packageDir,
+		DriverAgent:    filepath.Join(packageDir, exeName("driver-agent")),
+	}
+}
+
+func writeDriverState(t *testing.T, p paths.Paths, as state.AgentserverState) {
+	t.Helper()
+	if err := state.NewStore(p.StateFile).Update(func(s *state.State) error {
+		s.Agentserver = as
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readTextFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func driverChallenge() oauth.DeviceCodeChallenge {
+	return oauth.DeviceCodeChallenge{
+		DeviceCode:              "device",
+		UserCode:                "AS-CODE",
+		VerificationURIComplete: "https://agent.test/device?user_code=AS-CODE",
+	}
+}
+
+func driverPollToken(context.Context, oauth.Config, oauth.DeviceCodeChallenge) (oauth.Token, error) {
+	return oauth.Token{AccessToken: "oauth-token"}, nil
+}
+
+func driverMarkerQR(marker string) func(interface{ Write([]byte) (int, error) }, string) {
+	return func(w interface{ Write([]byte) (int, error) }, _ string) {
+		_, _ = w.Write([]byte(marker + "\n"))
+	}
+}
+
+func workspaceToken(id, name string) string {
+	payload, err := json.Marshal(map[string]string{
+		"workspace_id":   id,
+		"workspace_name": name,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return "x." + base64.RawURLEncoding.EncodeToString(payload) + ".y"
+}
