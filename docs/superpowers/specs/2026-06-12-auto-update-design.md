@@ -42,6 +42,8 @@
 
 ## Update Manifest
 
+Asset storage and publishing rules are defined in `docs/superpowers/specs/2026-06-13-update-assets-protocol.md`.
+
 客户端只请求一个固定 manifest：
 
 ```text
