@@ -420,6 +420,25 @@ func TestInstallDriverSupportRejectsEscapingArchivePath(t *testing.T) {
 	}
 }
 
+func TestInstallDriverSupportRejectsOversizedSkillArchiveEntry(t *testing.T) {
+	oldLimit := maxArchiveEntryBytes
+	maxArchiveEntryBytes = 4
+	t.Cleanup(func() { maxArchiveEntryBytes = oldLimit })
+	dir := t.TempDir()
+	skillsArchive := filepath.Join(dir, "driver-skills.tar.gz")
+	writeTarGz(t, skillsArchive, map[string]string{
+		"skills/too-large/SKILL.md": "12345",
+	})
+
+	err := InstallDriverSupport(DriverSupportInput{
+		UserHome:          filepath.Join(dir, "home"),
+		SkillsArchivePath: skillsArchive,
+	})
+	if err == nil || !strings.Contains(err.Error(), "tar entry too large") {
+		t.Fatalf("err=%v, want tar entry size limit error", err)
+	}
+}
+
 func writeTarGz(t *testing.T, path string, files map[string]string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

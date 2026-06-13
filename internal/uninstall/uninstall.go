@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/shortcut"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
+	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 )
 
@@ -41,6 +43,8 @@ type Options struct {
 	RemoveAll            func(string) error
 	StopProcess          func(context.Context, int, string) error
 	StopInstallProcesses func(context.Context, string, []string) error
+	RemoveVSCode         bool
+	RunVSCodeUninstaller func(context.Context, string, ...string) error
 }
 
 func Run(opts Options) error {
@@ -65,6 +69,9 @@ func Run(opts Options) error {
 	}
 	if opts.StopInstallProcesses == nil {
 		opts.StopInstallProcesses = stopInstallProcesses
+	}
+	if opts.RunVSCodeUninstaller == nil {
+		opts.RunVSCodeUninstaller = runVSCodeUninstaller
 	}
 
 	var errs []error
@@ -98,6 +105,14 @@ func Run(opts Options) error {
 	}
 	if err := cleanupGlobalDriverSupport(opts.Paths); err != nil {
 		errs = append(errs, err)
+	}
+	if err := cleanupCodexDesktopState(opts.Paths, opts.RemoveAll); err != nil {
+		errs = append(errs, err)
+	}
+	if opts.RemoveVSCode {
+		if err := cleanupVSCode(context.Background(), opts); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if opts.Paths.InstallRoot != "" {
 		if err := opts.RemoveAll(opts.Paths.InstallRoot); err != nil {
@@ -155,6 +170,98 @@ func cleanupGlobalDriverSupport(p paths.Paths) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func cleanupCodexDesktopState(p paths.Paths, removeAll func(string) error) error {
+	if removeAll == nil {
+		removeAll = os.RemoveAll
+	}
+	var errs []error
+	for _, path := range []string{
+		p.CodexDesktopGlobalStateFile,
+		p.CodexDesktopComputerUseConfigFile,
+	} {
+		if path == "" {
+			continue
+		}
+		if err := removeAll(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove Codex Desktop state %s: %w", path, err))
+		}
+	}
+	if p.CodexDesktopComputerUseConfigFile != "" {
+		stop := p.CodexDir
+		if stop == "" {
+			stop = filepath.Dir(filepath.Dir(p.CodexDesktopComputerUseConfigFile))
+		}
+		pruneEmptyParents(filepath.Dir(p.CodexDesktopComputerUseConfigFile), stop)
+	}
+	return errors.Join(errs...)
+}
+
+func cleanupVSCode(ctx context.Context, opts Options) error {
+	st := loadUninstallState(opts.Paths.StateFile)
+	var errs []error
+	if st != nil && st.VSCode.InstalledByUs && st.VSCode.Path != "" {
+		uninstaller := filepath.Join(filepath.Dir(st.VSCode.Path), "unins000.exe")
+		if _, err := os.Stat(uninstaller); err == nil {
+			if err := opts.RunVSCodeUninstaller(ctx, uninstaller, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"); err != nil {
+				errs = append(errs, fmt.Errorf("run VS Code uninstaller %s: %w", uninstaller, err))
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("stat VS Code uninstaller %s: %w", uninstaller, err))
+		}
+	}
+	for _, path := range vscodeDataPaths(opts.Paths, st) {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if err := opts.RemoveAll(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove VS Code data %s: %w", path, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func loadUninstallState(path string) *state.State {
+	if path == "" {
+		return nil
+	}
+	st, err := state.NewStore(path).Load()
+	if err != nil {
+		return nil
+	}
+	return st
+}
+
+func vscodeDataPaths(p paths.Paths, st *state.State) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	add(p.VSCodeUserDataDir)
+	add(p.VSCodeExtDir)
+	if st != nil {
+		add(st.VSCode.UserDataDir)
+		add(st.VSCode.ExtensionsDir)
+	}
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		add(filepath.Join(appData, "Code"))
+	}
+	if p.UserHome != "" {
+		add(filepath.Join(p.UserHome, ".vscode"))
+	}
+	return out
+}
+
+func runVSCodeUninstaller(ctx context.Context, path string, args ...string) error {
+	cmd := exec.CommandContext(ctx, path, args...)
+	return cmd.Run()
 }
 
 func codexDirFromPaths(p paths.Paths) string {

@@ -31,9 +31,7 @@ function Test-CodexDesktopInstalled {
     }
     try {
         $pkg = Get-AppxPackage | Where-Object {
-            $_.PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0' -or
-            $_.Name -like '*Codex*' -or
-            $_.PackageFullName -like '*Codex*'
+            $_.PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0'
         } | Select-Object -First 1
         if ($pkg) { return $true }
     } catch {

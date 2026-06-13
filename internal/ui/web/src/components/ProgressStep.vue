@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, onMounted, watch } from 'vue';
+import { ref, shallowRef, onMounted, onBeforeUnmount, watch } from 'vue';
 import type { StepInstance, OnboardingHandle } from '../composables/useOnboarding';
 import * as api from '../api';
 import { useSSE, type SSEHandle, type ProgressEvent } from '../composables/useSSE';
@@ -12,23 +12,26 @@ const props = defineProps<{
 
 const sse = shallowRef<SSEHandle | null>(null);
 const streamError = ref<string | undefined>();
+let stopSSEWatchers: Array<() => void> = [];
 
 async function start() {
+  closeStream();
   props.onboarding.markStepInProgress(props.step.id, '准备中…');
   streamError.value = undefined;
   try {
     const handle = await api.startFrontendInstall();
     sse.value = useSSE(handle.stream_id);
     // Watch incoming events; on stream end, refresh state to learn outcome
-    watch(() => sse.value?.latest.value, (ev: ProgressEvent | undefined) => {
+    stopSSEWatchers = [
+      watch(() => sse.value?.latest.value, (ev: ProgressEvent | undefined) => {
       if (ev) {
         renderEvent(ev);
         if (ev.stage === 'error') {
           streamError.value = ev.msg || '安装失败';
         }
       }
-    });
-    watch(() => sse.value?.done.value, async (d) => {
+    }),
+      watch(() => sse.value?.done.value, async (d) => {
       if (d) {
         // Stream closed — refresh state and infer success/error from
         // completed_steps. The backend marks the mode-specific install token
@@ -45,7 +48,8 @@ async function start() {
           );
         }
       }
-    });
+    }),
+    ];
   } catch (e) {
     const err = e as api.OnboardingError;
     props.onboarding.markStepError(props.step.id, err.message, err.detail);
@@ -62,15 +66,24 @@ function renderEvent(ev: ProgressEvent) {
 }
 
 function retry() {
+  start();
+}
+
+function closeStream() {
+  for (const stop of stopSSEWatchers) stop();
+  stopSSEWatchers = [];
   sse.value?.close();
   sse.value = null;
-  start();
 }
 
 onMounted(() => {
   if (props.onboarding.shouldAutoAdvance(props.step)) {
     start();
   }
+});
+
+onBeforeUnmount(() => {
+  closeStream();
 });
 </script>
 

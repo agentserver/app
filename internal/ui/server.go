@@ -3,10 +3,12 @@ package ui
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"html"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -32,11 +34,24 @@ func NewServer(o Orchestrator) http.Handler {
 }
 
 func NewServerWithConsole(o Orchestrator, c ConsoleController) http.Handler {
-	s := &server{o: o, c: c, sse: newSSEHub()}
+	return NewServerWithConsoleToken(o, c, "")
+}
+
+const ConsoleInstanceTokenHeader = "X-AgentServer-Console-Token"
+
+func NewServerWithConsoleToken(o Orchestrator, c ConsoleController, token string) http.Handler {
+	s := &server{o: o, c: c, sse: newSSEHub(), consoleToken: token}
 	mux := http.NewServeMux()
 	// Static
 	staticFS, _ := fs.Sub(assetsFS, "assets/dist")
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	fileServer := http.FileServer(http.FS(staticFS))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if token != "" && (r.URL.Path == "/" || r.URL.Path == "/index.html") {
+			s.handleIndex(w, r, staticFS)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 
 	// JSON
 	mux.HandleFunc("/api/state", s.handleState)
@@ -73,9 +88,27 @@ func NewServerWithConsole(o Orchestrator, c ConsoleController) http.Handler {
 }
 
 type server struct {
-	o   Orchestrator
-	c   ConsoleController
-	sse *sseHub
+	o            Orchestrator
+	c            ConsoleController
+	sse          *sseHub
+	consoleToken string
+}
+
+func (s *server) handleIndex(w http.ResponseWriter, r *http.Request, staticFS fs.FS) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	body, err := fs.ReadFile(staticFS, "index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	marker := "</head>"
+	meta := `<meta name="agentserver-console-token" content="` + html.EscapeString(s.consoleToken) + `">`
+	text := strings.Replace(string(body), marker, "    "+meta+"\n  "+marker, 1)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(text))
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -123,7 +156,30 @@ func requirePostTrustedMutation(w http.ResponseWriter, r *http.Request) bool {
 	return requireTrustedConsoleMutation(w, r)
 }
 
+func (s *server) requireTrustedConsoleMutation(w http.ResponseWriter, r *http.Request) bool {
+	if trustedConsoleMutationRequestWithToken(r, s.consoleToken) {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+	return false
+}
+
+func (s *server) requirePostTrustedConsoleMutation(w http.ResponseWriter, r *http.Request) bool {
+	if !requireMethod(w, r, http.MethodPost) {
+		return false
+	}
+	return s.requireTrustedConsoleMutation(w, r)
+}
+
 func trustedConsoleMutationRequest(r *http.Request) bool {
+	return trustedConsoleMutationRequestWithToken(r, "")
+}
+
+func trustedConsoleMutationRequestWithToken(r *http.Request, token string) bool {
+	if token != "" {
+		got := strings.TrimSpace(r.Header.Get(ConsoleInstanceTokenHeader))
+		return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+	}
 	fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
 	switch fetchSite {
 	case "", "same-origin", "same-site", "none":
@@ -325,7 +381,7 @@ func (s *server) handleConsoleRefresh(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	st, err := s.c.Refresh(r.Context())
@@ -349,7 +405,7 @@ func (s *server) handleConsoleUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleConsoleUpdateCheck(w http.ResponseWriter, r *http.Request) {
-	if !requirePostTrustedMutation(w, r) {
+	if !s.requirePostTrustedConsoleMutation(w, r) {
 		return
 	}
 	st, err := s.c.CheckUpdate(r.Context(), false)
@@ -361,7 +417,7 @@ func (s *server) handleConsoleUpdateCheck(w http.ResponseWriter, r *http.Request
 }
 
 func (s *server) handleConsoleUpdateInstall(w http.ResponseWriter, r *http.Request) {
-	if !requirePostTrustedMutation(w, r) {
+	if !s.requirePostTrustedConsoleMutation(w, r) {
 		return
 	}
 	confirmed, err := s.c.UpdateState(r.Context())
@@ -435,7 +491,7 @@ func (s *server) handleConsoleSlaves(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"machine": machine, "slaves": slaves})
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 
@@ -456,7 +512,7 @@ func (s *server) handleConsoleSelectFolder(w http.ResponseWriter, r *http.Reques
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	folder, err := s.c.SelectFolder(r.Context())
@@ -480,7 +536,7 @@ func (s *server) handleConsoleSlave(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodDelete) {
 			return
 		}
-		if !requireTrustedConsoleMutation(w, r) {
+		if !s.requireTrustedConsoleMutation(w, r) {
 			return
 		}
 		if err := s.c.DeleteSlave(r.Context(), id); err != nil {
@@ -503,7 +559,7 @@ func (s *server) handleConsoleSlave(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if action == "open-remote" {
@@ -535,7 +591,7 @@ func (s *server) handleConsoleOpenFrontend(w http.ResponseWriter, r *http.Reques
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if err := s.c.OpenFrontend(r.Context()); err != nil {
@@ -549,7 +605,7 @@ func (s *server) handleConsoleOpenSubscription(w http.ResponseWriter, r *http.Re
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if err := s.c.OpenSubscription(r.Context()); err != nil {
@@ -563,7 +619,7 @@ func (s *server) handleConsoleLogoutModelserver(w http.ResponseWriter, r *http.R
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if err := s.c.LogoutModelserver(r.Context()); err != nil {
@@ -577,7 +633,7 @@ func (s *server) handleConsoleQuit(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if err := s.c.Quit(r.Context()); err != nil {

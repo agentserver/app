@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { FolderOpened } from '@element-plus/icons-vue';
+import { ElMessageBox } from 'element-plus';
 import * as api from '../api';
 import QuotaCard from './QuotaCard.vue';
 
@@ -101,6 +102,19 @@ function errorMessage(e: unknown) {
   return e instanceof Error ? e.message : String(e);
 }
 
+async function confirmAction(message: string) {
+  try {
+    await ElMessageBox.confirm(message, '确认操作', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function load() {
   try {
     state.value = await api.getConsoleState();
@@ -165,7 +179,7 @@ async function checkUpdate() {
 async function installUpdate() {
   if (updateBusy.value || !updateInstallAvailable.value || !updateState.value?.update) return;
   const version = updateState.value.update.version;
-  const confirmed = window.confirm(`安装星池指挥官更新 ${version}？安装程序启动后可能需要按提示完成更新。`);
+  const confirmed = await confirmAction(`安装星池指挥官更新 ${version}？安装程序启动后可能需要按提示完成更新。`);
   if (!confirmed) return;
   const seq = ++updateLoadSeq;
   installingUpdate.value = true;
@@ -251,7 +265,7 @@ async function openSubscription() {
 
 async function logoutModelserver() {
   if (loggingOutModelserver.value || !state.value) return;
-  const confirmed = window.confirm('退出大模型登录后需要重新连接大模型。确定退出大模型登录吗？');
+  const confirmed = await confirmAction('退出大模型登录后需要重新连接大模型。确定退出大模型登录吗？');
   if (!confirmed) return;
   loggingOutModelserver.value = true;
   try {
@@ -416,12 +430,12 @@ async function deleteSlave(id: string) {
   let remoteOpenFailed = false;
   if (!slaveRemoteDeleteOpened.value[id]) {
     if (slaveBusy.value[id]) return;
-    slaveBusy.value = { ...slaveBusy.value, [id]: true };
+    setSlaveBusy(id, true);
     slaveNotice.value = '';
     try {
       const remote = await api.openConsoleSlaveRemote(id);
       if (remote.state === 'opened') {
-        slaveRemoteDeleteOpened.value = { ...slaveRemoteDeleteOpened.value, [id]: true };
+        slaveRemoteDeleteOpened.value[id] = true;
         slaveNotice.value = '已打开 agentserver 页面。请先在网页中删除远程记录，完成后再次点击删除来清理本机配置和进程。';
         slaveError.value = '';
         return;
@@ -431,11 +445,11 @@ async function deleteSlave(id: string) {
       slaveError.value = '';
       slaveNotice.value = `未能自动打开 agentserver 页面：${errorMessage(e)}。远程记录可能需要手动清理。`;
     } finally {
-      slaveBusy.value = { ...slaveBusy.value, [id]: false };
+      setSlaveBusy(id, false);
     }
   }
 
-  const confirmed = window.confirm(deleteSlaveConfirmMessage(id, remoteOpenFailed));
+  const confirmed = await confirmAction(deleteSlaveConfirmMessage(id, remoteOpenFailed));
   if (!confirmed) return;
   await runSlaveAction(id, async () => {
     await api.deleteConsoleSlave(id);
@@ -456,21 +470,27 @@ function deleteSlaveConfirmMessage(id: string, remoteOpenFailed: boolean) {
 
 async function runSlaveAction(id: string, action: () => Promise<unknown>) {
   if (slaveBusy.value[id]) return;
-  slaveBusy.value = { ...slaveBusy.value, [id]: true };
+  setSlaveBusy(id, true);
   try {
     await action();
     await loadSlaves();
   } catch (e) {
     slaveError.value = errorMessage(e);
   } finally {
-    slaveBusy.value = { ...slaveBusy.value, [id]: false };
+    setSlaveBusy(id, false);
   }
 }
 
+function setSlaveBusy(id: string, busy: boolean) {
+  if (busy) {
+    slaveBusy.value[id] = true;
+    return;
+  }
+  delete slaveBusy.value[id];
+}
+
 function clearSlaveRemoteDeleteOpened(id: string) {
-  const next = { ...slaveRemoteDeleteOpened.value };
-  delete next[id];
-  slaveRemoteDeleteOpened.value = next;
+  delete slaveRemoteDeleteOpened.value[id];
 }
 
 function slaveStatusLabel(status: api.ConsoleSlaveStatus | string) {

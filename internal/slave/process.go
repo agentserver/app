@@ -427,7 +427,20 @@ func (m *Manager) monitor(id string, configPath string, res StartResult) {
 			defer ticker.Stop()
 			readiness = ticker.C
 		}
-		for authURLs != nil || exit != nil || readiness != nil {
+		var startup <-chan time.Time
+		var startupTimer *time.Timer
+		if configPath != "" && res.AuthURL == "" {
+			startupTimer = time.NewTimer(readinessTimeout)
+			defer startupTimer.Stop()
+			startup = startupTimer.C
+		}
+		stopStartupTimer := func() {
+			startup = nil
+			if startupTimer != nil {
+				startupTimer.Stop()
+			}
+		}
+		for authURLs != nil || exit != nil || readiness != nil || startup != nil {
 			select {
 			case url, ok := <-authURLs:
 				if !ok {
@@ -435,6 +448,7 @@ func (m *Manager) monitor(id string, configPath string, res StartResult) {
 					continue
 				}
 				if m.recordAuthURL(id, res.PID, url) {
+					stopStartupTimer()
 					m.openAuthURL(url)
 				}
 			case err, ok := <-exit:
@@ -444,10 +458,17 @@ func (m *Manager) monitor(id string, configPath string, res StartResult) {
 				}
 				m.recordProcessExit(id, res.PID, err)
 				exit = nil
+				readiness = nil
+				stopStartupTimer()
 			case <-readiness:
 				if m.recordReady(id, res.PID, configPath) {
 					readiness = nil
+					stopStartupTimer()
 				}
+			case <-startup:
+				m.recordStartupTimeout(id, res.PID)
+				readiness = nil
+				stopStartupTimer()
 			}
 		}
 	}()
@@ -458,6 +479,7 @@ func (m *Manager) recordAuthURL(id string, pid int, url string) bool {
 	if url == "" {
 		return false
 	}
+	changed := false
 	_, err := m.d.Registry.Update(id, func(s *Slave) error {
 		if s.PID != pid || s.Status == StatusPaused || s.Status == StatusRunning {
 			return errStaleProcessEvent
@@ -465,12 +487,29 @@ func (m *Manager) recordAuthURL(id string, pid int, url string) bool {
 		if s.Status != StatusStarting && s.Status != StatusAuthRequired {
 			return errStaleProcessEvent
 		}
+		if s.AuthURL == url {
+			return nil
+		}
 		s.Status = StatusAuthRequired
 		s.AuthURL = url
 		s.LastError = ""
+		changed = true
 		return nil
 	})
-	return err == nil
+	return err == nil && changed
+}
+
+func (m *Manager) recordStartupTimeout(id string, pid int) {
+	_, _ = m.d.Registry.Update(id, func(s *Slave) error {
+		if s.PID != pid || s.Status != StatusStarting {
+			return errStaleProcessEvent
+		}
+		s.Status = StatusError
+		s.PID = 0
+		s.AuthURL = ""
+		s.LastError = fmt.Sprintf("slave startup timeout after %s", readinessTimeout)
+		return nil
+	})
 }
 
 func (m *Manager) openAuthURL(url string) {
@@ -602,6 +641,7 @@ type execRunner struct{}
 var startupTimeout = 3 * time.Second
 var execStopWaitTimeout = 2 * time.Second
 var readinessPollInterval = 100 * time.Millisecond
+var readinessTimeout = 30 * time.Second
 
 type trackedExecProcess struct {
 	proc *os.Process

@@ -18,6 +18,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/launchprep"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/process"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
@@ -109,6 +110,7 @@ func startDetached(exe string, args ...string) error {
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	process.HideWindow(cmd)
 	return cmd.Start()
 }
 

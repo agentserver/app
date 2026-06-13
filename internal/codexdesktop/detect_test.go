@@ -2,6 +2,7 @@ package codexdesktop
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -27,5 +28,21 @@ func TestDetectedFromPowerShellOutputWrapsOperationalFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "access denied") {
 		t.Fatalf("err=%v, want command output", err)
+	}
+}
+
+func TestWindowsDetectUsesExactPackageFamily(t *testing.T) {
+	body, err := os.ReadFile("detect_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	if !strings.Contains(source, "$_.PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0'") {
+		t.Fatalf("detect_windows.go should match exact Codex PackageFamilyName:\n%s", source)
+	}
+	for _, notWant := range []string{"$_.Name -like '*Codex*'", "$_.PackageFullName -like '*Codex*'"} {
+		if strings.Contains(source, notWant) {
+			t.Fatalf("detect_windows.go should not use fuzzy Appx matching %q:\n%s", notWant, source)
+		}
 	}
 }

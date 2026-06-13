@@ -4,8 +4,10 @@ package secrets
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // keyringAvailable probes the Linux Secret Service via secret-tool.
@@ -28,17 +30,37 @@ func keyringAvailable() bool {
 	return false
 }
 
-type keyringStore struct{}
+type keyringStore struct {
+	mu sync.Mutex
+}
+
+func newKeyringStore() *keyringStore {
+	return &keyringStore{}
+}
 
 func (k *keyringStore) Get(key string) (string, error) {
-	out, err := exec.Command("secret-tool", "lookup", "service", serviceName, "key", key).Output()
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	out, err := exec.Command("secret-tool", "lookup", "service", serviceName, "key", key).CombinedOutput()
 	if err != nil {
-		return "", ErrNotFound
+		return "", secretToolLookupError(out, err)
 	}
 	return strings.TrimRight(string(out), "\n"), nil
 }
 
+func secretToolLookupError(out []byte, err error) error {
+	msg := strings.TrimSpace(string(out))
+	if msg == "" || strings.Contains(msg, "No such secret") {
+		return ErrNotFound
+	}
+	return fmt.Errorf("secret-tool lookup: %s: %w", msg, err)
+}
+
 func (k *keyringStore) Set(key, value string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
 	cmd := exec.Command("secret-tool", "store", "--label="+serviceName+":"+key,
 		"service", serviceName, "key", key)
 	cmd.Stdin = strings.NewReader(value)
@@ -46,6 +68,9 @@ func (k *keyringStore) Set(key, value string) error {
 }
 
 func (k *keyringStore) Delete(key string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
 	err := exec.Command("secret-tool", "clear", "service", serviceName, "key", key).Run()
 	if err != nil {
 		// Treat "no such secret" as success.

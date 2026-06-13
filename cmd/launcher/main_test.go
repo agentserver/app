@@ -32,16 +32,28 @@ import (
 )
 
 func TestLauncherOptionsDefaultOpensPageAndFrontend(t *testing.T) {
-	got := parseLauncherOptions([]string{})
+	got, err := parseLauncherOptions([]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.Background || !got.OpenPage || !got.OpenFrontend {
 		t.Fatalf("options=%+v", got)
 	}
 }
 
 func TestLauncherOptionsBackgroundDoesNotOpenPageOrFrontend(t *testing.T) {
-	got := parseLauncherOptions([]string{"--background"})
+	got, err := parseLauncherOptions([]string{"--background"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !got.Background || got.OpenPage || got.OpenFrontend {
 		t.Fatalf("options=%+v", got)
+	}
+}
+
+func TestLauncherOptionsRejectUnknownFlag(t *testing.T) {
+	if _, err := parseLauncherOptions([]string{"--backgrond"}); err == nil || !strings.Contains(err.Error(), "unknown launcher option") {
+		t.Fatalf("err=%v, want unknown launcher option", err)
 	}
 }
 
@@ -51,14 +63,15 @@ func TestCompletedLauncherReusesExistingConsole(t *testing.T) {
 		Options:  launcherOptions{OpenPage: true, OpenFrontend: true},
 		PortFile: "ignored",
 		Discover: func(context.Context, string) (console.InstanceInfo, bool) {
-			return console.InstanceInfo{Port: 34567}, true
+			return console.InstanceInfo{Port: 34567, Token: "token-123"}, true
 		},
 		OpenBrowser: func(url string) error {
 			called.openedURL = url
 			return nil
 		},
-		Post: func(ctx context.Context, url string) error {
+		Post: func(ctx context.Context, url, token string) error {
 			called.posted = append(called.posted, url)
+			called.postedToken = token
 			return nil
 		},
 	})
@@ -71,11 +84,15 @@ func TestCompletedLauncherReusesExistingConsole(t *testing.T) {
 	if len(called.posted) != 1 || !strings.Contains(called.posted[0], "/api/console/open-frontend") {
 		t.Fatalf("posted=%+v", called.posted)
 	}
+	if called.postedToken != "token-123" {
+		t.Fatalf("postedToken=%q", called.postedToken)
+	}
 }
 
 type launcherCalls struct {
-	openedURL string
-	posted    []string
+	openedURL   string
+	posted      []string
+	postedToken string
 }
 
 func TestCompletedLauncherAttemptsFrontendWhenOpenPageFails(t *testing.T) {
@@ -85,13 +102,13 @@ func TestCompletedLauncherAttemptsFrontendWhenOpenPageFails(t *testing.T) {
 		Options:  launcherOptions{OpenPage: true, OpenFrontend: true},
 		PortFile: "ignored",
 		Discover: func(context.Context, string) (console.InstanceInfo, bool) {
-			return console.InstanceInfo{Port: 34567}, true
+			return console.InstanceInfo{Port: 34567, Token: "token-123"}, true
 		},
 		OpenBrowser: func(url string) error {
 			called.openedURL = url
 			return browserErr
 		},
-		Post: func(ctx context.Context, url string) error {
+		Post: func(ctx context.Context, url, token string) error {
 			called.posted = append(called.posted, url)
 			return nil
 		},

@@ -55,7 +55,11 @@ func main() {
 }
 
 func run() error {
-	return runWithOptions(context.Background(), parseLauncherOptions(os.Args[1:]))
+	opts, err := parseLauncherOptions(os.Args[1:])
+	if err != nil {
+		return err
+	}
+	return runWithOptions(context.Background(), opts)
 }
 
 type launcherOptions struct {
@@ -64,16 +68,19 @@ type launcherOptions struct {
 	OpenFrontend bool
 }
 
-func parseLauncherOptions(args []string) launcherOptions {
+func parseLauncherOptions(args []string) (launcherOptions, error) {
 	opts := launcherOptions{OpenPage: true, OpenFrontend: true}
 	for _, arg := range args {
-		if arg == "--background" {
+		switch arg {
+		case "--background":
 			opts.Background = true
 			opts.OpenPage = false
 			opts.OpenFrontend = false
+		default:
+			return launcherOptions{}, fmt.Errorf("unknown launcher option: %s", arg)
 		}
 	}
-	return opts
+	return opts, nil
 }
 
 func runWithOptions(ctx context.Context, opts launcherOptions) error {
@@ -126,7 +133,7 @@ type completedConsoleDeps struct {
 	PortFile    string
 	Discover    func(context.Context, string) (console.InstanceInfo, bool)
 	OpenBrowser func(string) error
-	Post        func(context.Context, string) error
+	Post        func(context.Context, string, string) error
 }
 
 var errNoRunningConsole = errors.New("no running console")
@@ -149,7 +156,7 @@ func runCompletedConsole(ctx context.Context, d completedConsoleDeps) error {
 			}
 		}
 		if d.Options.OpenFrontend {
-			if err := post(ctx, base+"/api/console/open-frontend"); err != nil {
+			if err := post(ctx, base+"/api/console/open-frontend", info.Token); err != nil {
 				errs = append(errs, fmt.Errorf("open completed frontend: %w", err))
 			}
 		}
@@ -158,10 +165,13 @@ func runCompletedConsole(ctx context.Context, d completedConsoleDeps) error {
 	return errNoRunningConsole
 }
 
-func postConsole(ctx context.Context, url string) error {
+func postConsole(ctx context.Context, url, token string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
 		return err
+	}
+	if token != "" {
+		req.Header.Set(ui.ConsoleInstanceTokenHeader, token)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -246,7 +256,12 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 			go srv.Shutdown(context.Background())
 		},
 	})
-	srv.Handler = ui.NewServerWithConsole(newCompletedConsoleOrchestrator(completedOrchestratorInput{
+	token, err := console.NewInstanceToken()
+	if err != nil {
+		ln.Close()
+		return err
+	}
+	srv.Handler = ui.NewServerWithConsoleToken(newCompletedConsoleOrchestrator(completedOrchestratorInput{
 		State:                 in.State,
 		Secrets:               sec,
 		Paths:                 in.Paths,
@@ -254,10 +269,10 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		MSOAuth:               modelserver.OAuthConfig(),
 		OpenBrowser:           func(url string) { _ = openBrowser(url) },
 		TokenRefresherExePath: joinExe(in.InstallDir, "token-refresher.exe"),
-	}), ctrl)
+	}), ctrl, token)
 
 	port := ln.Addr().(*net.TCPAddr).Port
-	info := console.InstanceInfo{Port: port, PID: os.Getpid()}
+	info := console.InstanceInfo{Port: port, PID: os.Getpid(), Token: token}
 	if err := console.WriteInstanceInfo(in.Paths.ConsolePortFile, info); err != nil {
 		ln.Close()
 		return err

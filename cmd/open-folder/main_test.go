@@ -196,6 +196,16 @@ func TestEnsureConsoleDoesNotStartWhenHealthy(t *testing.T) {
 	}
 }
 
+func TestStartDetachedHidesConsoleWindow(t *testing.T) {
+	body, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "process.HideWindow(cmd)") {
+		t.Fatalf("startDetached should hide the child console window:\n%s", body)
+	}
+}
+
 func assertJSONField(t *testing.T, path, key, want string) {
 	t.Helper()
 	b, err := os.ReadFile(path)

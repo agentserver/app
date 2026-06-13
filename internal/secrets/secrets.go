@@ -17,7 +17,8 @@ const serviceName = "agentserver-app"
 // ErrNotFound is returned by Get when the key does not exist.
 var ErrNotFound = errors.New("secret not found")
 
-// Store is the secrets storage interface.
+// Store is the secrets storage interface. Implementations must be safe for
+// concurrent use by multiple goroutines.
 type Store interface {
 	Get(key string) (string, error)
 	Set(key, value string) error
@@ -28,7 +29,7 @@ type Store interface {
 // falls back to a chmod 600 JSON file at fallbackPath.
 func New(fallbackPath string) Store {
 	if keyringAvailable() {
-		return &keyringStore{}
+		return newKeyringStore()
 	}
 	return newFileStore(fallbackPath)
 }

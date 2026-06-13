@@ -243,6 +243,40 @@ func TestRunRemovesLoomDriverCredentialsAndCodexMCPServer(t *testing.T) {
 	}
 }
 
+func TestRunRemovesCodexDesktopStateFiles(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		UserHome:                          dir,
+		InstallRoot:                       filepath.Join(dir, ".agentserver-app"),
+		SecretsFile:                       filepath.Join(dir, ".agentserver-app", "secrets.json"),
+		LocalAppDataRoot:                  filepath.Join(dir, "local-appdata", "agentserver-app"),
+		CodexDir:                          filepath.Join(dir, ".codex"),
+		CodexDesktopGlobalStateFile:       filepath.Join(dir, ".codex", ".codex-global-state.json"),
+		CodexDesktopComputerUseConfigFile: filepath.Join(dir, ".codex", "computer-use", "config.json"),
+	}
+	writeTextFile(t, p.CodexDesktopGlobalStateFile, `{"localeOverride":"zh-CN"}`)
+	writeTextFile(t, p.CodexDesktopComputerUseConfigFile, `{"locale":"zh-CN"}`)
+
+	err := Run(Options{
+		Paths:     p,
+		Secrets:   secrets.New(p.SecretsFile),
+		DeleteEnv: func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, path := range []string{
+		p.CodexDesktopGlobalStateFile,
+		p.CodexDesktopComputerUseConfigFile,
+		filepath.Dir(p.CodexDesktopComputerUseConfigFile),
+	} {
+		if exists(path) {
+			t.Fatalf("Codex Desktop state path still exists: %s", path)
+		}
+	}
+}
+
 func TestRunPreservesUnrelatedLoomConfigFiles(t *testing.T) {
 	dir := t.TempDir()
 	p := paths.Paths{
@@ -281,6 +315,73 @@ func TestRunPreservesUnrelatedLoomConfigFiles(t *testing.T) {
 	}
 	if !exists(loomDir) {
 		t.Fatalf("Loom config dir with unrelated file was pruned: %s", loomDir)
+	}
+}
+
+func TestRunRemoveVSCodeRunsManagedUninstallerAndRemovesUserData(t *testing.T) {
+	dir := t.TempDir()
+	installRoot := filepath.Join(dir, ".agentserver-app")
+	userDataDir := filepath.Join(dir, "vscode-data")
+	extDir := filepath.Join(dir, "vscode-extensions")
+	codeDir := filepath.Join(dir, "Programs", "Microsoft VS Code")
+	codePath := filepath.Join(codeDir, "Code.exe")
+	uninstallerPath := filepath.Join(codeDir, "unins000.exe")
+	p := paths.Paths{
+		UserHome:          dir,
+		InstallRoot:       installRoot,
+		StateFile:         filepath.Join(installRoot, "state.json"),
+		SecretsFile:       filepath.Join(installRoot, "secrets.json"),
+		VSCodeUserDataDir: userDataDir,
+		VSCodeExtDir:      extDir,
+	}
+	if err := os.MkdirAll(filepath.Dir(p.StateFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFile(t, p.StateFile, map[string]any{
+		"schema_version": 1,
+		"install_id":     "install-1",
+		"frontend_mode":  "minimal_vscode",
+		"vscode": map[string]any{
+			"path":            codePath,
+			"installed_by_us": true,
+		},
+	})
+	writeTextFile(t, codePath, "code")
+	writeTextFile(t, uninstallerPath, "uninstall")
+	writeTextFile(t, filepath.Join(userDataDir, "User", "settings.json"), "{}")
+	writeTextFile(t, filepath.Join(extDir, "agentserver", "package.json"), "{}")
+	writeTextFile(t, filepath.Join(dir, ".vscode", "extensions.json"), "{}")
+	appDataCode := filepath.Join(dir, "AppData", "Roaming", "Code")
+	writeTextFile(t, filepath.Join(appDataCode, "User", "settings.json"), "{}")
+	t.Setenv("APPDATA", filepath.Join(dir, "AppData", "Roaming"))
+
+	var uninstalled []string
+	err := Run(Options{
+		Paths:        p,
+		Secrets:      secrets.New(p.SecretsFile),
+		RemoveVSCode: true,
+		RunVSCodeUninstaller: func(_ context.Context, path string, args ...string) error {
+			uninstalled = append(uninstalled, path+" "+strings.Join(args, " "))
+			return nil
+		},
+		DeleteEnv: func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(uninstalled) != 1 || !strings.HasPrefix(uninstalled[0], uninstallerPath+" ") {
+		t.Fatalf("uninstalled=%v, want %s", uninstalled, uninstallerPath)
+	}
+	for _, wantArg := range []string{"/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"} {
+		if !strings.Contains(uninstalled[0], wantArg) {
+			t.Fatalf("uninstaller args missing %s: %v", wantArg, uninstalled)
+		}
+	}
+	for _, path := range []string{userDataDir, extDir, filepath.Join(dir, ".vscode"), appDataCode} {
+		if exists(path) {
+			t.Fatalf("VS Code data path still exists: %s", path)
+		}
 	}
 }
 

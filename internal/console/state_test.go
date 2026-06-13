@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1207,6 +1208,7 @@ func mkdir(path string) error {
 }
 
 type testSecrets struct {
+	mu     sync.Mutex
 	values map[string]string
 }
 
@@ -1215,6 +1217,9 @@ func newTestSecrets() *testSecrets {
 }
 
 func (s *testSecrets) Get(key string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	v, ok := s.values[key]
 	if !ok {
 		return "", errors.New("secret not found")
@@ -1223,11 +1228,17 @@ func (s *testSecrets) Get(key string) (string, error) {
 }
 
 func (s *testSecrets) Set(key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.values[key] = value
 	return nil
 }
 
 func (s *testSecrets) Delete(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	delete(s.values, key)
 	return nil
 }

@@ -9,8 +9,7 @@ import (
 
 func TestWindowsPackagingVerifiesCodexDesktopAuthenticodeSignature(t *testing.T) {
 	files := []string{
-		filepath.Join("..", "..", "scripts", "package-windows.sh"),
-		filepath.Join("..", "..", "scripts", "package-windows-zip.sh"),
+		filepath.Join("..", "..", "scripts", "windows-package-common.sh"),
 		filepath.Join("..", "..", "packaging", "windows", "ensure-codex-desktop.ps1"),
 	}
 	for _, file := range files {

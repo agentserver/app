@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +180,20 @@ func TestStartListening_StateMismatch(t *testing.T) {
 		// channel was closed by timeout — acceptable
 	case <-time.After(time.Second):
 		t.Fatal("channel neither closed nor received (timeout should fire)")
+	}
+}
+
+func TestStartListeningUsesConstantTimeStateComparison(t *testing.T) {
+	body, err := os.ReadFile("pkce_callback.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	if !strings.Contains(source, "subtle.ConstantTimeCompare") {
+		t.Fatalf("pkce callback should compare OAuth state in constant time:\n%s", source)
+	}
+	if strings.Contains(source, "state != expectedState") {
+		t.Fatalf("pkce callback should not use direct state inequality:\n%s", source)
 	}
 }
 

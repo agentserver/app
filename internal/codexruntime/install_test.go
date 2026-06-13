@@ -294,6 +294,74 @@ func TestEnsureAbortsMirrorAttemptAfterTimeout(t *testing.T) {
 	}
 }
 
+func TestEnsureRejectsDownloadWhenContentLengthExceedsLimit(t *testing.T) {
+	oldLimit := maxPackageDownloadBytes
+	maxPackageDownloadBytes = 8
+	t.Cleanup(func() { maxPackageDownloadBytes = oldLimit })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "9")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	manifestPath := writeManifest(t, dir, Manifest{
+		Package:       "@openai/codex",
+		Platform:      "win32-x64",
+		PinnedVersion: "0.136.0-win32-x64",
+		StripPrefix:   "vendor/x86_64-pc-windows-msvc/",
+		CodexExe:      "bin/codex.exe",
+		RequiredFiles: requiredRuntimeFiles(),
+		Pinned:        PinnedPackage{Integrity: "sha512-unused", URLs: []string{srv.URL + "/oversized.tgz"}},
+	})
+	_, err := Ensure(context.Background(), Options{
+		ManifestPath: manifestPath,
+		DestRoot:     filepath.Join(dir, "root"),
+		CacheDir:     filepath.Join(dir, "cache"),
+		VersionCommand: func(context.Context, string) (string, error) {
+			return "codex-cli 0.136.0", nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "download size") {
+		t.Fatalf("err=%v, want download size limit error", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "cache", "codex-0.136.0-win32-x64.tgz.part")); !os.IsNotExist(statErr) {
+		t.Fatalf("stale partial should be removed after oversized response, stat err=%v", statErr)
+	}
+}
+
+func TestEnsureRejectsDownloadStreamThatExceedsLimit(t *testing.T) {
+	oldLimit := maxPackageDownloadBytes
+	maxPackageDownloadBytes = 8
+	t.Cleanup(func() { maxPackageDownloadBytes = oldLimit })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("123456789"))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	manifestPath := writeManifest(t, dir, Manifest{
+		Package:       "@openai/codex",
+		Platform:      "win32-x64",
+		PinnedVersion: "0.136.0-win32-x64",
+		StripPrefix:   "vendor/x86_64-pc-windows-msvc/",
+		CodexExe:      "bin/codex.exe",
+		RequiredFiles: requiredRuntimeFiles(),
+		Pinned:        PinnedPackage{Integrity: "sha512-unused", URLs: []string{srv.URL + "/oversized-stream.tgz"}},
+	})
+	_, err := Ensure(context.Background(), Options{
+		ManifestPath: manifestPath,
+		DestRoot:     filepath.Join(dir, "root"),
+		CacheDir:     filepath.Join(dir, "cache"),
+		VersionCommand: func(context.Context, string) (string, error) {
+			return "codex-cli 0.136.0", nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "download size") {
+		t.Fatalf("err=%v, want download size limit error", err)
+	}
+}
+
 func TestEnsureSkipsWhenRuntimeAlreadyWorks(t *testing.T) {
 	dir := t.TempDir()
 	root := filepath.Join(dir, "root")

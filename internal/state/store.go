@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,19 +16,26 @@ import (
 )
 
 type Store struct {
-	path string
-	mu   sync.Mutex
+	path    string
+	mu      sync.Mutex
+	ownerMu sync.Mutex
+	owner   uint64
 }
 
 func NewStore(path string) *Store {
 	return &Store{path: path}
 }
 
+var ErrReentrantStoreAccess = errors.New("state store method called reentrantly")
+
 // Load reads state.json. If missing, returns a fresh State. If corrupt,
 // renames the bad file to <path>.corrupt-<ts> and returns a fresh State.
 func (s *Store) Load() (*State, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	lock, err := s.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer s.unlock(lock)
 	return s.loadLocked()
 }
 
@@ -49,8 +59,11 @@ func (s *Store) loadLocked() (*State, error) {
 
 // Save writes state.json atomically.
 func (s *Store) Save(st *State) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	lock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer s.unlock(lock)
 	return s.saveLocked(st)
 }
 
@@ -68,10 +81,13 @@ func (s *Store) saveLocked(st *State) error {
 
 // Update is a read-modify-write under the store mutex.
 // fn must NOT call any Store method (Load/Save/Update) on the same receiver:
-// the mutex is non-reentrant and the goroutine will deadlock.
+// reentrant access returns ErrReentrantStoreAccess.
 func (s *Store) Update(fn func(*State) error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	lock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer s.unlock(lock)
 	st, err := s.loadLocked()
 	if err != nil {
 		return err
@@ -80,6 +96,55 @@ func (s *Store) Update(fn func(*State) error) error {
 		return err
 	}
 	return s.saveLocked(st)
+}
+
+func (s *Store) lock() (*stateFileLock, error) {
+	gid := currentGoroutineID()
+	if gid != 0 {
+		s.ownerMu.Lock()
+		if s.owner == gid {
+			s.ownerMu.Unlock()
+			return nil, ErrReentrantStoreAccess
+		}
+		s.ownerMu.Unlock()
+	}
+	s.mu.Lock()
+	if gid != 0 {
+		s.ownerMu.Lock()
+		s.owner = gid
+		s.ownerMu.Unlock()
+	}
+	lock, err := acquireStateFileLock(s.path + ".lock")
+	if err != nil {
+		s.ownerMu.Lock()
+		s.owner = 0
+		s.ownerMu.Unlock()
+		s.mu.Unlock()
+		return nil, err
+	}
+	return lock, nil
+}
+
+func (s *Store) unlock(lock *stateFileLock) {
+	_ = lock.close()
+	s.ownerMu.Lock()
+	s.owner = 0
+	s.ownerMu.Unlock()
+	s.mu.Unlock()
+}
+
+func currentGoroutineID() uint64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	fields := strings.Fields(string(buf[:n]))
+	if len(fields) < 2 || fields[0] != "goroutine" {
+		return 0
+	}
+	id, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
 }
 
 func freshState() *State {

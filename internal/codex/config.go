@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -63,6 +66,7 @@ const (
 	defaultSandboxMode           = "danger-full-access"
 	defaultWindowsSandbox        = "unelevated"
 	defaultDeveloperInstructions = "请始终使用简体中文与用户交流；除非用户明确要求其他语言。"
+	maxConfigBackups             = 5
 )
 
 // UpdateConfig merges Settings into the config.toml at `path`, preserving
@@ -81,9 +85,7 @@ func UpdateConfig(path string, s Settings) error {
 		if _, err := toml.Decode(string(b), &root); err != nil {
 			return fmt.Errorf("parse existing config.toml: %w", err)
 		}
-		// backup
-		backup := fmt.Sprintf("%s.bak.%d", path, time.Now().Unix())
-		_ = os.WriteFile(backup, b, 0o644)
+		_ = writeConfigBackup(path, b)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read config.toml: %w", err)
 	}
@@ -137,8 +139,7 @@ func UpdateMCPServer(path, name string, server MCPServer) error {
 		if _, err := toml.Decode(string(b), &root); err != nil {
 			return fmt.Errorf("parse existing config.toml: %w", err)
 		}
-		backup := fmt.Sprintf("%s.bak.%d", path, time.Now().Unix())
-		_ = os.WriteFile(backup, b, 0o644)
+		_ = writeConfigBackup(path, b)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read config.toml: %w", err)
 	}
@@ -198,8 +199,7 @@ func RemoveMCPServer(path, name string) error {
 	if _, ok := servers[name]; !ok {
 		return nil
 	}
-	backup := fmt.Sprintf("%s.bak.%d", path, time.Now().Unix())
-	_ = os.WriteFile(backup, b, 0o644)
+	_ = writeConfigBackup(path, b)
 	delete(servers, name)
 	if len(servers) == 0 {
 		delete(root, "mcp_servers")
@@ -218,4 +218,46 @@ func defaultString(v, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func writeConfigBackup(path string, body []byte) error {
+	backup := fmt.Sprintf("%s.bak.%d", path, time.Now().UnixNano())
+	if err := os.WriteFile(backup, body, 0o644); err != nil {
+		return err
+	}
+	return pruneConfigBackups(path)
+}
+
+func pruneConfigBackups(path string) error {
+	matches, err := filepath.Glob(path + ".bak.*")
+	if err != nil {
+		return err
+	}
+	type backupFile struct {
+		path string
+		ts   int64
+	}
+	backups := make([]backupFile, 0, len(matches))
+	prefix := filepath.Base(path) + ".bak."
+	for _, match := range matches {
+		suffix := strings.TrimPrefix(filepath.Base(match), prefix)
+		ts, _ := strconv.ParseInt(suffix, 10, 64)
+		backups = append(backups, backupFile{path: match, ts: ts})
+	}
+	sort.Slice(backups, func(i, j int) bool {
+		if backups[i].ts == backups[j].ts {
+			return backups[i].path > backups[j].path
+		}
+		return backups[i].ts > backups[j].ts
+	})
+	if len(backups) <= maxConfigBackups {
+		return nil
+	}
+	var errs []error
+	for _, backup := range backups[maxConfigBackups:] {
+		if err := os.Remove(backup.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }

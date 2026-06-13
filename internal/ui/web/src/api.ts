@@ -139,6 +139,28 @@ export class OnboardingError extends Error {
   }
 }
 
+const consoleTokenHeader = 'X-AgentServer-Console-Token';
+
+function consoleInstanceToken(): string {
+  if (typeof document === 'undefined') {
+    return '';
+  }
+  return document
+    .querySelector<HTMLMetaElement>('meta[name="agentserver-console-token"]')
+    ?.content
+    .trim() ?? '';
+}
+
+function withConsoleToken(init?: RequestInit): RequestInit | undefined {
+  const token = consoleInstanceToken();
+  if (!token) {
+    return init;
+  }
+  const headers = new Headers(init?.headers);
+  headers.set(consoleTokenHeader, token);
+  return { ...init, headers };
+}
+
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
   let resp: Response;
   try {
@@ -183,50 +205,50 @@ export const launchFrontend = () =>
 export const getConsoleState = () => request<ConsoleState>('/api/console/state');
 
 export const refreshConsoleState = () =>
-  request<ConsoleState>('/api/console/refresh', { method: 'POST' });
+  request<ConsoleState>('/api/console/refresh', withConsoleToken({ method: 'POST' }));
 
 export const openConsoleFrontend = () =>
-  request<{ state: 'opened' }>('/api/console/open-frontend', { method: 'POST' });
+  request<{ state: 'opened' }>('/api/console/open-frontend', withConsoleToken({ method: 'POST' }));
 
 export const openConsoleSubscription = () =>
-  request<{ state: 'opened' }>('/api/console/open-subscription', { method: 'POST' });
+  request<{ state: 'opened' }>('/api/console/open-subscription', withConsoleToken({ method: 'POST' }));
 
 export const logoutConsoleModelserver = () =>
-  request<{ state: 'logged_out' }>('/api/console/logout-modelserver', { method: 'POST' });
+  request<{ state: 'logged_out' }>('/api/console/logout-modelserver', withConsoleToken({ method: 'POST' }));
 
 export const getConsoleSlaves = () =>
   request<ConsoleSlavesResponse>('/api/console/slaves');
 
 export const createConsoleSlave = (input: CreateConsoleSlaveInput) =>
-  request<ConsoleSlave>('/api/console/slaves', {
+  request<ConsoleSlave>('/api/console/slaves', withConsoleToken({
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
-  });
+  }));
 
 export const selectConsoleSlaveFolder = () =>
-  request<SelectConsoleSlaveFolderResponse>('/api/console/select-folder', { method: 'POST' });
+  request<SelectConsoleSlaveFolderResponse>('/api/console/select-folder', withConsoleToken({ method: 'POST' }));
 
 export const restartConsoleSlave = (id: string) =>
-  request<ConsoleSlave>(`/api/console/slaves/${encodeURIComponent(id)}/restart`, { method: 'POST' });
+  request<ConsoleSlave>(`/api/console/slaves/${encodeURIComponent(id)}/restart`, withConsoleToken({ method: 'POST' }));
 
 export const pauseConsoleSlave = (id: string) =>
-  request<ConsoleSlave>(`/api/console/slaves/${encodeURIComponent(id)}/pause`, { method: 'POST' });
+  request<ConsoleSlave>(`/api/console/slaves/${encodeURIComponent(id)}/pause`, withConsoleToken({ method: 'POST' }));
 
 export const openConsoleSlaveRemote = (id: string) =>
-  request<OpenConsoleSlaveRemoteResponse>(`/api/console/slaves/${encodeURIComponent(id)}/open-remote`, { method: 'POST' });
+  request<OpenConsoleSlaveRemoteResponse>(`/api/console/slaves/${encodeURIComponent(id)}/open-remote`, withConsoleToken({ method: 'POST' }));
 
 export const deleteConsoleSlave = (id: string) =>
-  request<{ state: 'deleted' }>(`/api/console/slaves/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  request<{ state: 'deleted' }>(`/api/console/slaves/${encodeURIComponent(id)}`, withConsoleToken({ method: 'DELETE' }));
 
 export const getConsoleUpdate = () =>
   request<ConsoleUpdateState>('/api/console/update');
 
 export const checkConsoleUpdate = () =>
-  request<ConsoleUpdateState>('/api/console/update/check', { method: 'POST' });
+  request<ConsoleUpdateState>('/api/console/update/check', withConsoleToken({ method: 'POST' }));
 
 export const installConsoleUpdate = () =>
-  request<ConsoleUpdateState>('/api/console/update/install', { method: 'POST' });
+  request<ConsoleUpdateState>('/api/console/update/install', withConsoleToken({ method: 'POST' }));
 
 export const startVSCodeInstall = startFrontendInstall;
 export const configureVSCode = configureFrontend;

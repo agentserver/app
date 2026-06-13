@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +28,7 @@ type Machine struct {
 
 type MachineStore struct {
 	path string
+	mu   sync.Mutex
 }
 
 func NewMachineStore(path string) *MachineStore {
@@ -34,6 +36,12 @@ func NewMachineStore(path string) *MachineStore {
 }
 
 func (s *MachineStore) Load() (Machine, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.load()
+}
+
+func (s *MachineStore) load() (Machine, error) {
 	b, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Machine{}, os.ErrNotExist
@@ -52,6 +60,8 @@ func (s *MachineStore) Load() (Machine, error) {
 }
 
 func (s *MachineStore) Ensure(computerName string) (Machine, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if existing, err := s.loadAfterConcurrentPublish(); err == nil {
 		return existing, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -104,7 +114,7 @@ func (s *MachineStore) create(name string) (Machine, error) {
 }
 
 func (s *MachineStore) loadAfterConcurrentPublish() (Machine, error) {
-	return loadMachineWithRetry(s.Load, isMachineSharingViolation)
+	return loadMachineWithRetry(s.load, isMachineSharingViolation)
 }
 
 func loadMachineWithRetry(load func() (Machine, error), retryable func(error) bool) (Machine, error) {

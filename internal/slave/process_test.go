@@ -114,6 +114,39 @@ func TestManagerDelayedAuthURLOpensBrowser(t *testing.T) {
 	})
 }
 
+func TestManagerDuplicateDelayedAuthURLOpensBrowserOnce(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	authURL := "https://agent.cs.ac.cn/device?user_code=ABCD"
+	authURLs := make(chan string, 2)
+	opened := make(chan string, 2)
+	manager := NewManager(ManagerDeps{
+		Machines:    NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:    NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:      &fakeRunner{pid: 4321, authURLs: authURLs},
+		SlaveExe:    filepath.Join(dir, "slave-agent.exe"),
+		OpenAuthURL: func(url string) { opened <- url },
+	})
+	if _, err := manager.Machines.Ensure("61414-PC"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.CreateAndStart(context.Background(), CreateInput{Folder: folder, Name: "worker"}); err != nil {
+		t.Fatalf("CreateAndStart: %v", err)
+	}
+	authURLs <- authURL
+	if got := receiveOpenedURL(t, opened); got != authURL {
+		t.Fatalf("opened auth URL=%q, want %q", got, authURL)
+	}
+	authURLs <- authURL
+	select {
+	case got := <-opened:
+		t.Fatalf("duplicate auth URL opened browser again: %q", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 func TestManagerPauseRestartAndDelete(t *testing.T) {
 	dir := t.TempDir()
 	folder := filepath.Join(dir, "repo")
@@ -339,6 +372,34 @@ func TestManagerProcessExitAfterStartupUpdatesRegistryError(t *testing.T) {
 
 	got := waitForSlave(t, manager.Registry, sl.ID, func(sl Slave) bool {
 		return sl.Status == StatusError && sl.PID == 0 && sl.LastError != ""
+	})
+	if got.AuthURL != "" {
+		t.Fatalf("AuthURL=%q, want cleared", got.AuthURL)
+	}
+}
+
+func TestManagerStartingSlaveTimesOutWhenCredentialsNeverArrive(t *testing.T) {
+	withReadinessTimeout(t, 30*time.Millisecond)
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	manager := NewManager(ManagerDeps{
+		Machines: NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry: NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:   &fakeRunner{pid: 1111},
+		SlaveExe: filepath.Join(dir, "slave-agent.exe"),
+	})
+	_, _ = manager.Machines.Ensure("PC")
+	sl, err := manager.CreateAndStart(context.Background(), CreateInput{Folder: folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sl.Status != StatusStarting || sl.PID == 0 {
+		t.Fatalf("initial slave=%+v", sl)
+	}
+
+	got := waitForSlave(t, manager.Registry, sl.ID, func(sl Slave) bool {
+		return sl.Status == StatusError && sl.PID == 0 && strings.Contains(sl.LastError, "startup timeout")
 	})
 	if got.AuthURL != "" {
 		t.Fatalf("AuthURL=%q, want cleared", got.AuthURL)
@@ -1522,12 +1583,32 @@ func assertLogContains(t *testing.T, path string, wants ...string) {
 	t.Fatalf("log %s missing %v; body=%q", path, wants, body)
 }
 
+func receiveOpenedURL(t *testing.T, opened <-chan string) string {
+	t.Helper()
+	select {
+	case got := <-opened:
+		return got
+	case <-time.After(time.Second):
+		t.Fatal("auth URL was not opened")
+		return ""
+	}
+}
+
 func withStartupTimeout(t *testing.T, timeout time.Duration) {
 	t.Helper()
 	old := startupTimeout
 	startupTimeout = timeout
 	t.Cleanup(func() {
 		startupTimeout = old
+	})
+}
+
+func withReadinessTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	old := readinessTimeout
+	readinessTimeout = timeout
+	t.Cleanup(func() {
+		readinessTimeout = old
 	})
 }
 

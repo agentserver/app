@@ -42,9 +42,9 @@ func TestVersionMatchesWindowsInstallerScript(t *testing.T) {
 
 func TestVersionMatchesReleasePackagingSources(t *testing.T) {
 	wantString(t, "../../packaging/windows/install.ps1", "$Version    = '"+Version+"'")
+	wantString(t, "../../scripts/package-windows.sh", "VERSION=\""+Version+"\"")
 	wantString(t, "../../scripts/package-windows-zip.sh", "VERSION=\""+Version+"\"")
-	wantString(t, "../../scripts/package-windows.sh", "agentserver-app-"+Version+".vsix")
-	wantString(t, "../../scripts/package-windows-zip.sh", "agentserver-app-"+Version+".vsix")
+	wantString(t, "../../scripts/windows-package-common.sh", "agentserver-app-$VERSION.vsix")
 	wantString(t, "../../packaging/windows/installer.iss", "agentserver-app-"+Version+".vsix")
 
 	for _, path := range []string{

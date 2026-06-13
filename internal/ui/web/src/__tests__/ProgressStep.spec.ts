@@ -75,6 +75,38 @@ describe('ProgressStep', () => {
       'download incomplete: got 3145728 bytes',
     );
   });
+
+  it('does not accumulate SSE watchers across retries', async () => {
+    vi.spyOn(api, 'startFrontendInstall')
+      .mockResolvedValueOnce({ stream_id: 's1' })
+      .mockResolvedValueOnce({ stream_id: 's2' });
+    const onboarding = makeOnboarding();
+
+    const w = mount(ProgressStep, {
+      props: { step: makeStep(), onboarding },
+      global: { stubs: { Loading: true } },
+    });
+    await nextTick();
+    await Promise.resolve();
+    await w.setProps({
+      step: {
+        ...makeStep(),
+        runtime: { status: 'error' as const, errorMessage: 'failed' },
+      },
+    });
+
+    await w.find('button').trigger('click');
+    await nextTick();
+    await Promise.resolve();
+    FakeEventSource.instances[1].emit({ stage: 'download', msg: 'retrying' });
+    await nextTick();
+
+    expect(onboarding.updateProgress).toHaveBeenCalledTimes(1);
+    expect(onboarding.updateProgress).toHaveBeenCalledWith('vscode_install', {
+      stage: 'retrying',
+      percent: undefined,
+    });
+  });
 });
 
 function makeStep() {

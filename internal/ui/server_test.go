@@ -917,6 +917,41 @@ func TestServerConsoleMutationsAllowSameOriginBrowserRequests(t *testing.T) {
 	}
 }
 
+func TestServerConsoleMutationsRequireInstanceTokenWhenConfigured(t *testing.T) {
+	cc := &fakeConsoleController{}
+	srv := httptest.NewServer(NewServerWithConsoleToken(noopOrchestrator{}, cc, "token-123"))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/console/open-frontend", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing token status=%d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	if cc.openedFrontend {
+		t.Fatal("missing token should not reach controller")
+	}
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/console/open-frontend", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(ConsoleInstanceTokenHeader, "token-123")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("token status=%d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if !cc.openedFrontend {
+		t.Fatal("valid token should reach controller")
+	}
+}
+
 func TestServerConsoleCreateSlaveEndpointReturnsBadRequestForValidationErrors(t *testing.T) {
 	tests := []struct {
 		name string

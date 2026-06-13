@@ -69,3 +69,19 @@ func TestFileFallbackSaveUsesAtomicSyncAndRename(t *testing.T) {
 		t.Fatalf("secrets file fallback should not publish directly with os.WriteFile:\n%s", source)
 	}
 }
+
+func TestDarwinKeyringSetDoesNotPutSecretValueInArgv(t *testing.T) {
+	body, err := os.ReadFile("keyring_darwin.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	if strings.Contains(source, `"-w", value`) {
+		t.Fatalf("darwin keyring Set exposes the secret value in process argv:\n%s", source)
+	}
+	for _, want := range []string{"cmd.Stdin", "strings.NewReader(value"} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("darwin keyring Set should pass secret via stdin; missing %q in:\n%s", want, source)
+		}
+	}
+}

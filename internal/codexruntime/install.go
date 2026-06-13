@@ -34,6 +34,8 @@ type InstallResult struct {
 	Skipped  bool
 }
 
+var maxPackageDownloadBytes int64 = 512 * 1024 * 1024
+
 func Ensure(ctx context.Context, opts Options) (InstallResult, error) {
 	m, err := LoadManifest(opts.ManifestPath)
 	if err != nil {
@@ -241,6 +243,9 @@ func downloadPackageHTTP(ctx context.Context, client *http.Client, url, dst stri
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("GET %s: status %d", url, resp.StatusCode)
 	}
+	if resp.ContentLength > maxPackageDownloadBytes {
+		return fmt.Errorf("download size %d exceeds limit %d", resp.ContentLength, maxPackageDownloadBytes)
+	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
@@ -255,7 +260,7 @@ func downloadPackageHTTP(ctx context.Context, client *http.Client, url, dst stri
 			_ = os.Remove(tmp)
 		}
 	}()
-	if err := copyWithIdleTimeout(reqCtx, cancel, out, resp.Body, idleTimeout); err != nil {
+	if err := copyWithIdleTimeout(reqCtx, cancel, out, &maxBytesReadCloser{r: resp.Body, max: maxPackageDownloadBytes}, idleTimeout); err != nil {
 		out.Close()
 		return err
 	}
@@ -264,6 +269,33 @@ func downloadPackageHTTP(ctx context.Context, client *http.Client, url, dst stri
 	}
 	wrote = true
 	return os.Rename(tmp, dst)
+}
+
+type maxBytesReadCloser struct {
+	r    io.ReadCloser
+	max  int64
+	read int64
+}
+
+func (r *maxBytesReadCloser) Read(p []byte) (int, error) {
+	if r.max >= 0 && r.read >= r.max {
+		var one [1]byte
+		n, err := r.r.Read(one[:])
+		if n > 0 {
+			return 0, fmt.Errorf("download size exceeds limit %d", r.max)
+		}
+		return 0, err
+	}
+	if r.max >= 0 && int64(len(p)) > r.max-r.read {
+		p = p[:r.max-r.read]
+	}
+	n, err := r.r.Read(p)
+	r.read += int64(n)
+	return n, err
+}
+
+func (r *maxBytesReadCloser) Close() error {
+	return r.r.Close()
 }
 
 type progressWriter struct {
