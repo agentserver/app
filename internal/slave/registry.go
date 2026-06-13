@@ -46,6 +46,28 @@ type CreateInput struct {
 	Name   string
 }
 
+func CanonicalFolder(folder string) (string, error) {
+	folder = strings.TrimSpace(folder)
+	if folder == "" {
+		return "", fmt.Errorf("%w: folder required", ErrInvalidCreateInput)
+	}
+	abs, err := filepath.Abs(folder)
+	if err != nil {
+		return "", fmt.Errorf("%w: folder required: %v", ErrInvalidCreateInput, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("%w: folder unavailable: %w", ErrInvalidCreateInput, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%w: folder is not a directory: %s", ErrInvalidCreateInput, abs)
+	}
+	if realPath, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = realPath
+	}
+	return filepath.Clean(abs), nil
+}
+
 var (
 	ErrInvalidCreateInput = errors.New("invalid slave create input")
 	ErrSlaveConflict      = errors.New("slave conflict")
@@ -120,20 +142,9 @@ func (r *Registry) Create(machine Machine, in CreateInput) (Slave, error) {
 	if strings.TrimSpace(machine.MachineID) == "" || strings.TrimSpace(machine.ComputerName) == "" {
 		return Slave{}, fmt.Errorf("machine identity required")
 	}
-	folderInput := strings.TrimSpace(in.Folder)
-	if folderInput == "" {
-		return Slave{}, fmt.Errorf("%w: folder required", ErrInvalidCreateInput)
-	}
-	folder, err := filepath.Abs(folderInput)
+	folder, err := CanonicalFolder(in.Folder)
 	if err != nil {
-		return Slave{}, fmt.Errorf("%w: folder required: %v", ErrInvalidCreateInput, err)
-	}
-	info, err := os.Stat(folder)
-	if err != nil {
-		return Slave{}, fmt.Errorf("%w: folder unavailable: %w", ErrInvalidCreateInput, err)
-	}
-	if !info.IsDir() {
-		return Slave{}, fmt.Errorf("%w: folder is not a directory: %s", ErrInvalidCreateInput, folder)
+		return Slave{}, err
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
@@ -143,10 +154,6 @@ func (r *Registry) Create(machine Machine, in CreateInput) (Slave, error) {
 		return Slave{}, fmt.Errorf("%w: %w", ErrInvalidCreateInput, err)
 	}
 	displayName := machine.ComputerName + "-" + name
-	id, err := uuid.NewRandom()
-	if err != nil {
-		return Slave{}, fmt.Errorf("generate slave id: %w", err)
-	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -159,24 +166,76 @@ func (r *Registry) Create(machine Machine, in CreateInput) (Slave, error) {
 			return Slave{}, fmt.Errorf("%w: slave display name already exists: %s", ErrSlaveConflict, displayName)
 		}
 	}
-	now := time.Now().UTC()
-	dir := filepath.Join(r.slavesDir, id.String())
-	sl := Slave{
-		ID:          id.String(),
-		Name:        name,
-		DisplayName: displayName,
-		Folder:      folder,
-		ConfigPath:  filepath.Join(dir, "config.yaml"),
-		LogPath:     filepath.Join(dir, "logs", "slave.log"),
-		Status:      StatusStopped,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+	return r.createLocked(all, name, displayName, folder)
+}
+
+func (r *Registry) FindByFolder(folder string) (Slave, bool, error) {
+	canonical, err := CanonicalFolder(folder)
+	if err != nil {
+		return Slave{}, false, err
 	}
-	all = append(all, sl)
-	if err := r.saveLocked(all); err != nil {
-		return Slave{}, err
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	all, err := r.loadLocked()
+	if err != nil {
+		return Slave{}, false, err
 	}
-	return sl, nil
+	for _, sl := range all {
+		existing, err := CanonicalFolder(sl.Folder)
+		if err != nil {
+			existing = filepath.Clean(sl.Folder)
+		}
+		if existing == canonical {
+			return sl, true, nil
+		}
+	}
+	return Slave{}, false, nil
+}
+
+func (r *Registry) EnsureForFolder(machine Machine, in CreateInput) (Slave, bool, error) {
+	folder, err := CanonicalFolder(in.Folder)
+	if err != nil {
+		return Slave{}, false, err
+	}
+	if strings.TrimSpace(machine.MachineID) == "" || strings.TrimSpace(machine.ComputerName) == "" {
+		return Slave{}, false, fmt.Errorf("machine identity required")
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		name = filepath.Base(folder)
+	}
+	if err := validateSlaveName(name); err != nil {
+		return Slave{}, false, fmt.Errorf("%w: %w", ErrInvalidCreateInput, err)
+	}
+	displayName := machine.ComputerName + "-" + name
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	all, err := r.loadLocked()
+	if err != nil {
+		return Slave{}, false, err
+	}
+	for _, existing := range all {
+		existingFolder, err := CanonicalFolder(existing.Folder)
+		if err != nil {
+			existingFolder = filepath.Clean(existing.Folder)
+		}
+		if existingFolder == folder {
+			return existing, false, nil
+		}
+	}
+	for _, existing := range all {
+		if existing.DisplayName == displayName {
+			return Slave{}, false, fmt.Errorf("%w: slave display name already exists: %s", ErrSlaveConflict, displayName)
+		}
+	}
+	sl, err := r.createLocked(all, name, displayName, folder)
+	if err != nil {
+		return Slave{}, false, err
+	}
+	return sl, true, nil
 }
 
 func (r *Registry) Update(id string, fn func(*Slave) error) (Slave, error) {
@@ -222,6 +281,31 @@ func (r *Registry) Delete(id string) (Slave, error) {
 		return sl, nil
 	}
 	return Slave{}, os.ErrNotExist
+}
+
+func (r *Registry) createLocked(all []Slave, name, displayName, folder string) (Slave, error) {
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return Slave{}, fmt.Errorf("generate slave id: %w", err)
+	}
+	now := time.Now().UTC()
+	dir := filepath.Join(r.slavesDir, id.String())
+	sl := Slave{
+		ID:          id.String(),
+		Name:        name,
+		DisplayName: displayName,
+		Folder:      folder,
+		ConfigPath:  filepath.Join(dir, "config.yaml"),
+		LogPath:     filepath.Join(dir, "logs", "slave.log"),
+		Status:      StatusStopped,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	all = append(all, sl)
+	if err := r.saveLocked(all); err != nil {
+		return Slave{}, err
+	}
+	return sl, nil
 }
 
 func validateSlaveName(name string) error {

@@ -108,6 +108,106 @@ func TestRegistryRejectsDuplicateDisplayName(t *testing.T) {
 	}
 }
 
+func TestRegistryFindByFolderUsesCanonicalPath(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "repo-link")
+	if err := os.Symlink(folder, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	reg := NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves"))
+	m := Machine{MachineID: "machine-1", ComputerName: "host"}
+	created, err := reg.Create(m, CreateInput{Folder: folder, Name: "repo"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, ok, err := reg.FindByFolder(link)
+	if err != nil {
+		t.Fatalf("FindByFolder: %v", err)
+	}
+	if !ok {
+		t.Fatal("FindByFolder did not find existing slave")
+	}
+	if got.ID != created.ID {
+		t.Fatalf("got ID=%q want %q", got.ID, created.ID)
+	}
+}
+
+func TestRegistryEnsureForFolderReusesExistingSlave(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves"))
+	m := Machine{MachineID: "machine-1", ComputerName: "host"}
+
+	first, created, err := reg.EnsureForFolder(m, CreateInput{Folder: folder, Name: "repo"})
+	if err != nil {
+		t.Fatalf("EnsureForFolder first: %v", err)
+	}
+	if !created {
+		t.Fatal("first EnsureForFolder should create")
+	}
+	second, created, err := reg.EnsureForFolder(m, CreateInput{Folder: folder, Name: "different"})
+	if err != nil {
+		t.Fatalf("EnsureForFolder second: %v", err)
+	}
+	if created {
+		t.Fatal("second EnsureForFolder should reuse")
+	}
+	if second.ID != first.ID || second.Name != "repo" {
+		t.Fatalf("second=%+v first=%+v", second, first)
+	}
+}
+
+func TestRegistryCreateStoresCanonicalFolderWhenInputIsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "repo-link")
+	if err := os.Symlink(folder, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	reg := NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves"))
+	m := Machine{MachineID: "machine-1", ComputerName: "host"}
+
+	got, err := reg.Create(m, CreateInput{Folder: link, Name: "repo"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got.Folder != folder {
+		t.Fatalf("Folder=%q want %q", got.Folder, folder)
+	}
+}
+
+func TestRegistryEnsureForFolderRejectsDuplicateDisplayNameForDifferentFolders(t *testing.T) {
+	dir := t.TempDir()
+	folderA := filepath.Join(dir, "a")
+	folderB := filepath.Join(dir, "b")
+	if err := mkdir(folderA); err != nil {
+		t.Fatal(err)
+	}
+	if err := mkdir(folderB); err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves"))
+	m := Machine{MachineID: "machine-1", ComputerName: "host"}
+
+	if _, created, err := reg.EnsureForFolder(m, CreateInput{Folder: folderA, Name: "worker"}); err != nil || !created {
+		t.Fatalf("EnsureForFolder first created=%v err=%v", created, err)
+	}
+	if _, _, err := reg.EnsureForFolder(m, CreateInput{Folder: folderB, Name: "worker"}); !errors.Is(err, ErrSlaveConflict) {
+		t.Fatalf("expected duplicate display name error, got %v", err)
+	}
+}
+
 func TestRegistryConcurrentCreatesPreserveAllSlaves(t *testing.T) {
 	prevProcs := runtime.GOMAXPROCS(0)
 	if prevProcs < 8 {
