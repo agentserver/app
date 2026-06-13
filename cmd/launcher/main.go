@@ -563,7 +563,7 @@ func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestra
 	asBaseURL := completedAgentserverBaseURL(in.State)
 	asOAuth := in.ASOAuth
 	if asOAuth.Endpoint == "" {
-		asOAuth = defaultAgentserverOAuthConfig(asBaseURL)
+		asOAuth = agentserver.OAuthConfig(asBaseURL)
 	}
 	loomDriverPath := ""
 	if in.InstallDir != "" {
@@ -678,7 +678,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	// to Hydra. The CLI client `agentserver-agent-cli` is pre-registered
 	// by the Helm chart with grant=device_code, public (no secret),
 	// scopes=openid profile agent:register.
-	asOAuth := defaultAgentserverOAuthConfig("https://agent.cs.ac.cn")
+	asOAuth := agentserver.OAuthConfig("https://agent.cs.ac.cn")
 
 	installDir, err := os.Executable()
 	if err != nil {
@@ -747,19 +747,6 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		return nil // clean shutdown via LaunchAndShutdown
 	}
 	return err
-}
-
-func defaultAgentserverOAuthConfig(endpoint string) oauth.Config {
-	if strings.TrimSpace(endpoint) == "" {
-		endpoint = "https://agent.cs.ac.cn"
-	}
-	return oauth.Config{
-		Endpoint:  strings.TrimRight(strings.TrimSpace(endpoint), "/"),
-		AuthPath:  "/api/oauth2/device/auth",
-		TokenPath: "/api/oauth2/token",
-		ClientID:  "agentserver-agent-cli",
-		Scope:     "openid profile agent:register",
-	}
 }
 
 func launchCompletedInstall(ctx context.Context, codeExe string, p paths.Paths, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string) error {
