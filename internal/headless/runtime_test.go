@@ -6,8 +6,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/agentserver/agentserver-pkg/internal/codexruntime"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 )
 
@@ -115,6 +117,69 @@ func TestResolveCodexEnsuresManagedRuntimeWhenPathMissing(t *testing.T) {
 	}
 }
 
+func TestResolveCodexRequiresManagedRuntimePathsWhenPathMissing(t *testing.T) {
+	validPaths := paths.Paths{
+		CodexExePath: filepath.Join(t.TempDir(), "bin-root", "bin", exeName("codex")),
+		CacheDir:     filepath.Join(t.TempDir(), "cache"),
+	}
+	validPackage := PackagePaths(filepath.Join(string(filepath.Separator), "opt", "agentserver", exeName("agentserver")))
+	tests := []struct {
+		name    string
+		paths   paths.Paths
+		pkg     Package
+		wantErr string
+	}{
+		{
+			name: "codex exe path",
+			paths: paths.Paths{
+				CacheDir: validPaths.CacheDir,
+			},
+			pkg:     validPackage,
+			wantErr: "CodexExePath required",
+		},
+		{
+			name: "cache dir",
+			paths: paths.Paths{
+				CodexExePath: validPaths.CodexExePath,
+			},
+			pkg:     validPackage,
+			wantErr: "CacheDir required",
+		},
+		{
+			name:    "package dir",
+			paths:   validPaths,
+			pkg:     Package{},
+			wantErr: "PackageDir required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ensureCalled := false
+
+			_, err := ResolveCodex(context.Background(), CodexResolveOptions{
+				Paths:   tt.paths,
+				Package: tt.pkg,
+				LookPath: func(string) (string, error) {
+					return "", exec.ErrNotFound
+				},
+				EnsureRuntime: func(context.Context, string, string, string) (string, error) {
+					ensureCalled = true
+					return "", nil
+				},
+			})
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err=%v, want containing %q", err, tt.wantErr)
+			}
+			if ensureCalled {
+				t.Fatal("EnsureRuntime called with invalid managed runtime paths")
+			}
+		})
+	}
+}
+
 func TestLinuxCodexManifestPath(t *testing.T) {
 	pkg := PackagePaths(filepath.Join(string(filepath.Separator), "opt", "agentserver", exeName("agentserver")))
 
@@ -129,6 +194,23 @@ func TestLinuxCodexManifestPath(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("CodexManifestPath=%q, want %q", got, want)
+	}
+}
+
+func TestLinuxCodexManifestsLoad(t *testing.T) {
+	for _, name := range []string{
+		"codex-manifest-linux-amd64.json",
+		"codex-manifest-linux-arm64.json",
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, err := codexruntime.LoadManifest(filepath.Join("..", "..", "packaging", "linux", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.Package != "@openai/codex" {
+				t.Fatalf("Package=%q", m.Package)
+			}
+		})
 	}
 }
 

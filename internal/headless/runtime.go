@@ -2,6 +2,7 @@ package headless
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -55,6 +56,9 @@ func ResolveCodex(ctx context.Context, opts CodexResolveOptions) (CodexRuntime, 
 	if codexPath, err := lookPath("codex"); err == nil {
 		return CodexRuntime{Path: codexPath, Source: "path"}, nil
 	}
+	if err := validateManagedCodexOptions(opts); err != nil {
+		return CodexRuntime{}, err
+	}
 
 	ensureRuntime := opts.EnsureRuntime
 	if ensureRuntime == nil {
@@ -76,6 +80,19 @@ func ResolveCodex(ctx context.Context, opts CodexResolveOptions) (CodexRuntime, 
 		return CodexRuntime{}, err
 	}
 	return CodexRuntime{Path: codexPath, Source: "managed"}, nil
+}
+
+func validateManagedCodexOptions(opts CodexResolveOptions) error {
+	if opts.Paths.CodexExePath == "" {
+		return errors.New("CodexExePath required")
+	}
+	if opts.Paths.CacheDir == "" {
+		return errors.New("CacheDir required")
+	}
+	if opts.Package.PackageDir == "" {
+		return errors.New("PackageDir required")
+	}
+	return nil
 }
 
 func packageExeName(name string) string {
