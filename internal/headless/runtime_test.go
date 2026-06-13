@@ -70,6 +70,8 @@ func TestResolveCodexPrefersPathCodex(t *testing.T) {
 }
 
 func TestResolveCodexEnsuresManagedRuntimeWhenPathMissing(t *testing.T) {
+	skipUnsupportedCodexRuntime(t)
+
 	ctx := context.Background()
 	temp := t.TempDir()
 	codexExe := filepath.Join(temp, "bin-root", "bin", exeName("codex"))
@@ -324,17 +326,29 @@ func TestCodexManifestNameSupportsOnlyLinuxCodexRuntimes(t *testing.T) {
 func TestLinuxCodexManifestPath(t *testing.T) {
 	pkg := PackagePaths(filepath.Join(string(filepath.Separator), "opt", "agentserver", exeName("agentserver")))
 
-	got := pkg.CodexManifestPath()
-
-	var want string
-	switch runtime.GOARCH {
-	case "arm64":
-		want = filepath.Join(string(filepath.Separator), "opt", "agentserver", "codex-manifest-linux-arm64.json")
-	default:
-		want = filepath.Join(string(filepath.Separator), "opt", "agentserver", "codex-manifest-linux-amd64.json")
+	tests := []struct {
+		goarch string
+		want   string
+	}{
+		{
+			goarch: "amd64",
+			want:   filepath.Join(string(filepath.Separator), "opt", "agentserver", "codex-manifest-linux-amd64.json"),
+		},
+		{
+			goarch: "arm64",
+			want:   filepath.Join(string(filepath.Separator), "opt", "agentserver", "codex-manifest-linux-arm64.json"),
+		},
 	}
-	if got != want {
-		t.Fatalf("CodexManifestPath=%q, want %q", got, want)
+	for _, tt := range tests {
+		t.Run("linux/"+tt.goarch, func(t *testing.T) {
+			got, err := pkg.codexManifestPath("linux", tt.goarch)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("CodexManifestPath=%q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -381,6 +395,8 @@ func TestLinuxCodexManifestsLoad(t *testing.T) {
 }
 
 func TestResolveCodexReturnsManagedError(t *testing.T) {
+	skipUnsupportedCodexRuntime(t)
+
 	wantErr := errors.New("install failed")
 
 	_, err := ResolveCodex(context.Background(), CodexResolveOptions{
@@ -399,6 +415,15 @@ func TestResolveCodexReturnsManagedError(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("err=%v, want %v", err, wantErr)
 	}
+}
+
+func skipUnsupportedCodexRuntime(t *testing.T) {
+	t.Helper()
+
+	if runtime.GOOS == "linux" && (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64") {
+		return
+	}
+	t.Skipf("managed Codex runtime is unsupported on %s/%s", runtime.GOOS, runtime.GOARCH)
 }
 
 func exeName(name string) string {
