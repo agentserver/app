@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
@@ -18,6 +20,15 @@ import (
 )
 
 var ErrProxyUnavailable = errors.New("modelaccess: local model proxy unavailable")
+
+const healthCheckTimeout = 500 * time.Millisecond
+
+var (
+	runTokenRefresh  = tokenrefresh.Run
+	healthHTTPClient = &http.Client{
+		Timeout: healthCheckTimeout,
+	}
+)
 
 type DaemonOptions struct {
 	Secrets              secrets.Store
@@ -33,6 +44,8 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if opts.Secrets == nil {
 		return tokenrefresh.ErrNoSecrets
 	}
@@ -47,46 +60,61 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 		defer lock.Close()
 	}
 
-	proxyErr := make(chan error, 1)
+	type daemonResult struct {
+		name string
+		err  error
+	}
+	resultCh := make(chan daemonResult, 2)
+	var wg sync.WaitGroup
+	finish := func(err error) error {
+		cancel()
+		wg.Wait()
+		return err
+	}
+
+	wg.Add(1)
 	go func() {
-		proxyErr <- modelproxy.ListenAndServe(ctx, modelproxy.ServerOptions{
+		defer wg.Done()
+		resultCh <- daemonResult{name: "proxy", err: modelproxy.ListenAndServe(ctx, modelproxy.ServerOptions{
 			Addr:            opts.ProxyAddr,
 			Secrets:         opts.Secrets,
 			UpstreamBaseURL: opts.ProxyUpstreamBaseURL,
-		})
+		})}
 	}()
 
-	refreshErr := make(chan error, 1)
+	wg.Add(1)
 	go func() {
-		refreshErr <- tokenrefresh.Run(ctx, tokenrefresh.Options{
+		defer wg.Done()
+		resultCh <- daemonResult{name: "refresh", err: runTokenRefresh(ctx, tokenrefresh.Options{
 			Secrets: opts.Secrets,
 			OAuth:   opts.OAuth,
 			Refresh: opts.Refresh,
 			Logf:    opts.Logf,
-		})
+		})}
 	}()
 
 	for {
 		select {
-		case err := <-proxyErr:
-			if ctx.Err() != nil {
-				return nil
+		case result := <-resultCh:
+			if result.name == "proxy" {
+				if ctx.Err() != nil {
+					return finish(nil)
+				}
+				return finish(result.err)
 			}
-			return err
-		case err := <-refreshErr:
+			err := result.err
 			if err == nil || errors.Is(err, context.Canceled) {
-				return nil
+				return finish(nil)
 			}
 			if errors.Is(err, tokenrefresh.ErrNoRefreshToken) {
 				if opts.Logf != nil {
 					opts.Logf("token refresh disabled: %v", err)
 				}
-				refreshErr = nil
 				continue
 			}
-			return err
+			return finish(err)
 		case <-ctx.Done():
-			return nil
+			return finish(nil)
 		}
 	}
 }
@@ -147,12 +175,17 @@ func ProxyHealthy(ctx context.Context, baseURL string) bool {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+modelproxy.HealthPath, nil)
+	ctx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	defer cancel()
+	healthURL, err := healthURL(baseURL)
 	if err != nil {
 		return false
 	}
-	resp, err := http.DefaultClient.Do(req)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := healthHTTPClient.Do(req)
 	if err != nil {
 		return false
 	}
@@ -162,4 +195,19 @@ func ProxyHealthy(ctx context.Context, baseURL string) bool {
 
 func DefaultLockPath(installRoot string) string {
 	return filepath.Join(installRoot, "token-refresher.lock")
+}
+
+func healthURL(baseURL string) (string, error) {
+	u, err := url.Parse(strings.TrimRight(baseURL, "/"))
+	if err != nil {
+		return "", err
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", errors.New("modelaccess: proxy base URL must include scheme and host")
+	}
+	u.Path = modelproxy.HealthPath
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
 }

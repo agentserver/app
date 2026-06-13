@@ -88,6 +88,91 @@ func TestRunDaemonServesLocalModelProxyAndKeepsServingWithoutRefreshToken(t *tes
 	}
 }
 
+func TestRunDaemonStopsRefreshWhenProxyStartupFails(t *testing.T) {
+	dir := t.TempDir()
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access-from-secret"); err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	refreshStarted := make(chan struct{})
+	refreshStopped := make(chan struct{})
+	overrideRunTokenRefresh(t, func(ctx context.Context, _ tokenrefresh.Options) error {
+		close(refreshStarted)
+		<-ctx.Done()
+		close(refreshStopped)
+		return ctx.Err()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err = RunDaemon(ctx, DaemonOptions{
+		Secrets:   sec,
+		OAuth:     oauth.AuthCodeConfig{ClientID: "client-x"},
+		ProxyAddr: ln.Addr().String(),
+	})
+	if err == nil {
+		t.Fatal("RunDaemon returned nil, want proxy startup error")
+	}
+	select {
+	case <-refreshStarted:
+	default:
+		cancel()
+		t.Fatal("refresh did not start")
+	}
+	select {
+	case <-refreshStopped:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("refresh was still running after proxy startup failure")
+	}
+}
+
+func TestRunDaemonStopsProxyWhenRefreshReturnsHardError(t *testing.T) {
+	dir := t.TempDir()
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access-from-secret"); err != nil {
+		t.Fatal(err)
+	}
+
+	addr := freeTCPAddr(t)
+	refreshErr := errors.New("refresh failed hard")
+	overrideRunTokenRefresh(t, func(ctx context.Context, _ tokenrefresh.Options) error {
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if ProxyHealthy(ctx, "http://"+addr) {
+				return refreshErr
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return errors.New("proxy never became healthy")
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := RunDaemon(ctx, DaemonOptions{
+		Secrets:   sec,
+		OAuth:     oauth.AuthCodeConfig{ClientID: "client-x"},
+		ProxyAddr: addr,
+	})
+	if !errors.Is(err, refreshErr) {
+		t.Fatalf("RunDaemon err=%v, want %v", err, refreshErr)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if !ProxyHealthy(context.Background(), "http://"+addr) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatal("proxy was still healthy after refresh hard error")
+}
+
 func TestEnsureDaemonStartsAgentserverModelProxyDaemonWhenHealthMissing(t *testing.T) {
 	var started bool
 	var gotArgs []string
@@ -159,6 +244,74 @@ func TestEnsureDaemonReportsProxyUnavailableWhenPortOccupied(t *testing.T) {
 	}
 }
 
+func TestProxyHealthyReturnsFalseWhenServerDoesNotRespond(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	connCh := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		connCh <- conn
+	}()
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- ProxyHealthy(context.Background(), "http://"+ln.Addr().String())
+	}()
+
+	var conn net.Conn
+	select {
+	case conn = <-connCh:
+		defer conn.Close()
+	case err := <-acceptErr:
+		t.Fatalf("Accept: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("ProxyHealthy did not connect to listener")
+	}
+
+	select {
+	case healthy := <-done:
+		if healthy {
+			t.Fatal("ProxyHealthy returned true for non-responding server")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ProxyHealthy did not time out")
+	}
+}
+
+func TestProxyHealthyChecksRootHealthPathWhenBaseURLHasPath(t *testing.T) {
+	gotPath := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath <- r.URL.Path
+		if r.URL.Path != modelproxy.HealthPath {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	if !ProxyHealthy(context.Background(), server.URL+"/v1") {
+		t.Fatal("ProxyHealthy returned false")
+	}
+	select {
+	case got := <-gotPath:
+		if got != modelproxy.HealthPath {
+			t.Fatalf("health path = %q, want %q", got, modelproxy.HealthPath)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not receive health check")
+	}
+}
+
 func freeTCPAddr(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -189,4 +342,13 @@ func waitForProxyHealth(t *testing.T, baseURL string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("model proxy did not become healthy at %s", baseURL)
+}
+
+func overrideRunTokenRefresh(t *testing.T, fn func(context.Context, tokenrefresh.Options) error) {
+	t.Helper()
+	original := runTokenRefresh
+	runTokenRefresh = fn
+	t.Cleanup(func() {
+		runTokenRefresh = original
+	})
 }
