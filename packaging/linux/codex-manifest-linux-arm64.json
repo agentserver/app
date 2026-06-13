@@ -1,0 +1,21 @@
+{
+  "package": "@openai/codex",
+  "platform": "linux-arm64",
+  "pinned_version": "0.139.0-linux-arm64",
+  "strip_prefix": "vendor/aarch64-unknown-linux-musl/",
+  "codex_exe": "bin/codex",
+  "required_files": [
+    "bin/codex",
+    "codex-path/rg",
+    "codex-resources/bwrap",
+    "codex-resources/zsh/bin/zsh"
+  ],
+  "pinned": {
+    "integrity": "sha512-tBQE5lZciRHeWZGuURgjP9S717MvTIpQMc593+DNxY2LQxozkngOkzFSQd1+/UmQKGrCqdFLu5irIwPXpSZyEw==",
+    "shasum": "b94e071a7148e21e12d5deea1c6476255f96384b",
+    "urls": [
+      "https://registry.npmmirror.com/@openai/codex/-/codex-0.139.0-linux-arm64.tgz",
+      "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.139.0-linux-arm64.tgz"
+    ]
+  }
+}
