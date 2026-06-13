@@ -333,7 +333,7 @@ func hasForegroundAuthPathSegment(path string, markers ...string) bool {
 	for _, segment := range strings.Split(path, "/") {
 		segment = strings.ToLower(segment)
 		for _, marker := range markers {
-			if strings.Contains(segment, marker) {
+			if segment == marker {
 				return true
 			}
 		}

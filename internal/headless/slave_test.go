@@ -415,6 +415,11 @@ func TestSanitizeForegroundAuthURL(t *testing.T) {
 			raw:  "https://agent.cs.ac.cn/device-docs",
 			want: "",
 		},
+		{
+			name: "rejects unrelated path segment with auth query",
+			raw:  "https://agent.cs.ac.cn/device-docs?user_code=ABCD",
+			want: "",
+		},
 	}
 
 	for _, tt := range tests {
