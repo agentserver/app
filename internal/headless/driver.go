@@ -97,11 +97,18 @@ func ensureDriver(ctx context.Context, opts DriverOptions, forceLogin bool) erro
 	}
 	opts = defaultDriverOptions(opts)
 
+	if forceLogin {
+		if err := registerDriver(ctx, opts); err != nil {
+			return err
+		}
+		return refreshDriverFiles(opts.Paths, opts.Package, opts.Secrets)
+	}
+
 	registered, err := driverRegistered(opts.Paths, opts.Secrets)
 	if err != nil {
 		return err
 	}
-	if forceLogin || !registered {
+	if !registered {
 		if err := registerDriver(ctx, opts); err != nil {
 			return err
 		}
@@ -178,7 +185,7 @@ func registerDriver(ctx context.Context, opts DriverOptions) error {
 	if err != nil {
 		return fmt.Errorf("register agentserver agent: %w", err)
 	}
-	if reg.ProxyToken == "" || reg.TunnelToken == "" || reg.SandboxID == "" || reg.ShortID == "" {
+	if reg.ProxyToken == "" || reg.TunnelToken == "" || reg.SandboxID == "" {
 		return errors.New("register agentserver agent: incomplete registration")
 	}
 
@@ -195,7 +202,7 @@ func registerDriver(ctx context.Context, opts DriverOptions) error {
 	return state.NewStore(opts.Paths.StateFile).Update(func(s *state.State) error {
 		s.Agentserver.BaseURL = defaultASBaseURL(opts.ASOAuth)
 		s.Agentserver.SandboxID = reg.SandboxID
-		s.Agentserver.ShortID = reg.ShortID
+		s.Agentserver.ShortID = defaultString(reg.ShortID, reg.SandboxID)
 		s.Agentserver.WorkspaceID = workspace.ID
 		s.Agentserver.WorkspaceName = workspace.Name
 		s.Agentserver.WorkspaceAPIKeySuffix = lastN(reg.ProxyToken, 4)

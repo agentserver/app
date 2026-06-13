@@ -1,11 +1,14 @@
 package headless
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -265,6 +268,60 @@ func TestInstallDriverSkipsDeviceFlowWhenAlreadyRegistered(t *testing.T) {
 	}
 }
 
+func TestInstallDriverWritesPersistentConfigAndSupport(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	sec := secrets.New(p.SecretsFile)
+	pkg := testDriverPackage(temp)
+	writeTestTarGz(t, filepath.Join(pkg.PackageDir, "driver-skills.tar.gz"), map[string]string{
+		"skills/demo/SKILL.md": "demo skill",
+	})
+	writeTestTarGz(t, filepath.Join(pkg.PackageDir, "driver-superpower-skills.tar.gz"), map[string]string{
+		"skills/super/SKILL.md": "super skill",
+	})
+	writeTestTarGz(t, filepath.Join(pkg.PackageDir, "driver-codex-prompts.tar.gz"), map[string]string{
+		"prompts-codex/AGENTS.md": "driver prompt",
+	})
+
+	err := InstallDriver(context.Background(), DriverOptions{
+		Paths:        p,
+		Package:      pkg,
+		Secrets:      sec,
+		ComputerName: "host",
+		AS:           fakeRegisteredDriverAS(),
+		ASOAuth:      oauth.Config{Endpoint: "https://agent.test"},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			return driverChallenge(), nil
+		},
+		PollToken: driverPollToken,
+		Stdout:    ioDiscard{},
+		QR:        driverMarkerQR("fake QR"),
+	})
+	if err != nil {
+		t.Fatalf("InstallDriver: %v", err)
+	}
+
+	driverConfig := readTextFile(t, filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml"))
+	for _, want := range []string{
+		`url: "https://agent.test"`,
+		`proxy_token: "proxy-new"`,
+		`workdir: "` + filepath.ToSlash(p.UserHome) + `"`,
+	} {
+		if !strings.Contains(driverConfig, want) {
+			t.Fatalf("persistent driver config missing %q:\n%s", want, driverConfig)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(p.UserHome, ".agents", "skills", "demo", "SKILL.md"),
+		filepath.Join(p.UserHome, ".codex", "skills", "super", "SKILL.md"),
+		filepath.Join(p.UserHome, ".codex", "AGENTS.md"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected installed support file %s: %v", path, err)
+		}
+	}
+}
+
 func TestInstallDriverRepairsExistingDriverState(t *testing.T) {
 	temp := t.TempDir()
 	p := testDriverPaths(temp)
@@ -370,6 +427,47 @@ func TestInstallDriverRepairsMissingWorkspaceIDWithoutDeviceFlow(t *testing.T) {
 	}
 }
 
+func TestSwitchWorkspaceBypassesBrokenExistingSecretReads(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	sec := &writeableBrokenReadSecrets{
+		err:    errors.New("old secrets unreadable"),
+		values: map[string]string{},
+	}
+	writeDriverState(t, p, state.AgentserverState{
+		BaseURL:     "https://agent.old",
+		SandboxID:   "sb-old",
+		ShortID:     "old123",
+		WorkspaceID: "ws-old",
+	})
+	calls := 0
+
+	err := SwitchWorkspace(context.Background(), DriverOptions{
+		Paths:        p,
+		Package:      testDriverPackage(temp),
+		Secrets:      sec,
+		ComputerName: "host",
+		AS:           fakeRegisteredDriverAS(),
+		ASOAuth:      oauth.Config{Endpoint: "https://agent.test"},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			calls++
+			return driverChallenge(), nil
+		},
+		PollToken: driverPollToken,
+		Stdout:    ioDiscard{},
+		QR:        driverMarkerQR("fake QR"),
+	})
+	if err != nil {
+		t.Fatalf("SwitchWorkspace: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("RequestDeviceCode calls=%d, want 1", calls)
+	}
+	if got := sec.values["agentserver_ws_api_key"]; got != "proxy-new" {
+		t.Fatalf("stored proxy token=%q, want proxy-new", got)
+	}
+}
+
 func TestInstallDriverErrorsIfSecretsNil(t *testing.T) {
 	err := InstallDriver(context.Background(), DriverOptions{
 		Paths:   testDriverPaths(t.TempDir()),
@@ -424,6 +522,49 @@ func TestInstallDriverStoresWorkspaceFallbackFromAccessTokenClaim(t *testing.T) 
 	}
 	if st.Agentserver.WorkspaceID != "ws-claim" || st.Agentserver.WorkspaceName != "Claim Workspace" {
 		t.Fatalf("workspace state=%+v", st.Agentserver)
+	}
+}
+
+func TestInstallDriverUsesSandboxIDWhenRegistrationOmitsShortID(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	sec := secrets.New(p.SecretsFile)
+	fakeAS := &fakeDriverAgentserver{
+		reg: agentserver.AgentRegistration{
+			SandboxID:   "sb-1",
+			TunnelToken: "tunnel-token",
+			ProxyToken:  "sandbox-proxy-token",
+			WorkspaceID: "ws-reg",
+		},
+		whoami: agentserver.Identity{
+			Workspace: agentserver.Workspace{ID: "ws-1", Name: "Workspace One"},
+		},
+	}
+
+	err := InstallDriver(context.Background(), DriverOptions{
+		Paths:        p,
+		Package:      testDriverPackage(temp),
+		Secrets:      sec,
+		ComputerName: "host",
+		AS:           fakeAS,
+		ASOAuth:      oauth.Config{Endpoint: "https://agent.test"},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			return driverChallenge(), nil
+		},
+		PollToken: driverPollToken,
+		Stdout:    ioDiscard{},
+		QR:        driverMarkerQR("fake QR"),
+	})
+	if err != nil {
+		t.Fatalf("InstallDriver: %v", err)
+	}
+
+	st, err := state.NewStore(p.StateFile).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Agentserver.ShortID != "sb-1" {
+		t.Fatalf("ShortID=%q, want sandbox fallback", st.Agentserver.ShortID)
 	}
 }
 
@@ -532,4 +673,54 @@ func workspaceToken(id, name string) string {
 		panic(err)
 	}
 	return "x." + base64.RawURLEncoding.EncodeToString(payload) + ".y"
+}
+
+type writeableBrokenReadSecrets struct {
+	err    error
+	values map[string]string
+}
+
+func (s *writeableBrokenReadSecrets) Get(key string) (string, error) {
+	if v, ok := s.values[key]; ok {
+		return v, nil
+	}
+	return "", s.err
+}
+
+func (s *writeableBrokenReadSecrets) Set(key, value string) error {
+	s.values[key] = value
+	return nil
+}
+
+func (s *writeableBrokenReadSecrets) Delete(key string) error {
+	delete(s.values, key)
+	return nil
+}
+
+func writeTestTarGz(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	gz := gzip.NewWriter(f)
+	defer gz.Close()
+	tw := tar.NewWriter(gz)
+	defer tw.Close()
+	for name, body := range files {
+		if err := tw.WriteHeader(&tar.Header{
+			Name: name,
+			Mode: 0o644,
+			Size: int64(len(body)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(tw, body); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
