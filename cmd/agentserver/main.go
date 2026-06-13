@@ -22,6 +22,7 @@ import (
 
 type app struct {
 	ensureAccess    func(context.Context) error
+	ensureCodex     func(context.Context) error
 	runSlave        func(context.Context) error
 	installDriver   func(context.Context) error
 	switchWorkspace func(context.Context) error
@@ -71,6 +72,9 @@ func newApp() app {
 			}); err != nil {
 				return err
 			}
+			return nil
+		},
+		ensureCodex: func(ctx context.Context) error {
 			codexRuntime, err := headless.ResolveCodex(ctx, headless.CodexResolveOptions{
 				Paths:   p,
 				Package: pkg,
@@ -138,9 +142,19 @@ func (a app) run(ctx context.Context, args []string) error {
 	if cmd == "model-proxy-daemon" {
 		return a.runDaemon(ctx)
 	}
+	switch cmd {
+	case "", "install-driver", "switch-workspace", "serve-driver-mcp":
+	default:
+		return fmt.Errorf("unknown command %q", cmd)
+	}
 
 	if a.ensureAccess != nil {
 		if err := a.ensureAccess(ctx); err != nil {
+			return err
+		}
+	}
+	if cmd == "" && a.ensureCodex != nil {
+		if err := a.ensureCodex(ctx); err != nil {
 			return err
 		}
 	}
@@ -153,14 +167,22 @@ func (a app) run(ctx context.Context, args []string) error {
 		return a.switchWorkspace(ctx)
 	case "serve-driver-mcp":
 		return a.serveDriverMCP(ctx)
-	default:
-		return fmt.Errorf("unknown command %q", cmd)
 	}
+	return nil
 }
 
 func promptName(defaultName string) (string, error) {
-	fmt.Fprintf(os.Stdout, "Slave name [%s]: ", defaultName)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	return promptNameWithIO(os.Stdin, os.Stdout, defaultName)
+}
+
+func promptNameWithIO(r io.Reader, w io.Writer, defaultName string) (string, error) {
+	if w != nil {
+		fmt.Fprintf(w, "Slave name [%s]: ", defaultName)
+	}
+	if r == nil {
+		return defaultName, nil
+	}
+	line, err := bufio.NewReader(r).ReadString('\n')
 	if err != nil {
 		if !errors.Is(err, io.EOF) {
 			return "", err

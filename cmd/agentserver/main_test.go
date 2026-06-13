@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -85,6 +86,43 @@ func TestRunCommandEnsuresAccessForUserCommands(t *testing.T) {
 	}
 }
 
+func TestRunCommandResolvesCodexOnlyForDefaultSlave(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		wantCodex int
+	}{
+		{name: "default", args: []string{}, wantCodex: 1},
+		{name: "install-driver", args: []string{"install-driver"}},
+		{name: "switch-workspace", args: []string{"switch-workspace"}},
+		{name: "serve-driver-mcp", args: []string{"serve-driver-mcp"}},
+	} {
+		t.Run(strings.ReplaceAll(tc.name, "-", "_"), func(t *testing.T) {
+			codex := 0
+			app := app{
+				ensureAccess: func(context.Context) error { return nil },
+				ensureCodex:  func(context.Context) error { codex++; return nil },
+				runSlave:     func(context.Context) error { return nil },
+				installDriver: func(context.Context) error {
+					return nil
+				},
+				switchWorkspace: func(context.Context) error {
+					return nil
+				},
+				serveDriverMCP: func(context.Context) error {
+					return nil
+				},
+			}
+			if err := app.run(context.Background(), tc.args); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if codex != tc.wantCodex {
+				t.Fatalf("ensureCodex calls=%d, want %d", codex, tc.wantCodex)
+			}
+		})
+	}
+}
+
 func TestRunCommandSkipsAccessForDaemon(t *testing.T) {
 	access := 0
 	daemonCalls := 0
@@ -104,8 +142,40 @@ func TestRunCommandSkipsAccessForDaemon(t *testing.T) {
 }
 
 func TestRunCommandRejectsUnknownCommand(t *testing.T) {
-	app := app{}
+	access := 0
+	app := app{
+		ensureAccess: func(context.Context) error { access++; return nil },
+	}
 	if err := app.run(context.Background(), []string{"unknown"}); err == nil {
 		t.Fatal("expected unknown command error")
+	}
+	if access != 0 {
+		t.Fatalf("ensureAccess calls=%d, want 0", access)
+	}
+}
+
+func TestPromptNameWithIO(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "eof", input: "", want: "default"},
+		{name: "blank", input: "\n", want: "default"},
+		{name: "trimmed", input: "  custom  \n", want: "custom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			got, err := promptNameWithIO(strings.NewReader(tc.input), &out, "default")
+			if err != nil {
+				t.Fatalf("promptNameWithIO: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("name=%q, want %q", got, tc.want)
+			}
+			if !strings.Contains(out.String(), "Slave name [default]: ") {
+				t.Fatalf("prompt output=%q", out.String())
+			}
+		})
 	}
 }
