@@ -146,15 +146,16 @@ func (r execSlaveRunner) Run(ctx context.Context, req SlaveProcessRequest) error
 	}
 
 	output := r.foregroundOutput()
+	authURL := serializeAuthURLCallback(req.AuthURL)
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		copyForegroundSlaveOutput(stdout, output, req.AuthURL)
+		copyForegroundSlaveOutput(stdout, output, authURL)
 	}()
 	go func() {
 		defer wg.Done()
-		copyForegroundSlaveOutput(stderr, output, req.AuthURL)
+		copyForegroundSlaveOutput(stderr, output, authURL)
 	}()
 
 	done := make(chan error, 1)
@@ -241,17 +242,58 @@ func copyForegroundSlaveOutput(r io.Reader, w io.Writer, authURL func(string)) {
 	}
 }
 
+func serializeAuthURLCallback(authURL func(string)) func(string) {
+	if authURL == nil {
+		return nil
+	}
+	var mu sync.Mutex
+	return func(url string) {
+		mu.Lock()
+		defer mu.Unlock()
+		authURL(url)
+	}
+}
+
 func sanitizeForegroundAuthURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
 	for _, match := range foregroundHTTPURLPattern.FindAllString(raw, -1) {
-		if isForegroundAuthURL(match) {
-			return match
+		candidate := trimForegroundURLCandidate(match)
+		if isForegroundAuthURL(candidate) {
+			return candidate
 		}
 	}
 	return ""
+}
+
+const foregroundURLTrailingDelimiters = ".,;:!?)]}>\"'`"
+
+func trimForegroundURLCandidate(raw string) string {
+	candidate := strings.TrimSpace(raw)
+	for {
+		before := candidate
+		candidate = trimTrailingANSIReset(candidate)
+		candidate = strings.TrimRight(candidate, foregroundURLTrailingDelimiters)
+		candidate = trimTrailingANSIReset(candidate)
+		if candidate == before {
+			return candidate
+		}
+	}
+}
+
+func trimTrailingANSIReset(raw string) string {
+	for {
+		switch {
+		case strings.HasSuffix(raw, "\x1b[0m"):
+			raw = strings.TrimSuffix(raw, "\x1b[0m")
+		case strings.HasSuffix(raw, "\x1b[m"):
+			raw = strings.TrimSuffix(raw, "\x1b[m")
+		default:
+			return raw
+		}
+	}
 }
 
 func isForegroundAuthURL(raw string) bool {
@@ -264,14 +306,36 @@ func isForegroundAuthURL(raw string) bool {
 	default:
 		return false
 	}
-	if !strings.EqualFold(parsed.Hostname(), "agent.cs.ac.cn") {
+	if !strings.EqualFold(parsed.Hostname(), "agent.cs.ac.cn") || parsed.Port() != "" {
 		return false
 	}
-	path := strings.ToLower(parsed.EscapedPath())
-	query := strings.ToLower(parsed.RawQuery)
-	for _, marker := range []string{"device", "user_code", "user-code", "verification"} {
-		if strings.Contains(path, marker) || strings.Contains(query, marker) {
+	hasCodeQuery := hasForegroundAuthCodeQuery(parsed.Query())
+	hasUserCodePath := hasForegroundAuthPathSegment(parsed.Path, "user-code", "user_code")
+	if hasUserCodePath {
+		return true
+	}
+	if hasCodeQuery && hasForegroundAuthPathSegment(parsed.Path, "device", "verification") {
+		return true
+	}
+	return false
+}
+
+func hasForegroundAuthCodeQuery(query url.Values) bool {
+	for key := range query {
+		if strings.EqualFold(key, "user_code") || strings.EqualFold(key, "code") {
 			return true
+		}
+	}
+	return false
+}
+
+func hasForegroundAuthPathSegment(path string, markers ...string) bool {
+	for _, segment := range strings.Split(path, "/") {
+		segment = strings.ToLower(segment)
+		for _, marker := range markers {
+			if strings.Contains(segment, marker) {
+				return true
+			}
 		}
 	}
 	return false

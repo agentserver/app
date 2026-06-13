@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -311,6 +312,61 @@ sleep 30
 	}
 }
 
+func TestExecSlaveRunnerSerializesAuthCallbacks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test requires /bin/sh")
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not found")
+	}
+	temp := t.TempDir()
+	authURL := "https://agent.cs.ac.cn/device?user_code=ABCD"
+	script := filepath.Join(temp, "slave-agent.sh")
+	if err := os.WriteFile(script, []byte(fmt.Sprintf(`#!/bin/sh
+for i in 1 2 3 4 5; do
+  echo %s
+  echo %s >&2
+done
+`, authURL, authURL)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		mu       sync.Mutex
+		inAuth   bool
+		authURLs []string
+	)
+	err = execSlaveRunner{stdout: ioDiscard{}}.Run(context.Background(), SlaveProcessRequest{
+		Exe:        sh,
+		ConfigPath: script,
+		WorkDir:    temp,
+		AuthURL: func(url string) {
+			mu.Lock()
+			if inAuth {
+				mu.Unlock()
+				t.Errorf("AuthURL called concurrently")
+				return
+			}
+			inAuth = true
+			mu.Unlock()
+
+			time.Sleep(2 * time.Millisecond)
+			authURLs = append(authURLs, url)
+
+			mu.Lock()
+			inAuth = false
+			mu.Unlock()
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(authURLs) == 0 {
+		t.Fatal("auth callback not observed")
+	}
+}
+
 func TestCopyForegroundSlaveOutputDrainsLongLinesAndDetectsLaterAuthURL(t *testing.T) {
 	authURL := "https://agent.cs.ac.cn/device?user_code=ABCD"
 	input := strings.Repeat("x", 1<<20+1) + "\n" + authURL + "\n"
@@ -333,11 +389,50 @@ func TestCopyForegroundSlaveOutputDrainsLongLinesAndDetectsLaterAuthURL(t *testi
 	}
 }
 
+func TestSanitizeForegroundAuthURL(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "trims trailing period",
+			raw:  "open https://agent.cs.ac.cn/device?user_code=ABCD.",
+			want: "https://agent.cs.ac.cn/device?user_code=ABCD",
+		},
+		{
+			name: "trims trailing closing paren",
+			raw:  "https://agent.cs.ac.cn/verification?code=ABCD)",
+			want: "https://agent.cs.ac.cn/verification?code=ABCD",
+		},
+		{
+			name: "rejects marker in unrelated query",
+			raw:  "https://agent.cs.ac.cn/help?topic=device",
+			want: "",
+		},
+		{
+			name: "rejects marker in unrelated path segment",
+			raw:  "https://agent.cs.ac.cn/device-docs",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeForegroundAuthURL(tt.raw); got != tt.want {
+				t.Fatalf("sanitizeForegroundAuthURL(%q)=%q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCopyForegroundSlaveOutputIgnoresNonAgentserverAuthURLs(t *testing.T) {
 	authURL := "https://agent.cs.ac.cn/device?user_code=ABCD"
 	input := strings.Join([]string{
 		"https://example.com/help",
 		"https://example.com/device-docs",
+		"https://agent.cs.ac.cn/help?topic=device",
+		"https://agent.cs.ac.cn/device-docs",
 		authURL,
 	}, "\n")
 	var out bytes.Buffer
