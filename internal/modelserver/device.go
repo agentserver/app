@@ -13,8 +13,8 @@ func DeviceConfig(endpoint string) oauth.Config {
 	}
 	return oauth.Config{
 		Endpoint:  strings.TrimRight(strings.TrimSpace(endpoint), "/"),
-		AuthPath:  "/oauth2/device/auth",
-		TokenPath: cfg.TokenPath,
+		AuthPath:  "/oauth/device/code",
+		TokenPath: "/oauth/device/token",
 		ClientID:  cfg.ClientID,
 		Scope:     cfg.Scope,
 	}

@@ -16,16 +16,17 @@ import (
 )
 
 type Settings struct {
-	Provider              string // e.g. "modelserver"
-	Model                 string // e.g. "gpt-5.5"
-	ModelReasoningEffort  string // e.g. "high"
-	ApprovalsReviewer     string // e.g. "guardian_subagent"
-	SandboxMode           string // e.g. "danger-full-access"
-	WindowsSandbox        string // e.g. "unelevated"
-	DeveloperInstructions string
-	BaseURL               string // e.g. "https://code.ai.cs.ac.cn/v1"
-	EnvKey                string // e.g. "OPENAI_API_KEY"
-	WireAPI               string // e.g. "responses"
+	Provider                string // e.g. "modelserver"
+	Model                   string // e.g. "gpt-5.5"
+	ModelReasoningEffort    string // e.g. "high"
+	ApprovalsReviewer       string // e.g. "guardian_subagent"
+	SandboxMode             string // e.g. "danger-full-access"
+	WindowsSandbox          string // e.g. "unelevated"
+	DeveloperInstructions   string
+	BaseURL                 string // e.g. "https://code.ai.cs.ac.cn/v1"
+	EnvKey                  string // e.g. "OPENAI_API_KEY"
+	ExperimentalBearerToken string // e.g. "agentserver-local-proxy"
+	WireAPI                 string // e.g. "responses"
 }
 
 type MCPServer struct {
@@ -56,7 +57,8 @@ const (
 func ModelserverProxySettings(baseURL string) Settings {
 	s := ModelserverSettings()
 	s.BaseURL = baseURL
-	s.EnvKey = LocalProxyAPIKeyEnv
+	s.EnvKey = ""
+	s.ExperimentalBearerToken = LocalProxyAPIKeyValue
 	return s
 }
 
@@ -108,12 +110,18 @@ func UpdateConfig(path string, s Settings) error {
 	if providers == nil {
 		providers = map[string]any{}
 	}
-	providers[s.Provider] = map[string]any{
+	provider := map[string]any{
 		"name":     s.Provider,
 		"base_url": s.BaseURL,
-		"env_key":  s.EnvKey,
 		"wire_api": s.WireAPI,
 	}
+	if s.EnvKey != "" {
+		provider["env_key"] = s.EnvKey
+	}
+	if s.ExperimentalBearerToken != "" {
+		provider["experimental_bearer_token"] = s.ExperimentalBearerToken
+	}
+	providers[s.Provider] = provider
 	root["model_providers"] = providers
 
 	var buf bytes.Buffer
@@ -121,6 +129,46 @@ func UpdateConfig(path string, s Settings) error {
 		return fmt.Errorf("marshal config.toml: %w", err)
 	}
 	return os.WriteFile(path, buf.Bytes(), 0o644)
+}
+
+func HasModelserverDirectConfig(path string) (bool, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read config.toml: %w", err)
+	}
+	root := map[string]any{}
+	if _, err := toml.Decode(string(b), &root); err != nil {
+		return false, fmt.Errorf("parse existing config.toml: %w", err)
+	}
+	settings := ModelserverSettings()
+	if stringSetting(root, "model_provider") != settings.Provider {
+		return false, nil
+	}
+	providers := tableSetting(root, "model_providers")
+	if providers == nil {
+		return false, nil
+	}
+	provider := tableSetting(providers, settings.Provider)
+	if provider == nil {
+		return false, nil
+	}
+	return stringSetting(provider, "name") == settings.Provider &&
+		stringSetting(provider, "base_url") == settings.BaseURL &&
+		stringSetting(provider, "env_key") == settings.EnvKey &&
+		stringSetting(provider, "wire_api") == settings.WireAPI, nil
+}
+
+func tableSetting(root map[string]any, key string) map[string]any {
+	table, _ := root[key].(map[string]any)
+	return table
+}
+
+func stringSetting(root map[string]any, key string) string {
+	value, _ := root[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func UpdateMCPServer(path, name string, server MCPServer) error {

@@ -1278,8 +1278,8 @@ func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
 	if !strings.Contains(string(b), `base_url = "`+modelproxy.DefaultBaseURL+`"`) {
 		t.Fatalf("config missing local proxy base_url:\n%s", b)
 	}
-	if !strings.Contains(string(b), `env_key = "`+codex.LocalProxyAPIKeyEnv+`"`) {
-		t.Fatalf("config missing local proxy env_key:\n%s", b)
+	if !strings.Contains(string(b), `experimental_bearer_token = "`+codex.LocalProxyAPIKeyValue+`"`) {
+		t.Fatalf("config missing local proxy bearer token:\n%s", b)
 	}
 	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != codex.LocalProxyAPIKeyValue {
 		t.Fatalf("%s=%q, want stable local key", codex.LocalProxyAPIKeyEnv, got)

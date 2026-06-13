@@ -63,7 +63,7 @@ func TestOpenFolderMigratesVSCodeSettingsBeforeLaunch(t *testing.T) {
 	}
 	for _, want := range []string{
 		`base_url = "` + modelproxy.DefaultBaseURL + `"`,
-		`env_key = "` + codex.LocalProxyAPIKeyEnv + `"`,
+		`experimental_bearer_token = "` + codex.LocalProxyAPIKeyValue + `"`,
 	} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("missing %q in:\n%s", want, b)
@@ -94,7 +94,7 @@ func TestOpenFolderCodexDesktopUsesFolderDeepLink(t *testing.T) {
 	}
 	for _, want := range []string{
 		`base_url = "` + modelproxy.DefaultBaseURL + `"`,
-		`env_key = "` + codex.LocalProxyAPIKeyEnv + `"`,
+		`experimental_bearer_token = "` + codex.LocalProxyAPIKeyValue + `"`,
 	} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("missing %q in:\n%s", want, b)

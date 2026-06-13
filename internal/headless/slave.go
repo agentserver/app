@@ -45,6 +45,8 @@ type SlaveProcessRunner interface {
 	Run(context.Context, SlaveProcessRequest) error
 }
 
+const defaultHeadlessSlaveName = "星池指挥官"
+
 func RunSlave(ctx context.Context, opts SlaveOptions) error {
 	stdout := opts.Stdout
 	if stdout == nil {
@@ -80,7 +82,7 @@ func RunSlave(ctx context.Context, opts SlaveOptions) error {
 	} else if ok {
 		name = existing.Name
 	} else {
-		name = filepath.Base(canonicalFolder)
+		name = defaultHeadlessSlaveName
 		if opts.NamePrompt != nil {
 			prompted, err := opts.NamePrompt(name)
 			if err != nil {

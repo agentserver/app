@@ -34,8 +34,8 @@ func TestRunSlaveCreatesStableRegistryEntryAndWritesConfig(t *testing.T) {
 		WorkDir:      repo,
 		ComputerName: "host",
 		NamePrompt: func(defaultName string) (string, error) {
-			if defaultName != "repo" {
-				t.Fatalf("defaultName=%q, want repo", defaultName)
+			if defaultName != "星池指挥官" {
+				t.Fatalf("defaultName=%q, want 星池指挥官", defaultName)
 			}
 			return "worker", nil
 		},
@@ -75,6 +75,42 @@ func TestRunSlaveCreatesStableRegistryEntryAndWritesConfig(t *testing.T) {
 	}
 	if !strings.Contains(gotOutput, "fake QR marker") {
 		t.Fatalf("output missing QR marker:\n%s", gotOutput)
+	}
+}
+
+func TestRunSlaveDefaultsNewEntryToCommanderName(t *testing.T) {
+	temp := t.TempDir()
+	repo := filepath.Join(temp, "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeSlaveProcessRunner{}
+
+	err := RunSlave(context.Background(), SlaveOptions{
+		Paths:        testSlavePaths(temp),
+		Package:      Package{SlaveAgent: filepath.Join(temp, "pkg", "slave-agent")},
+		WorkDir:      repo,
+		ComputerName: "host",
+		NamePrompt: func(defaultName string) (string, error) {
+			if defaultName != "星池指挥官" {
+				t.Fatalf("defaultName=%q, want 星池指挥官", defaultName)
+			}
+			return "", nil
+		},
+		Runner: runner,
+		Stdout: ioDiscard{},
+	})
+	if err != nil {
+		t.Fatalf("RunSlave: %v", err)
+	}
+
+	configBody, err := os.ReadFile(runner.request.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(configBody)
+	if !strings.Contains(config, "display_name: host-星池指挥官") {
+		t.Fatalf("config missing default commander display name:\n%s", config)
 	}
 }
 

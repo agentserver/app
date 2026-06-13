@@ -54,22 +54,22 @@ func Ensure(ctx context.Context, opts EnsureOptions) (Result, error) {
 	opts = defaultEnsureOptions(opts)
 
 	if opts.Env(tokenrefresh.OpenAIAPIKeyEnv) != "" {
-		if err := codex.UpdateConfig(opts.CodexConfigPath, codex.ModelserverSettings()); err != nil {
+		directConfig, err := codex.HasModelserverDirectConfig(opts.CodexConfigPath)
+		if err != nil {
 			return Result{}, err
 		}
-		return Result{Mode: ModeDirectAPIKey}, nil
+		if directConfig {
+			if err := codex.UpdateConfig(opts.CodexConfigPath, codex.ModelserverSettings()); err != nil {
+				return Result{}, err
+			}
+			return Result{Mode: ModeDirectAPIKey}, nil
+		}
 	}
 
 	if opts.Secrets == nil {
 		return Result{}, tokenrefresh.ErrNoSecrets
 	}
 	if err := ensureProxyCredentials(ctx, opts); err != nil {
-		return Result{}, err
-	}
-	if err := opts.SetEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue); err != nil {
-		return Result{}, err
-	}
-	if err := opts.PersistEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue); err != nil {
 		return Result{}, err
 	}
 	if opts.StartDaemon != nil {

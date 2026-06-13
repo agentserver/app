@@ -52,11 +52,52 @@ func TestModelserverProxySettingsUsesStableLocalCredential(t *testing.T) {
 	if got.BaseURL != "http://127.0.0.1:53452/v1" {
 		t.Fatalf("BaseURL = %q, want local proxy URL", got.BaseURL)
 	}
-	if got.EnvKey != LocalProxyAPIKeyEnv {
-		t.Fatalf("EnvKey = %q, want %q", got.EnvKey, LocalProxyAPIKeyEnv)
+	if got.EnvKey != "" {
+		t.Fatalf("EnvKey = %q, want empty local proxy env key", got.EnvKey)
 	}
 	if got.WireAPI != "responses" {
 		t.Fatalf("WireAPI = %q, want responses", got.WireAPI)
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := UpdateConfig(path, got); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	s := string(b)
+	if strings.Contains(s, "env_key") {
+		t.Fatalf("proxy config should not require an environment variable:\n%s", s)
+	}
+	if !strings.Contains(s, `experimental_bearer_token = "`+LocalProxyAPIKeyValue+`"`) {
+		t.Fatalf("proxy config missing stable bearer token:\n%s", s)
+	}
+}
+
+func TestHasModelserverDirectConfigRequiresExactDirectProvider(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if ok, err := HasModelserverDirectConfig(path); err != nil || ok {
+		t.Fatalf("missing config: ok=%v err=%v, want false nil", ok, err)
+	}
+	writeCodexTestFile(t, path, strings.Join([]string{
+		`model_provider = "modelserver"`,
+		``,
+		`[model_providers.modelserver]`,
+		`name = "modelserver"`,
+		`base_url = "http://127.0.0.1:53452/v1"`,
+		`experimental_bearer_token = "agentserver-local-proxy"`,
+		`wire_api = "responses"`,
+		``,
+	}, "\n"))
+	if ok, err := HasModelserverDirectConfig(path); err != nil || ok {
+		t.Fatalf("proxy config: ok=%v err=%v, want false nil", ok, err)
+	}
+	if err := UpdateConfig(path, ModelserverSettings()); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := HasModelserverDirectConfig(path); err != nil || !ok {
+		t.Fatalf("direct config: ok=%v err=%v, want true nil", ok, err)
 	}
 }
 

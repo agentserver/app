@@ -14,7 +14,6 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
-	"github.com/agentserver/agentserver-pkg/internal/process"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 )
@@ -149,10 +148,11 @@ func EnsureDaemon(ctx context.Context, opts EnsureDaemonOptions) error {
 		return err
 	}
 	cmd := newDaemonCommand(opts.ExePath, "model-proxy-daemon")
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	process.HideWindow(cmd)
+	cleanup, err := configureDaemonProcess(cmd)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 	startProcess := opts.StartProcess
 	if startProcess == nil {
 		startProcess = startDetachedProcess

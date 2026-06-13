@@ -19,11 +19,13 @@ import (
 
 func TestEnsurePrefersLongLivedAPIKey(t *testing.T) {
 	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "codex", "config.toml")
+	writeDirectConfig(t, configPath)
 	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
 	var daemonStarted bool
 
 	result, err := Ensure(context.Background(), EnsureOptions{
-		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
+		CodexConfigPath: configPath,
 		Secrets:         sec,
 		Env: func(key string) string {
 			if key == tokenrefresh.OpenAIAPIKeyEnv {
@@ -53,7 +55,7 @@ func TestEnsurePrefersLongLivedAPIKey(t *testing.T) {
 	if daemonStarted {
 		t.Fatal("StartDaemon called in direct API key mode")
 	}
-	assertConfigContains(t, filepath.Join(tmp, "codex", "config.toml"),
+	assertConfigContains(t, configPath,
 		`model_provider = "modelserver"`,
 		`base_url = "https://code.ai.cs.ac.cn/v1"`,
 		`env_key = "OPENAI_API_KEY"`,
@@ -63,6 +65,7 @@ func TestEnsurePrefersLongLivedAPIKey(t *testing.T) {
 func TestEnsureDirectAPIKeyModeDoesNotRequireSecrets(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "codex", "config.toml")
+	writeDirectConfig(t, configPath)
 
 	result, err := Ensure(context.Background(), EnsureOptions{
 		CodexConfigPath: configPath,
@@ -84,6 +87,50 @@ func TestEnsureDirectAPIKeyModeDoesNotRequireSecrets(t *testing.T) {
 		`base_url = "https://code.ai.cs.ac.cn/v1"`,
 		`env_key = "OPENAI_API_KEY"`,
 	)
+}
+
+func TestEnsureOpenAIAPIKeyWithoutMatchingDirectConfigUsesProxy(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "codex", "config.toml")
+	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
+	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(time.Hour).Format(time.RFC3339))
+	var daemonStarted bool
+
+	result, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: configPath,
+		Secrets:         sec,
+		Env: func(key string) string {
+			if key == tokenrefresh.OpenAIAPIKeyEnv {
+				return "sk-test"
+			}
+			return ""
+		},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			t.Fatal("RequestDeviceCode called despite fresh proxy credentials")
+			return oauth.DeviceCodeChallenge{}, nil
+		},
+		StartDaemon: func(context.Context) error {
+			daemonStarted = true
+			return nil
+		},
+		Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if result.Mode != ModeLocalProxy {
+		t.Fatalf("Mode = %q, want %q", result.Mode, ModeLocalProxy)
+	}
+	if !daemonStarted {
+		t.Fatal("StartDaemon was not called")
+	}
+	assertConfigContains(t, configPath,
+		`base_url = "`+modelproxy.DefaultBaseURL+`"`,
+		`experimental_bearer_token = "`+codex.LocalProxyAPIKeyValue+`"`,
+	)
+	assertConfigNotContains(t, configPath, `env_key = "OPENAI_API_KEY"`)
 }
 
 func TestEnsureProxyModeRunsDeviceLoginWhenRefreshMissing(t *testing.T) {
@@ -442,7 +489,7 @@ func TestEnsureRequiresSecrets(t *testing.T) {
 	}
 }
 
-func TestEnsureProxyModeDoesNotWriteProxyConfigWhenSetEnvFails(t *testing.T) {
+func TestEnsureProxyModeIgnoresSetEnvFailure(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "codex", "config.toml")
 	writeDirectConfig(t, configPath)
@@ -451,8 +498,9 @@ func TestEnsureProxyModeDoesNotWriteProxyConfigWhenSetEnvFails(t *testing.T) {
 	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
 	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(time.Hour).Format(time.RFC3339))
 	setEnvErr := errors.New("set env failed")
+	var daemonStarted bool
 
-	_, err := Ensure(context.Background(), EnsureOptions{
+	result, err := Ensure(context.Background(), EnsureOptions{
 		CodexConfigPath: configPath,
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
@@ -464,18 +512,24 @@ func TestEnsureProxyModeDoesNotWriteProxyConfigWhenSetEnvFails(t *testing.T) {
 			return nil
 		},
 		StartDaemon: func(context.Context) error {
-			t.Fatal("StartDaemon called after SetEnv failure")
+			daemonStarted = true
 			return nil
 		},
 		Now: fixedNow,
 	})
-	if !errors.Is(err, setEnvErr) {
-		t.Fatalf("Ensure() error = %v, want %v", err, setEnvErr)
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
 	}
-	assertConfigNotContains(t, configPath, `base_url = "`+modelproxy.DefaultBaseURL+`"`)
+	if result.Mode != ModeLocalProxy {
+		t.Fatalf("Mode = %q, want %q", result.Mode, ModeLocalProxy)
+	}
+	if !daemonStarted {
+		t.Fatal("StartDaemon was not called")
+	}
+	assertConfigContains(t, configPath, `base_url = "`+modelproxy.DefaultBaseURL+`"`)
 }
 
-func TestEnsureProxyModeDoesNotWriteProxyConfigWhenPersistEnvFails(t *testing.T) {
+func TestEnsureProxyModeIgnoresPersistEnvFailure(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "codex", "config.toml")
 	writeDirectConfig(t, configPath)
@@ -484,8 +538,9 @@ func TestEnsureProxyModeDoesNotWriteProxyConfigWhenPersistEnvFails(t *testing.T)
 	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
 	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(time.Hour).Format(time.RFC3339))
 	persistErr := errors.New("persist env failed")
+	var daemonStarted bool
 
-	_, err := Ensure(context.Background(), EnsureOptions{
+	result, err := Ensure(context.Background(), EnsureOptions{
 		CodexConfigPath: configPath,
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
@@ -494,15 +549,21 @@ func TestEnsureProxyModeDoesNotWriteProxyConfigWhenPersistEnvFails(t *testing.T)
 			return persistErr
 		},
 		StartDaemon: func(context.Context) error {
-			t.Fatal("StartDaemon called after PersistEnv failure")
+			daemonStarted = true
 			return nil
 		},
 		Now: fixedNow,
 	})
-	if !errors.Is(err, persistErr) {
-		t.Fatalf("Ensure() error = %v, want %v", err, persistErr)
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
 	}
-	assertConfigNotContains(t, configPath, `base_url = "`+modelproxy.DefaultBaseURL+`"`)
+	if result.Mode != ModeLocalProxy {
+		t.Fatalf("Mode = %q, want %q", result.Mode, ModeLocalProxy)
+	}
+	if !daemonStarted {
+		t.Fatal("StartDaemon was not called")
+	}
+	assertConfigContains(t, configPath, `base_url = "`+modelproxy.DefaultBaseURL+`"`)
 }
 
 func TestEnsureProxyModeDoesNotWriteProxyConfigWhenStartDaemonFails(t *testing.T) {
@@ -538,7 +599,7 @@ func TestProxySettingsWrittenInProxyMode(t *testing.T) {
 	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
 	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
 	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(time.Hour).Format(time.RFC3339))
-	var setEnvKey, setEnvValue, persistEnvKey, persistEnvValue string
+	var setEnvCalled, persistEnvCalled bool
 	var daemonStarted bool
 
 	_, err := Ensure(context.Background(), EnsureOptions{
@@ -546,11 +607,11 @@ func TestProxySettingsWrittenInProxyMode(t *testing.T) {
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
 		SetEnv: func(key, value string) error {
-			setEnvKey, setEnvValue = key, value
+			setEnvCalled = true
 			return nil
 		},
 		PersistEnv: func(key, value string) error {
-			persistEnvKey, persistEnvValue = key, value
+			persistEnvCalled = true
 			return nil
 		},
 		StartDaemon: func(context.Context) error {
@@ -567,13 +628,14 @@ func TestProxySettingsWrittenInProxyMode(t *testing.T) {
 	}
 	assertConfigContains(t, filepath.Join(tmp, "codex", "config.toml"),
 		`base_url = "`+modelproxy.DefaultBaseURL+`"`,
-		`env_key = "`+codex.LocalProxyAPIKeyEnv+`"`,
+		`experimental_bearer_token = "`+codex.LocalProxyAPIKeyValue+`"`,
 	)
-	if setEnvKey != codex.LocalProxyAPIKeyEnv || setEnvValue != codex.LocalProxyAPIKeyValue {
-		t.Fatalf("SetEnv = (%q, %q), want (%q, %q)", setEnvKey, setEnvValue, codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	assertConfigNotContains(t, filepath.Join(tmp, "codex", "config.toml"), `env_key = "`)
+	if setEnvCalled {
+		t.Fatal("SetEnv called for local proxy config")
 	}
-	if persistEnvKey != codex.LocalProxyAPIKeyEnv || persistEnvValue != codex.LocalProxyAPIKeyValue {
-		t.Fatalf("PersistEnv = (%q, %q), want (%q, %q)", persistEnvKey, persistEnvValue, codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	if persistEnvCalled {
+		t.Fatal("PersistEnv called for local proxy config")
 	}
 }
 

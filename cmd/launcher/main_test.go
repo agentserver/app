@@ -893,7 +893,7 @@ func TestExecVSCodeEnsuresCodexConfigBeforeLaunch(t *testing.T) {
 	for _, want := range []string{
 		`model_provider = "modelserver"`,
 		`base_url = "` + modelproxy.DefaultBaseURL + `"`,
-		`env_key = "` + codex.LocalProxyAPIKeyEnv + `"`,
+		`experimental_bearer_token = "` + codex.LocalProxyAPIKeyValue + `"`,
 		`[windows]`,
 		`sandbox = "unelevated"`,
 	} {
@@ -992,8 +992,8 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 	if !strings.Contains(string(b), `base_url = "`+modelproxy.DefaultBaseURL+`"`) {
 		t.Fatalf("config missing local proxy base_url:\n%s", b)
 	}
-	if !strings.Contains(string(b), `env_key = "`+codex.LocalProxyAPIKeyEnv+`"`) {
-		t.Fatalf("config missing local proxy env_key:\n%s", b)
+	if !strings.Contains(string(b), `experimental_bearer_token = "`+codex.LocalProxyAPIKeyValue+`"`) {
+		t.Fatalf("config missing local proxy bearer token:\n%s", b)
 	}
 }
 
