@@ -21,7 +21,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="0.1.1"
+VERSION="0.1.2"
 OUT="dist"
 STAGE="$OUT/agentserver-app-$VERSION-portable"
 ZIP="$OUT/agentserver-app-$VERSION-portable.zip"
@@ -122,7 +122,7 @@ python3 scripts/package-driver-codex-prompts.py "$LOOM_DRIVER_CODEX_PROMPTS_CACH
 for f in dist/windows/launcher.exe dist/windows/onboarding-server.exe \
          dist/windows/agentctl.exe dist/windows/open-folder.exe \
          dist/windows/uninstall.exe dist/windows/token-refresher.exe \
-         extensions/agentserver-app/agentserver-app-0.1.1.vsix \
+         extensions/agentserver-app/agentserver-app-0.1.2.vsix \
          internal/ui/assets/dist/index.html \
          packaging/windows/install.ps1 \
          packaging/windows/install-driver-support.ps1 \
@@ -171,7 +171,7 @@ cp "$LOOM_DRIVER_CODEX_PROMPTS_CACHE" "$STAGE/driver-codex-prompts.tar.gz"
 cp "$CODEX_DESKTOP_CACHE" "$STAGE/codex-desktop-installer.exe"
 
 # VS Code extension
-cp extensions/agentserver-app/agentserver-app-0.1.1.vsix \
+cp extensions/agentserver-app/agentserver-app-0.1.2.vsix \
    "$STAGE/agentserver-app.vsix"
 
 # Resources

@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -224,6 +225,7 @@ func TestAutomaticUpdateCheckCancellationBeforeDelayPreventsManifestRequest(t *t
 
 func TestAutomaticUpdateCheckRunsOnceAndOnlyChecksManifest(t *testing.T) {
 	manifestHit := make(chan struct{}, 1)
+	updateVersion := nextPatchVersion(t, appversion.Version)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case manifestHit <- struct{}{}:
@@ -231,8 +233,8 @@ func TestAutomaticUpdateCheckRunsOnceAndOnlyChecksManifest(t *testing.T) {
 			t.Errorf("manifest server hit more than once")
 		}
 		manifest := updater.Manifest{
-			Version: "0.1.2",
-			URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-0.1.2-setup.exe",
+			Version: updateVersion,
+			URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-" + updateVersion + "-setup.exe",
 			SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			Size:    123,
 			Notes:   "release notes",
@@ -275,6 +277,19 @@ func TestAutomaticUpdateCheckRunsOnceAndOnlyChecksManifest(t *testing.T) {
 	if saved.Status != updater.StatusAvailable {
 		t.Fatalf("saved Status=%q, want %q", saved.Status, updater.StatusAvailable)
 	}
+}
+
+func nextPatchVersion(t *testing.T, version string) string {
+	t.Helper()
+	parts := strings.Split(strings.TrimPrefix(version, "v"), ".")
+	if len(parts) != 3 {
+		t.Fatalf("version %q should be MAJOR.MINOR.PATCH", version)
+	}
+	patch, err := strconv.Atoi(parts[2])
+	if err != nil {
+		t.Fatalf("version %q patch should be numeric: %v", version, err)
+	}
+	return parts[0] + "." + parts[1] + "." + strconv.Itoa(patch+1)
 }
 
 func TestAutomaticUpdateCheckLogsNonCanceledErrors(t *testing.T) {
