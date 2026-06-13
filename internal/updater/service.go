@@ -18,6 +18,8 @@ import (
 
 const DefaultManifestURL = "https://assets.agent.cs.ac.cn/agentserver-app/windows/latest.json"
 
+// The manifest is small today, but this leaves room for future optional fields
+// and release notes while bounding hostile metadata responses.
 const manifestMaxBytes = 64 * 1024
 
 type Service struct {

@@ -71,7 +71,7 @@ func (c *Controller) InstallUpdate(ctx context.Context, m updater.Manifest) (upd
 		}
 	}
 	priorStartInstaller := updates.StartInstaller
-	if c.d.PendingSlaveRestartsPath != "" {
+	if c.d.Slaves != nil && c.d.PendingSlaveRestartsPath != "" {
 		updates.StartInstaller = func(ctx context.Context, installerPath string) error {
 			startCtx := ctx
 			start := priorStartInstaller
@@ -107,7 +107,12 @@ func (c *Controller) currentUpdateStateForInstallConflict() updater.State {
 		return state
 	}
 	if c.d.Updates.CurrentVersion == "" {
+		current.Status = updater.StatusDownloading
+		current.LastError = ""
 		return current
 	}
-	return updater.NormalizeStateForCurrentVersion(current, c.d.Updates.CurrentVersion)
+	current = updater.NormalizeStateForCurrentVersion(current, c.d.Updates.CurrentVersion)
+	current.Status = updater.StatusDownloading
+	current.LastError = ""
+	return current
 }

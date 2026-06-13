@@ -349,6 +349,38 @@ func TestControllerInstallUpdateRejectsConcurrentInstall(t *testing.T) {
 	}
 }
 
+func TestControllerInstallConflictStateForcesDownloadingWhenCachedStateIsAvailable(t *testing.T) {
+	dir := t.TempDir()
+	store := updater.NewStateStore(filepath.Join(dir, "updates.json"))
+	cachedUpdate := &updater.AvailableUpdate{
+		Version: "1.2.0",
+		URL:     "https://assets.agent.cs.ac.cn/agentserver-app.exe",
+		SHA256:  strings.Repeat("a", 64),
+		Size:    12,
+	}
+	if err := store.Save(updater.State{
+		CurrentVersion: "1.0.0",
+		Status:         updater.StatusAvailable,
+		Update:         cachedUpdate,
+	}); err != nil {
+		t.Fatalf("Save update state: %v", err)
+	}
+
+	got := NewController(Deps{
+		Updates: &updater.Service{
+			CurrentVersion: "1.0.0",
+			State:          store,
+		},
+	}).currentUpdateStateForInstallConflict()
+
+	if got.Status != updater.StatusDownloading {
+		t.Fatalf("Status=%q, want %q", got.Status, updater.StatusDownloading)
+	}
+	if got.Update == nil || *got.Update != *cachedUpdate {
+		t.Fatalf("Update=%+v, want cached %+v", got.Update, cachedUpdate)
+	}
+}
+
 func TestControllerInstallUpdateRemovesPendingRestartsWhenInstallerStartFails(t *testing.T) {
 	dir := t.TempDir()
 	manager := newConsoleUpdateSlaveManager(t, dir)
