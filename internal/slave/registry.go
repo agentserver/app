@@ -13,7 +13,10 @@ import (
 	"github.com/google/uuid"
 )
 
-var osMkdirAll = os.MkdirAll
+var (
+	osMkdirAll   = os.MkdirAll
+	evalSymlinks = filepath.EvalSymlinks
+)
 
 type Status string
 
@@ -62,10 +65,36 @@ func CanonicalFolder(folder string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("%w: folder is not a directory: %s", ErrInvalidCreateInput, abs)
 	}
-	if realPath, err := filepath.EvalSymlinks(abs); err == nil {
+	realPath, err := evalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("%w: resolve folder symlinks: %w", ErrInvalidCreateInput, err)
+	}
+	abs = realPath
+	return filepath.Clean(abs), nil
+}
+
+func defaultFolderName(folder string) (string, error) {
+	folder = strings.TrimSpace(folder)
+	abs, err := filepath.Abs(folder)
+	if err != nil {
+		return "", fmt.Errorf("%w: folder required: %v", ErrInvalidCreateInput, err)
+	}
+	return filepath.Base(filepath.Clean(abs)), nil
+}
+
+func storedFolderKey(folder string) string {
+	folder = strings.TrimSpace(folder)
+	if folder == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(folder)
+	if err != nil {
+		return filepath.Clean(folder)
+	}
+	if realPath, err := evalSymlinks(abs); err == nil {
 		abs = realPath
 	}
-	return filepath.Clean(abs), nil
+	return filepath.Clean(abs)
 }
 
 var (
@@ -148,7 +177,10 @@ func (r *Registry) Create(machine Machine, in CreateInput) (Slave, error) {
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
-		name = filepath.Base(folder)
+		name, err = defaultFolderName(in.Folder)
+		if err != nil {
+			return Slave{}, err
+		}
 	}
 	if err := validateSlaveName(name); err != nil {
 		return Slave{}, fmt.Errorf("%w: %w", ErrInvalidCreateInput, err)
@@ -174,19 +206,12 @@ func (r *Registry) FindByFolder(folder string) (Slave, bool, error) {
 	if err != nil {
 		return Slave{}, false, err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	all, err := r.loadLocked()
+	all, err := r.List()
 	if err != nil {
 		return Slave{}, false, err
 	}
 	for _, sl := range all {
-		existing, err := CanonicalFolder(sl.Folder)
-		if err != nil {
-			existing = filepath.Clean(sl.Folder)
-		}
-		if existing == canonical {
+		if storedFolderKey(sl.Folder) == canonical {
 			return sl, true, nil
 		}
 	}
@@ -203,35 +228,44 @@ func (r *Registry) EnsureForFolder(machine Machine, in CreateInput) (Slave, bool
 	}
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
-		name = filepath.Base(folder)
+		name, err = defaultFolderName(in.Folder)
+		if err != nil {
+			return Slave{}, false, err
+		}
 	}
 	if err := validateSlaveName(name); err != nil {
 		return Slave{}, false, fmt.Errorf("%w: %w", ErrInvalidCreateInput, err)
 	}
 	displayName := machine.ComputerName + "-" + name
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	all, err := r.loadLocked()
+	all, err := r.List()
 	if err != nil {
 		return Slave{}, false, err
 	}
 	for _, existing := range all {
-		existingFolder, err := CanonicalFolder(existing.Folder)
-		if err != nil {
-			existingFolder = filepath.Clean(existing.Folder)
-		}
-		if existingFolder == folder {
+		if storedFolderKey(existing.Folder) == folder {
 			return existing, false, nil
 		}
 	}
-	for _, existing := range all {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	latest, err := r.loadLocked()
+	if err != nil {
+		return Slave{}, false, err
+	}
+	for _, existing := range latest {
+		if filepath.Clean(existing.Folder) == folder {
+			return existing, false, nil
+		}
+	}
+	for _, existing := range latest {
 		if existing.DisplayName == displayName {
 			return Slave{}, false, fmt.Errorf("%w: slave display name already exists: %s", ErrSlaveConflict, displayName)
 		}
 	}
-	sl, err := r.createLocked(all, name, displayName, folder)
+	sl, err := r.createLocked(latest, name, displayName, folder)
 	if err != nil {
 		return Slave{}, false, err
 	}
