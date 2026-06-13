@@ -13,7 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
+	"github.com/agentserver/agentserver-pkg/internal/updater"
 )
 
 //go:embed all:assets/dist
@@ -52,6 +54,9 @@ func NewServerWithConsole(o Orchestrator, c ConsoleController) http.Handler {
 	mux.HandleFunc("/api/console/health", s.handleConsoleHealth)
 	mux.HandleFunc("/api/console/state", s.handleConsoleState)
 	mux.HandleFunc("/api/console/refresh", s.handleConsoleRefresh)
+	mux.HandleFunc("/api/console/update", s.handleConsoleUpdate)
+	mux.HandleFunc("/api/console/update/check", s.handleConsoleUpdateCheck)
+	mux.HandleFunc("/api/console/update/install", s.handleConsoleUpdateInstall)
 	mux.HandleFunc("/api/console/open-frontend", s.handleConsoleOpenFrontend)
 	mux.HandleFunc("/api/console/open-subscription", s.handleConsoleOpenSubscription)
 	mux.HandleFunc("/api/console/logout-modelserver", s.handleConsoleLogoutModelserver)
@@ -318,6 +323,94 @@ func (s *server) handleConsoleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, st)
+}
+
+func (s *server) handleConsoleUpdate(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	st, err := s.c.UpdateState(r.Context())
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, st)
+}
+
+func (s *server) handleConsoleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
+	st, err := s.c.CheckUpdate(r.Context(), false)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, st)
+}
+
+func (s *server) handleConsoleUpdateInstall(w http.ResponseWriter, r *http.Request) {
+	if !requirePostTrustedMutation(w, r) {
+		return
+	}
+	confirmed, err := s.c.UpdateState(r.Context())
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	if !stateHasInstallableCachedUpdate(confirmed) {
+		writeErr(w, http.StatusConflict, errors.New("console: no update available"))
+		return
+	}
+	manifest := updater.Manifest{
+		Version: confirmed.Update.Version,
+		URL:     confirmed.Update.URL,
+		SHA256:  confirmed.Update.SHA256,
+		Size:    confirmed.Update.Size,
+		Notes:   confirmed.Update.Notes,
+	}
+	if err := manifest.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	fresh, err := s.c.CheckUpdate(r.Context(), false)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	if fresh.Status != updater.StatusAvailable || fresh.Update == nil {
+		writeErr(w, http.StatusConflict, errors.New("console: update is no longer available"))
+		return
+	}
+	if !sameAvailableUpdate(*confirmed.Update, *fresh.Update) {
+		writeErr(w, http.StatusConflict, errors.New("console: update changed; check again before installing"))
+		return
+	}
+	st, err := s.c.InstallUpdate(r.Context(), manifest)
+	if err != nil {
+		if errors.Is(err, console.ErrUpdateInstallInProgress) {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, st)
+}
+
+func stateHasInstallableCachedUpdate(state updater.State) bool {
+	if state.Update == nil {
+		return false
+	}
+	return state.Status == updater.StatusAvailable || state.Status == updater.StatusError
+}
+
+func sameAvailableUpdate(a, b updater.AvailableUpdate) bool {
+	return a.Version == b.Version &&
+		a.URL == b.URL &&
+		a.SHA256 == b.SHA256 &&
+		a.Size == b.Size &&
+		a.Notes == b.Notes
 }
 
 func (s *server) handleConsoleSlaves(w http.ResponseWriter, r *http.Request) {

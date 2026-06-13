@@ -103,6 +103,31 @@ export interface OpenConsoleSlaveRemoteResponse {
   url?: string;
 }
 
+export type ConsoleUpdateStatus =
+  'idle'
+  | 'checking'
+  | 'latest'
+  | 'available'
+  | 'downloading'
+  | 'installer_started'
+  | 'error';
+
+export interface ConsoleAvailableUpdate {
+  version: string;
+  url?: string;
+  sha256?: string;
+  size?: number;
+  notes?: string;
+}
+
+export interface ConsoleUpdateState {
+  current_version: string;
+  last_checked_at?: string;
+  status: ConsoleUpdateStatus;
+  update?: ConsoleAvailableUpdate;
+  last_error?: string;
+}
+
 export class OnboardingError extends Error {
   constructor(
     message: string,
@@ -193,6 +218,15 @@ export const openConsoleSlaveRemote = (id: string) =>
 
 export const deleteConsoleSlave = (id: string) =>
   request<{ state: 'deleted' }>(`/api/console/slaves/${encodeURIComponent(id)}`, { method: 'DELETE' });
+
+export const getConsoleUpdate = () =>
+  request<ConsoleUpdateState>('/api/console/update');
+
+export const checkConsoleUpdate = () =>
+  request<ConsoleUpdateState>('/api/console/update/check', { method: 'POST' });
+
+export const installConsoleUpdate = () =>
+  request<ConsoleUpdateState>('/api/console/update/install', { method: 'POST' });
 
 export const startVSCodeInstall = startFrontendInstall;
 export const configureVSCode = configureFrontend;

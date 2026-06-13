@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
@@ -14,22 +15,25 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
+	"github.com/agentserver/agentserver-pkg/internal/updater"
 )
 
 type Deps struct {
-	State                   secretsStateStore
-	Secrets                 secrets.Store
-	MS                      *modelserver.Client
-	MSProxy                 *modelserver.Client
-	AS                      *agentserver.Client
-	Slaves                  *slave.Manager
-	ModelserverWebBaseURL   string
-	RefreshModelserverToken func(context.Context) error
-	OpenFrontend            func(context.Context) error
-	OpenURL                 func(string) error
-	SelectFolder            func(context.Context) (string, error)
-	Quit                    func()
-	Now                     func() time.Time
+	State                    secretsStateStore
+	Secrets                  secrets.Store
+	MS                       *modelserver.Client
+	MSProxy                  *modelserver.Client
+	AS                       *agentserver.Client
+	Slaves                   *slave.Manager
+	Updates                  *updater.Service
+	PendingSlaveRestartsPath string
+	ModelserverWebBaseURL    string
+	RefreshModelserverToken  func(context.Context) error
+	OpenFrontend             func(context.Context) error
+	OpenURL                  func(string) error
+	SelectFolder             func(context.Context) (string, error)
+	Quit                     func()
+	Now                      func() time.Time
 }
 
 type secretsStateStore interface {
@@ -76,7 +80,8 @@ type QuotaWindow struct {
 }
 
 type Controller struct {
-	d Deps
+	d               Deps
+	updateInstallMu sync.Mutex
 }
 
 func NewController(d Deps) *Controller {

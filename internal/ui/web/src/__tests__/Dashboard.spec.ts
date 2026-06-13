@@ -27,6 +27,15 @@ function consoleSlaves(overrides?: Partial<api.ConsoleSlavesResponse>): api.Cons
   };
 }
 
+function consoleUpdate(overrides?: Partial<api.ConsoleUpdateState>): api.ConsoleUpdateState {
+  return {
+    current_version: '1.2.3',
+    status: 'latest',
+    last_checked_at: '2026-06-07T12:00:00Z',
+    ...overrides,
+  };
+}
+
 function mockConsoleState() {
   vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
   vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves());
@@ -55,8 +64,243 @@ describe('Dashboard', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
+    vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate());
   });
   afterEach(() => vi.useRealTimers());
+
+  it('loads and renders console update state on mount', async () => {
+    const getUpdateSpy = vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
+      current_version: '1.2.3',
+      status: 'available',
+      update: {
+        version: '1.3.0',
+        notes: 'Fixes startup checks',
+      },
+    }));
+    mockConsoleState();
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(getUpdateSpy).toHaveBeenCalledTimes(1);
+    expect(w.text()).toContain('当前版本 1.2.3');
+    expect(w.text()).toContain('发现新版本 1.3.0');
+    expect(w.text()).toContain('Fixes startup checks');
+  });
+
+  it('checks for console updates manually and refreshes displayed state', async () => {
+    mockConsoleState();
+    const checkSpy = vi.spyOn(api, 'checkConsoleUpdate').mockResolvedValue(consoleUpdate({
+      current_version: '1.2.3',
+      status: 'available',
+      update: { version: '1.3.0' },
+    }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    const checkButton = w.find('[data-test="check-console-update"]');
+    expect(checkButton.exists()).toBe(true);
+    await checkButton.trigger('click');
+    await flushPromises();
+
+    expect(checkSpy).toHaveBeenCalledTimes(1);
+    expect(w.text()).toContain('发现新版本 1.3.0');
+  });
+
+  it('keeps a newer manual update check when the initial update load resolves later', async () => {
+    const staleInitial = deferred<api.ConsoleUpdateState>();
+    vi.spyOn(api, 'getConsoleUpdate').mockReturnValue(staleInitial.promise);
+    mockConsoleState();
+    vi.spyOn(api, 'checkConsoleUpdate').mockResolvedValue(consoleUpdate({
+      current_version: '1.2.3',
+      status: 'available',
+      update: { version: '1.4.0' },
+    }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await w.find('[data-test="check-console-update"]').trigger('click');
+    await flushPromises();
+    expect(w.text()).toContain('发现新版本 1.4.0');
+
+    staleInitial.resolve(consoleUpdate({
+      current_version: '1.2.3',
+      status: 'latest',
+    }));
+    await flushPromises();
+
+    expect(w.text()).toContain('发现新版本 1.4.0');
+    expect(w.text()).not.toContain('已是最新版本');
+  });
+
+  it('ignores duplicate manual update checks while one is pending', async () => {
+    mockConsoleState();
+    const check = deferred<api.ConsoleUpdateState>();
+    const checkSpy = vi.spyOn(api, 'checkConsoleUpdate').mockReturnValue(check.promise);
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    const checkButton = w.find('[data-test="check-console-update"]');
+    await checkButton.trigger('click');
+    await checkButton.trigger('click');
+
+    expect(checkSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start installing an update while a manual check is pending', async () => {
+    vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'available',
+      update: { version: '1.3.0' },
+    }));
+    mockConsoleState();
+    const check = deferred<api.ConsoleUpdateState>();
+    vi.spyOn(api, 'checkConsoleUpdate').mockReturnValue(check.promise);
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const installSpy = vi.spyOn(api, 'installConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'installer_started',
+    }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await w.find('[data-test="check-console-update"]').trigger('click');
+    await w.find('[data-test="install-console-update"]').trigger('click');
+    await flushPromises();
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(installSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not render the same backend update error twice', async () => {
+    vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'error',
+      last_error: 'manifest unavailable',
+    }));
+    mockConsoleState();
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(w.text().match(/manifest unavailable/g)).toHaveLength(1);
+  });
+
+  it('keeps install action visible for a cached update after a transient update error', async () => {
+    vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'error',
+      last_error: 'temporary manifest outage',
+      update: { version: '1.3.0', notes: 'Fixes startup checks' },
+    }));
+    mockConsoleState();
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(w.text()).toContain('temporary manifest outage');
+    expect(w.text()).toContain('Fixes startup checks');
+    expect(w.find('[data-test="install-console-update"]').exists()).toBe(true);
+  });
+
+  it('does not install an available console update when confirmation is cancelled', async () => {
+    vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'available',
+      update: { version: '1.3.0' },
+    }));
+    mockConsoleState();
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const installSpy = vi.spyOn(api, 'installConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'installer_started',
+    }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    const installButton = w.find('[data-test="install-console-update"]');
+    expect(installButton.exists()).toBe(true);
+    await installButton.trigger('click');
+    await flushPromises();
+
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('1.3.0'));
+    expect(installSpy).not.toHaveBeenCalled();
+  });
+
+  it('installs an available console update after confirmation without sending manifest details', async () => {
+    vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'available',
+      update: {
+        version: '1.3.0',
+        url: 'https://updates.example/console',
+        sha256: 'abc123',
+      },
+    }));
+    mockConsoleState();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const installSpy = vi.spyOn(api, 'installConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'installer_started',
+      update: { version: '1.3.0' },
+    }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await w.find('[data-test="install-console-update"]').trigger('click');
+    await flushPromises();
+
+    expect(installSpy).toHaveBeenCalledTimes(1);
+    expect(installSpy).toHaveBeenCalledWith();
+    expect(w.text()).toContain('安装程序已启动');
+  });
+
+  it('reloads update state when install is rejected after a fresh backend check', async () => {
+    const getUpdateSpy = vi.spyOn(api, 'getConsoleUpdate')
+      .mockResolvedValueOnce(consoleUpdate({
+        status: 'available',
+        update: { version: '1.3.0' },
+      }))
+      .mockResolvedValueOnce(consoleUpdate({
+        status: 'latest',
+        update: undefined,
+      }));
+    mockConsoleState();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.spyOn(api, 'installConsoleUpdate').mockRejectedValue(new api.OnboardingError(
+      '/api/console/update/install 返回 409: update changed',
+      409,
+      'update changed',
+    ));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    expect(w.text()).toContain('发现新版本 1.3.0');
+    expect(w.find('[data-test="install-console-update"]').exists()).toBe(true);
+
+    await w.find('[data-test="install-console-update"]').trigger('click');
+    await flushPromises();
+
+    expect(getUpdateSpy).toHaveBeenCalledTimes(2);
+    expect(w.text()).toContain('已是最新版本');
+    expect(w.find('[data-test="install-console-update"]').exists()).toBe(false);
+    expect(w.text()).toContain('update changed');
+  });
+
+  it('displays console update API errors with dashboard errors', async () => {
+    mockConsoleState();
+    vi.spyOn(api, 'checkConsoleUpdate').mockRejectedValue(new Error('update service unavailable'));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await w.find('[data-test="check-console-update"]').trigger('click');
+    await flushPromises();
+
+    expect(w.text()).toContain('update service unavailable');
+  });
+
+  it('posts console update install without a user-controlled manifest body', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => consoleUpdate({ status: 'installer_started' }),
+    } as Response);
+
+    await api.installConsoleUpdate();
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/update/install', { method: 'POST' });
+  });
 
   it('renders project, workspace, quota, and subscription action', async () => {
     mockConsoleState();

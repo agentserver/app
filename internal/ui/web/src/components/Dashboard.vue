@@ -5,11 +5,15 @@ import * as api from '../api';
 import QuotaCard from './QuotaCard.vue';
 
 const state = ref<api.ConsoleState | null>(null);
+const updateState = ref<api.ConsoleUpdateState | null>(null);
 const statusError = ref('');
+const updateError = ref('');
 const frontendError = ref('');
 const subscriptionError = ref('');
 const logoutModelserverError = ref('');
 const refreshing = ref(false);
+const checkingUpdate = ref(false);
+const installingUpdate = ref(false);
 const opening = ref(false);
 const openingSubscription = ref(false);
 const loggingOutModelserver = ref(false);
@@ -31,6 +35,7 @@ const creatingSlave = ref(false);
 const selectingSlaveFolder = ref(false);
 const slaveBusy = ref<Record<string, boolean>>({});
 const slaveRemoteDeleteOpened = ref<Record<string, boolean>>({});
+let updateLoadSeq = 0;
 let slaveLoadSeq = 0;
 const slavePollIntervalMs = 3000;
 let slavePollTimer: number | undefined;
@@ -38,6 +43,7 @@ let dashboardMounted = false;
 
 const visibleErrors = computed(() => [
   { key: 'status', message: statusError.value },
+  { key: 'update', message: updateError.value },
   { key: 'frontend', message: frontendError.value },
   { key: 'subscription', message: subscriptionError.value },
   { key: 'logout-modelserver', message: logoutModelserverError.value },
@@ -63,6 +69,30 @@ const slaveDisplayPreview = computed(() => {
   return `${machineDisplayName.value}-${name}`;
 });
 
+const updateStatusText = computed(() => {
+  const update = updateState.value;
+  if (!update) return '正在读取更新状态';
+  if (update.status === 'available' && update.update) return `发现新版本 ${update.update.version}`;
+  if (update.status === 'latest') return '已是最新版本';
+  if (update.status === 'checking') return '正在检查更新';
+  if (update.status === 'downloading') return '正在下载更新';
+  if (update.status === 'installer_started') return '安装程序已启动';
+  if (update.status === 'error') return update.last_error || '更新检查失败';
+  return '未检查更新';
+});
+
+const updateBusy = computed(() => checkingUpdate.value || installingUpdate.value);
+const updateButtonDisabled = computed(() => updateBusy.value);
+const updateInstallAvailable = computed(() => {
+  const update = updateState.value;
+  return !!update?.update && (update.status === 'available' || update.status === 'error');
+});
+const updateDetailError = computed(() => {
+  const update = updateState.value;
+  if (!update?.last_error) return '';
+  return update.status === 'error' ? '' : update.last_error;
+});
+
 function shortId(id: string) {
   return id.length <= 8 ? id : id.slice(-8);
 }
@@ -77,6 +107,21 @@ async function load() {
     statusError.value = '';
   } catch (e) {
     statusError.value = errorMessage(e);
+  }
+}
+
+async function loadUpdate() {
+  const seq = ++updateLoadSeq;
+  try {
+    const update = await api.getConsoleUpdate();
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
+    updateState.value = update;
+    updateError.value = '';
+  } catch (e) {
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
+    updateError.value = errorMessage(e);
   }
 }
 
@@ -95,6 +140,51 @@ async function loadSlaves() {
     if (seq !== slaveLoadSeq) return;
     slaveError.value = errorMessage(e);
     syncSlavePolling();
+  }
+}
+
+async function checkUpdate() {
+  if (updateBusy.value) return;
+  const seq = ++updateLoadSeq;
+  checkingUpdate.value = true;
+  try {
+    const update = await api.checkConsoleUpdate();
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
+    updateState.value = update;
+    updateError.value = '';
+  } catch (e) {
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
+    updateError.value = errorMessage(e);
+  } finally {
+    if (dashboardMounted) checkingUpdate.value = false;
+  }
+}
+
+async function installUpdate() {
+  if (updateBusy.value || !updateInstallAvailable.value || !updateState.value?.update) return;
+  const version = updateState.value.update.version;
+  const confirmed = window.confirm(`安装星池指挥官更新 ${version}？安装程序启动后可能需要按提示完成更新。`);
+  if (!confirmed) return;
+  const seq = ++updateLoadSeq;
+  installingUpdate.value = true;
+  try {
+    const update = await api.installConsoleUpdate();
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
+    updateState.value = update;
+    updateError.value = '';
+  } catch (e) {
+    if (!dashboardMounted) return;
+    if (seq !== updateLoadSeq) return;
+    const message = errorMessage(e);
+    updateError.value = message;
+    await loadUpdate();
+    if (!dashboardMounted) return;
+    updateError.value = message;
+  } finally {
+    if (dashboardMounted) installingUpdate.value = false;
   }
 }
 
@@ -388,6 +478,7 @@ function slaveStatusLabel(status: api.ConsoleSlaveStatus | string) {
 onMounted(() => {
   dashboardMounted = true;
   void load();
+  void loadUpdate();
   void loadSlaves();
 });
 
@@ -489,6 +580,44 @@ onBeforeUnmount(() => {
       <div class="info-block">
         <span>agentserver 工作空间</span>
         <strong>{{ workspaceDisplayName }}</strong>
+      </div>
+    </section>
+
+    <section class="update-panel">
+      <div class="section-head">
+        <h2>星池指挥官更新</h2>
+        <p>
+          <span v-if="updateState">当前版本 {{ updateState.current_version }}</span>
+          <span v-else>正在读取当前版本</span>
+          <span v-if="updateState?.last_checked_at">上次检查 {{ updateState.last_checked_at }}</span>
+        </p>
+      </div>
+      <div class="update-row">
+        <div class="update-summary">
+          <strong>{{ updateStatusText }}</strong>
+          <span v-if="updateState?.update?.notes">{{ updateState.update.notes }}</span>
+          <span v-if="updateDetailError">{{ updateDetailError }}</span>
+        </div>
+        <div class="update-actions">
+          <el-button
+            data-test="check-console-update"
+            :loading="checkingUpdate"
+            :disabled="updateButtonDisabled"
+            @click="checkUpdate"
+          >
+            检查更新
+          </el-button>
+          <el-button
+            v-if="updateInstallAvailable"
+            data-test="install-console-update"
+            type="primary"
+            :loading="installingUpdate"
+            :disabled="updateButtonDisabled"
+            @click="installUpdate"
+          >
+            安装更新
+          </el-button>
+        </div>
       </div>
     </section>
 
@@ -692,6 +821,7 @@ onBeforeUnmount(() => {
   font-size: 15px;
 }
 
+.update-panel,
 .slave-panel {
   display: flex;
   flex-direction: column;
@@ -712,6 +842,41 @@ onBeforeUnmount(() => {
   color: #606266;
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+.section-head p span + span {
+  margin-left: 12px;
+}
+
+.update-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.update-summary {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.update-summary strong,
+.update-summary span {
+  overflow-wrap: anywhere;
+}
+
+.update-summary span {
+  color: #606266;
+  font-size: 13px;
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .slave-create {
@@ -807,7 +972,8 @@ onBeforeUnmount(() => {
 }
 
 .slave-actions :deep(.el-button),
-.slave-create :deep(.el-button) {
+.slave-create :deep(.el-button),
+.update-actions :deep(.el-button) {
   margin-left: 0;
   white-space: nowrap;
 }
@@ -823,7 +989,8 @@ onBeforeUnmount(() => {
   }
 
   .slave-create,
-  .slave-row {
+  .slave-row,
+  .update-row {
     grid-template-columns: 1fr;
   }
 
@@ -831,7 +998,8 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 
-  .slave-actions {
+  .slave-actions,
+  .update-actions {
     justify-content: flex-start;
   }
 }

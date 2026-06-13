@@ -6,13 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/appversion"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
@@ -22,6 +27,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tray"
+	"github.com/agentserver/agentserver-pkg/internal/updater"
 )
 
 func TestLauncherOptionsDefaultOpensPageAndFrontend(t *testing.T) {
@@ -166,6 +172,403 @@ func TestCompletedSlaveManagerDepsRecoversBadMachineIdentity(t *testing.T) {
 	}
 	if got.ComputerName != "RECOVERED-PC" || got.MachineID == "" {
 		t.Fatalf("machine=%+v", got)
+	}
+}
+
+func TestNewCompletedUpdaterUsesDefaultManifestAndPaths(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		UpdateStateFile: filepath.Join(dir, "update-state.json"),
+		UpdatesCacheDir: filepath.Join(dir, "updates"),
+	}
+
+	got := newCompletedUpdater(p)
+
+	if got.ManifestURL != updater.DefaultManifestURL {
+		t.Fatalf("ManifestURL=%q, want %q", got.ManifestURL, updater.DefaultManifestURL)
+	}
+	if got.CurrentVersion != appversion.Version {
+		t.Fatalf("CurrentVersion=%q, want %q", got.CurrentVersion, appversion.Version)
+	}
+	if got.CacheDir != p.UpdatesCacheDir {
+		t.Fatalf("CacheDir=%q, want %q", got.CacheDir, p.UpdatesCacheDir)
+	}
+	if got.State == nil {
+		t.Fatal("State is nil")
+	}
+}
+
+func TestAutomaticUpdateCheckCancellationBeforeDelayPreventsManifestRequest(t *testing.T) {
+	hit := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit <- struct{}{}
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := scheduleAutomaticUpdateCheck(ctx, &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    server.URL,
+		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+	}, 25*time.Millisecond)
+	cancel()
+	waitAutomaticUpdateCheckStopped(t, done)
+
+	select {
+	case <-hit:
+		t.Fatal("manifest server was hit after cancellation")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestAutomaticUpdateCheckRunsOnceAndOnlyChecksManifest(t *testing.T) {
+	manifestHit := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case manifestHit <- struct{}{}:
+		default:
+			t.Errorf("manifest server hit more than once")
+		}
+		manifest := updater.Manifest{
+			Version: "0.1.2",
+			URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-0.1.2-setup.exe",
+			SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			Size:    123,
+			Notes:   "release notes",
+		}
+		if err := json.NewEncoder(w).Encode(manifest); err != nil {
+			t.Fatalf("Encode manifest: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	statePath := filepath.Join(t.TempDir(), "update-state.json")
+	store := updater.NewStateStore(statePath)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := scheduleAutomaticUpdateCheck(ctx, &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    server.URL,
+		State:          store,
+		StartInstaller: func(context.Context, string) error {
+			t.Fatal("StartInstaller should not be called by automatic manifest check")
+			return nil
+		},
+	}, 10*time.Millisecond)
+	defer func() {
+		cancel()
+		waitAutomaticUpdateCheckStopped(t, done)
+	}()
+
+	select {
+	case <-manifestHit:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for automatic manifest check")
+	}
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	saved, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load saved update state: %v", err)
+	}
+	if saved.Status != updater.StatusAvailable {
+		t.Fatalf("saved Status=%q, want %q", saved.Status, updater.StatusAvailable)
+	}
+}
+
+func TestAutomaticUpdateCheckLogsNonCanceledErrors(t *testing.T) {
+	var logs lockedLogBuffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "manifest failed", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := scheduleAutomaticUpdateCheck(ctx, &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    server.URL,
+		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+	}, 10*time.Millisecond)
+	defer func() {
+		cancel()
+		waitAutomaticUpdateCheckStopped(t, done)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(logs.String(), "launcher: automatic update check:") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("automatic update check error was not logged; logs=%q", logs.String())
+}
+
+func TestAutomaticUpdateCheckRetriesSoonAfterError(t *testing.T) {
+	hits := make(chan time.Time, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits <- time.Now()
+		http.Error(w, "manifest failed", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    server.URL,
+		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		AutoCheckEvery: time.Nanosecond,
+	}, time.Millisecond, time.Hour, 20*time.Millisecond, 50*time.Millisecond, func(d time.Duration) time.Duration {
+		return d
+	})
+
+	select {
+	case <-hits:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first automatic update check")
+	}
+	select {
+	case <-hits:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("automatic update check did not retry soon after error")
+	}
+	cancel()
+	waitAutomaticUpdateCheckStopped(t, done)
+}
+
+func TestAutomaticUpdateCheckAppliesSuccessJitter(t *testing.T) {
+	hits := make(chan time.Time, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits <- time.Now()
+		manifest := updater.Manifest{
+			Version: "99.0.0",
+			URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-99.0.0-setup.exe",
+			SHA256:  strings.Repeat("a", 64),
+			Size:    123,
+		}
+		if err := json.NewEncoder(w).Encode(manifest); err != nil {
+			t.Fatalf("Encode manifest: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    server.URL,
+		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		AutoCheckEvery: time.Nanosecond,
+	}, time.Millisecond, time.Hour, time.Hour, 50*time.Millisecond, func(time.Duration) time.Duration {
+		return 20 * time.Millisecond
+	})
+
+	select {
+	case <-hits:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first automatic update check")
+	}
+	select {
+	case <-hits:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("automatic update check did not use success jitter delay")
+	}
+	cancel()
+	waitAutomaticUpdateCheckStopped(t, done)
+}
+
+func TestAutomaticUpdateCheckTimesOutBlockingManifestRequest(t *testing.T) {
+	var logs lockedLogBuffer
+	previousWriter := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+	})
+
+	requestCanceled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		close(requestCanceled)
+	}))
+	t.Cleanup(server.Close)
+
+	store := updater.NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	ctx, cancel := context.WithCancel(context.Background())
+	done := scheduleAutomaticUpdateCheckWithTiming(ctx, &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    server.URL,
+		State:          store,
+	}, 1*time.Millisecond, time.Hour, 25*time.Millisecond)
+	defer func() {
+		cancel()
+		waitAutomaticUpdateCheckStopped(t, done)
+	}()
+
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("blocking manifest request was not canceled by automatic check timeout")
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		saved, err := store.Load()
+		if err == nil && saved.Status == updater.StatusError && strings.Contains(saved.LastError, "context deadline exceeded") && strings.Contains(logs.String(), "launcher: automatic update check:") {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	saved, _ := store.Load()
+	t.Fatalf("automatic update timeout was not logged and saved; state=%+v logs=%q", saved, logs.String())
+}
+
+type lockedLogBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (b *lockedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *lockedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+func TestAutomaticUpdateCheckStopsAfterContextCancel(t *testing.T) {
+	hits := make(chan struct{}, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits <- struct{}{}
+		http.Error(w, "manifest failed", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    server.URL,
+		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		AutoCheckEvery: time.Nanosecond,
+	}, time.Millisecond, time.Hour, 20*time.Millisecond, 50*time.Millisecond, func(d time.Duration) time.Duration {
+		return d
+	})
+
+	select {
+	case <-hits:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first automatic update check")
+	}
+	cancel()
+	waitAutomaticUpdateCheckStopped(t, done)
+
+	select {
+	case <-hits:
+		t.Fatal("manifest server was hit after automatic update context cancellation")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func waitAutomaticUpdateCheckStopped(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("automatic update check goroutine did not stop")
+	}
+}
+
+func TestRestorePendingSlaveRestartsCallsManager(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pending-slave-restarts.json")
+	if err := os.WriteFile(path, []byte(`{"reason":"app_update","version":"0.1.2","created_at":"2026-06-12T00:00:00Z","slave_ids":["a","b"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+
+	err := restorePendingSlaveRestarts(context.Background(), path, "0.1.2", func(_ context.Context, id string) error {
+		got = append(got, id)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Join(got, ",") != "a,b" {
+		t.Fatalf("restarted=%v, want [a b]", got)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending file err=%v, want removed", err)
+	}
+}
+
+func TestRestorePendingSlaveRestartsOlderCurrentVersionKeepsFileAndSkipsRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pending-slave-restarts.json")
+	if err := os.WriteFile(path, []byte(`{"reason":"app_update","version":"0.1.2","created_at":"2026-06-12T00:00:00Z","slave_ids":["a"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := restorePendingSlaveRestarts(context.Background(), path, "0.1.1", func(context.Context, string) error {
+		t.Fatal("restart should not be called when current version is older than pending target")
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("pending file should remain for later app update: %v", err)
+	}
+}
+
+func TestRestorePendingSlaveRestartsNewerCurrentVersionRestoresAndRemovesFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pending-slave-restarts.json")
+	if err := os.WriteFile(path, []byte(`{"reason":"app_update","version":"0.1.2","created_at":"2026-06-12T00:00:00Z","slave_ids":["a","b"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+
+	err := restorePendingSlaveRestarts(context.Background(), path, "0.1.3", func(_ context.Context, id string) error {
+		got = append(got, id)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, ",") != "a,b" {
+		t.Fatalf("restarted=%v, want [a b]", got)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending file err=%v, want removed", err)
+	}
+}
+
+func TestRestorePendingSlaveRestartsInvalidVersionReturnsErrorAndKeepsFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pending-slave-restarts.json")
+	if err := os.WriteFile(path, []byte(`{"reason":"app_update","version":"broken","created_at":"2026-06-12T00:00:00Z","slave_ids":["a"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := restorePendingSlaveRestarts(context.Background(), path, "0.1.2", func(context.Context, string) error {
+		t.Fatal("restart should not be called when version comparison fails")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected version comparison error")
+	}
+	if _, statErr := os.Stat(path); statErr != nil {
+		t.Fatalf("pending file should remain after version comparison error: %v", statErr)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
+	"github.com/agentserver/agentserver-pkg/internal/appversion"
 	"github.com/agentserver/agentserver-pkg/internal/browser"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
@@ -42,6 +44,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 	"github.com/agentserver/agentserver-pkg/internal/tray"
 	"github.com/agentserver/agentserver-pkg/internal/ui"
+	"github.com/agentserver/agentserver-pkg/internal/updater"
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
 )
 
@@ -193,6 +196,16 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	if err != nil {
 		return err
 	}
+	updates := newCompletedUpdater(in.Paths)
+	if err := restorePendingSlaveRestarts(ctx, in.Paths.PendingSlaveRestartsFile, appversion.Version, func(ctx context.Context, id string) error {
+		_, err := slaveManager.Restart(ctx, id)
+		return err
+	}); err != nil {
+		log.Printf("launcher: restore pending slave restarts: %v", err)
+	}
+	consoleCtx, stopConsole := context.WithCancel(ctx)
+	defer stopConsole()
+	scheduleAutomaticUpdateCheck(consoleCtx, updates, 30*time.Second)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -200,13 +213,15 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	}
 	srv := &http.Server{}
 	ctrl := console.NewController(console.Deps{
-		State:                 in.State,
-		Secrets:               sec,
-		MS:                    modelserver.New("https://codeapi.cs.ac.cn"),
-		MSProxy:               modelserver.New("https://code.ai.cs.ac.cn"),
-		AS:                    agentserver.New("https://agent.cs.ac.cn"),
-		Slaves:                slaveManager,
-		ModelserverWebBaseURL: "https://code.cs.ac.cn",
+		State:                    in.State,
+		Secrets:                  sec,
+		MS:                       modelserver.New("https://codeapi.cs.ac.cn"),
+		MSProxy:                  modelserver.New("https://code.ai.cs.ac.cn"),
+		AS:                       agentserver.New("https://agent.cs.ac.cn"),
+		Slaves:                   slaveManager,
+		Updates:                  updates,
+		PendingSlaveRestartsPath: in.Paths.PendingSlaveRestartsFile,
+		ModelserverWebBaseURL:    "https://code.cs.ac.cn",
 		RefreshModelserverToken: func(ctx context.Context) error {
 			_, err := tokenrefresh.RefreshOnce(ctx, tokenrefresh.Options{
 				Secrets: sec,
@@ -304,6 +319,98 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		return nil
 	}
 	return err
+}
+
+func newCompletedUpdater(p paths.Paths) *updater.Service {
+	return &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    updater.DefaultManifestURL,
+		CacheDir:       p.UpdatesCacheDir,
+		State:          updater.NewStateStore(p.UpdateStateFile),
+	}
+}
+
+func restorePendingSlaveRestarts(ctx context.Context, path, currentVersion string, restart func(context.Context, string) error) error {
+	pending, err := slave.ReadPendingRestarts(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	cmp, err := updater.CompareVersions(currentVersion, pending.Version)
+	if err != nil {
+		return fmt.Errorf("compare pending slave restart version: %w", err)
+	}
+	if cmp < 0 {
+		return nil
+	}
+	// Equality means the target version has just come back up after the update;
+	// newer versions should also retry any still-pending slave restarts.
+	return slave.RestorePendingRestarts(ctx, path, restart)
+}
+
+func scheduleAutomaticUpdateCheck(ctx context.Context, svc *updater.Service, delay time.Duration) <-chan struct{} {
+	return scheduleAutomaticUpdateCheckWithTiming(ctx, svc, delay, 24*time.Hour, 30*time.Second)
+}
+
+func scheduleAutomaticUpdateCheckWithTiming(ctx context.Context, svc *updater.Service, delay, interval, timeout time.Duration) <-chan struct{} {
+	return scheduleAutomaticUpdateCheckWithRetry(ctx, svc, delay, interval, time.Hour, timeout, jitterAutomaticUpdateInterval)
+}
+
+func scheduleAutomaticUpdateCheckWithRetry(ctx context.Context, svc *updater.Service, delay, interval, retryInterval, timeout time.Duration, jitter func(time.Duration) time.Duration) <-chan struct{} {
+	done := make(chan struct{})
+	if svc == nil {
+		close(done)
+		return done
+	}
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
+	if retryInterval <= 0 {
+		retryInterval = time.Hour
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if jitter == nil {
+		jitter = func(d time.Duration) time.Duration { return d }
+	}
+	go func() {
+		defer close(done)
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+			}
+
+			checkCtx, cancelCheck := context.WithTimeout(ctx, timeout)
+			_, err := svc.Check(checkCtx, true)
+			cancelCheck()
+			nextDelay := jitter(interval)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("launcher: automatic update check: %v", err)
+				nextDelay = retryInterval
+			}
+
+			timer.Reset(nextDelay)
+		}
+	}()
+	return done
+}
+
+func jitterAutomaticUpdateInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return interval
+	}
+	span := int64(float64(interval) * 0.1)
+	if span <= 0 {
+		return interval
+	}
+	return interval + time.Duration(rand.Int63n(2*span+1)-span)
 }
 
 func newCompletedSlaveManager(in completedServeInput) (*slave.Manager, error) {
