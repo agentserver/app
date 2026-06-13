@@ -159,6 +159,46 @@ func TestServeDriverMCPWritesSessionConfigWithCurrentWorkdir(t *testing.T) {
 	}
 }
 
+func TestServeDriverMCPRemovesSessionConfigAfterExit(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	pkg := testDriverPackage(temp)
+	sec := secrets.New(p.SecretsFile)
+	if err := sec.Set("agentserver_ws_api_key", "proxy-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sec.Set("agentserver_tunnel_token", "tunnel-token"); err != nil {
+		t.Fatal(err)
+	}
+	writeDriverState(t, p, state.AgentserverState{
+		BaseURL:     "https://agent.test",
+		SandboxID:   "sb-1",
+		ShortID:     "abc123",
+		WorkspaceID: "ws-1",
+	})
+	var sessionConfig string
+
+	err := ServeDriverMCP(context.Background(), DriverMCPOptions{
+		Paths:   p,
+		Package: pkg,
+		Secrets: sec,
+		WorkDir: temp,
+		Exec: func(_ context.Context, _ string, args []string) error {
+			sessionConfig = args[2]
+			if _, err := os.Stat(sessionConfig); err != nil {
+				t.Fatalf("session config missing during Exec: %v", err)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ServeDriverMCP: %v", err)
+	}
+	if _, err := os.Stat(sessionConfig); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("session config stat after exit = %v, want not exist", err)
+	}
+}
+
 func TestSwitchWorkspaceForcesDeviceLogin(t *testing.T) {
 	t.Run("empty state", func(t *testing.T) {
 		temp := t.TempDir()

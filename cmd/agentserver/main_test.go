@@ -123,6 +123,25 @@ func TestRunCommandResolvesCodexOnlyForDefaultSlave(t *testing.T) {
 	}
 }
 
+func TestRunCommandUsesMCPAccessForServeDriverMCP(t *testing.T) {
+	access := 0
+	mcpAccess := 0
+	app := app{
+		ensureAccess:    func(context.Context) error { access++; return nil },
+		ensureMCPAccess: func(context.Context) error { mcpAccess++; return nil },
+		serveDriverMCP:  func(context.Context) error { return nil },
+	}
+	if err := app.run(context.Background(), []string{"serve-driver-mcp"}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if access != 0 {
+		t.Fatalf("ensureAccess calls=%d, want 0", access)
+	}
+	if mcpAccess != 1 {
+		t.Fatalf("ensureMCPAccess calls=%d, want 1", mcpAccess)
+	}
+}
+
 func TestRunCommandSkipsAccessForDaemon(t *testing.T) {
 	access := 0
 	daemonCalls := 0

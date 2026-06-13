@@ -22,6 +22,7 @@ import (
 
 type app struct {
 	ensureAccess    func(context.Context) error
+	ensureMCPAccess func(context.Context) error
 	ensureCodex     func(context.Context) error
 	runSlave        func(context.Context) error
 	installDriver   func(context.Context) error
@@ -54,14 +55,13 @@ func newApp() app {
 	pkg := headless.PackagePaths(exe)
 	sec := secrets.New(p.SecretsFile)
 	cachedCodex := ""
-
-	return app{
-		ensureAccess: func(ctx context.Context) error {
+	ensureModelAccess := func(out io.Writer) func(context.Context) error {
+		return func(ctx context.Context) error {
 			if _, err := modelaccess.Ensure(ctx, modelaccess.EnsureOptions{
 				CodexConfigPath: p.CodexConfigFile,
 				Secrets:         sec,
 				PrintChallenge: func(title string, ch oauth.DeviceCodeChallenge) {
-					terminalauth.PrintChallenge(os.Stdout, title, ch, terminalauth.DefaultQR)
+					terminalauth.PrintChallenge(out, title, ch, terminalauth.DefaultQR)
 				},
 				StartDaemon: func(ctx context.Context) error {
 					return modelaccess.EnsureDaemon(ctx, modelaccess.EnsureDaemonOptions{
@@ -73,7 +73,12 @@ func newApp() app {
 				return err
 			}
 			return nil
-		},
+		}
+	}
+
+	return app{
+		ensureAccess:    ensureModelAccess(os.Stdout),
+		ensureMCPAccess: ensureModelAccess(os.Stderr),
 		ensureCodex: func(ctx context.Context) error {
 			codexRuntime, err := headless.ResolveCodex(ctx, headless.CodexResolveOptions{
 				Paths:   p,
@@ -148,8 +153,12 @@ func (a app) run(ctx context.Context, args []string) error {
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 
-	if a.ensureAccess != nil {
-		if err := a.ensureAccess(ctx); err != nil {
+	ensureAccess := a.ensureAccess
+	if cmd == "serve-driver-mcp" && a.ensureMCPAccess != nil {
+		ensureAccess = a.ensureMCPAccess
+	}
+	if ensureAccess != nil {
+		if err := ensureAccess(ctx); err != nil {
 			return err
 		}
 	}

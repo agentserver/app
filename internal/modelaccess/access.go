@@ -15,6 +15,8 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 )
 
+const proxyRefreshBefore = 30 * time.Minute
+
 type Mode string
 
 const (
@@ -119,7 +121,26 @@ func ensureProxyCredentials(ctx context.Context, opts EnsureOptions) error {
 		}
 		return err
 	}
-	return nil
+	if accessTokenFresh(opts.Secrets, opts.Now()) {
+		return nil
+	}
+	err = refreshOnce(ctx, opts)
+	if tokenrefresh.ReauthRequired(err) {
+		return runDeviceLogin(ctx, opts)
+	}
+	return err
+}
+
+func accessTokenFresh(sec secrets.Store, now time.Time) bool {
+	raw, err := sec.Get(tokenrefresh.AccessTokenExpiresAtKey)
+	if err != nil || raw == "" {
+		return false
+	}
+	expiresAt, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return false
+	}
+	return expiresAt.After(now.Add(proxyRefreshBefore))
 }
 
 func refreshOnce(ctx context.Context, opts EnsureOptions) error {

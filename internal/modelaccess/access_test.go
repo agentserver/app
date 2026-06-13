@@ -145,6 +145,7 @@ func TestEnsureProxyModeUsesExistingRefreshTokenWithoutPrompt(t *testing.T) {
 	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
 	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
 	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(time.Hour).Format(time.RFC3339))
 	var daemonStarted bool
 
 	result, err := Ensure(context.Background(), EnsureOptions{
@@ -163,6 +164,7 @@ func TestEnsureProxyModeUsesExistingRefreshTokenWithoutPrompt(t *testing.T) {
 			daemonStarted = true
 			return nil
 		},
+		Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatalf("Ensure() error = %v", err)
@@ -175,6 +177,86 @@ func TestEnsureProxyModeUsesExistingRefreshTokenWithoutPrompt(t *testing.T) {
 	}
 	assertSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
 	assertSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+}
+
+func TestEnsureProxyModeRefreshesExpiredAccessTokenBeforeReturning(t *testing.T) {
+	tmp := t.TempDir()
+	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "expired-access")
+	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(-time.Minute).Format(time.RFC3339))
+	var refreshed, daemonStarted bool
+
+	result, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
+		Secrets:         sec,
+		Env:             func(string) string { return "" },
+		Refresh: func(_ context.Context, _ oauth.AuthCodeConfig, refreshToken string) (oauth.Token, error) {
+			refreshed = true
+			if refreshToken != "existing-refresh" {
+				t.Fatalf("refresh token = %q, want existing-refresh", refreshToken)
+			}
+			return oauth.Token{AccessToken: "fresh-access", ExpiresIn: 3600}, nil
+		},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			t.Fatal("RequestDeviceCode called")
+			return oauth.DeviceCodeChallenge{}, nil
+		},
+		StartDaemon: func(context.Context) error {
+			daemonStarted = true
+			return nil
+		},
+		Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if result.Mode != ModeLocalProxy {
+		t.Fatalf("Mode = %q, want %q", result.Mode, ModeLocalProxy)
+	}
+	if !refreshed || !daemonStarted {
+		t.Fatalf("calls: refresh=%v daemon=%v", refreshed, daemonStarted)
+	}
+	assertSecret(t, sec, tokenrefresh.AccessTokenKey, "fresh-access")
+}
+
+func TestEnsureProxyModeRunsDeviceLoginWhenExpiredAccessRefreshNeedsReauth(t *testing.T) {
+	tmp := t.TempDir()
+	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "expired-access")
+	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(-time.Minute).Format(time.RFC3339))
+	var refreshed, requestedDeviceCode, daemonStarted bool
+
+	_, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
+		Secrets:         sec,
+		Env:             func(string) string { return "" },
+		Refresh: func(_ context.Context, _ oauth.AuthCodeConfig, refreshToken string) (oauth.Token, error) {
+			refreshed = true
+			return oauth.Token{}, fmt.Errorf("refresh failed: %w", oauth.ErrInvalidGrant)
+		},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			requestedDeviceCode = true
+			return oauth.DeviceCodeChallenge{DeviceCode: "device", UserCode: "code", ExpiresIn: 600}, nil
+		},
+		PrintChallenge: func(string, oauth.DeviceCodeChallenge) {},
+		PollToken: func(context.Context, oauth.Config, oauth.DeviceCodeChallenge) (oauth.Token, error) {
+			return oauth.Token{AccessToken: "device-access", RefreshToken: "device-refresh", ExpiresIn: 3600}, nil
+		},
+		StartDaemon: func(context.Context) error {
+			daemonStarted = true
+			return nil
+		},
+		Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if !refreshed || !requestedDeviceCode || !daemonStarted {
+		t.Fatalf("calls: refresh=%v request=%v daemon=%v", refreshed, requestedDeviceCode, daemonStarted)
+	}
+	assertSecret(t, sec, tokenrefresh.AccessTokenKey, "device-access")
 }
 
 func TestEnsureProxyModeRefreshesWhenAccessTokenMissing(t *testing.T) {
@@ -367,6 +449,7 @@ func TestEnsureProxyModeDoesNotWriteProxyConfigWhenSetEnvFails(t *testing.T) {
 	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
 	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
 	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(time.Hour).Format(time.RFC3339))
 	setEnvErr := errors.New("set env failed")
 
 	_, err := Ensure(context.Background(), EnsureOptions{
@@ -384,6 +467,7 @@ func TestEnsureProxyModeDoesNotWriteProxyConfigWhenSetEnvFails(t *testing.T) {
 			t.Fatal("StartDaemon called after SetEnv failure")
 			return nil
 		},
+		Now: fixedNow,
 	})
 	if !errors.Is(err, setEnvErr) {
 		t.Fatalf("Ensure() error = %v, want %v", err, setEnvErr)
@@ -398,6 +482,7 @@ func TestEnsureProxyModeDoesNotWriteProxyConfigWhenPersistEnvFails(t *testing.T)
 	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
 	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
 	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(time.Hour).Format(time.RFC3339))
 	persistErr := errors.New("persist env failed")
 
 	_, err := Ensure(context.Background(), EnsureOptions{
@@ -412,6 +497,7 @@ func TestEnsureProxyModeDoesNotWriteProxyConfigWhenPersistEnvFails(t *testing.T)
 			t.Fatal("StartDaemon called after PersistEnv failure")
 			return nil
 		},
+		Now: fixedNow,
 	})
 	if !errors.Is(err, persistErr) {
 		t.Fatalf("Ensure() error = %v, want %v", err, persistErr)
@@ -426,6 +512,7 @@ func TestEnsureProxyModeDoesNotWriteProxyConfigWhenStartDaemonFails(t *testing.T
 	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
 	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
 	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(time.Hour).Format(time.RFC3339))
 	daemonErr := errors.New("daemon failed")
 
 	_, err := Ensure(context.Background(), EnsureOptions{
@@ -437,6 +524,7 @@ func TestEnsureProxyModeDoesNotWriteProxyConfigWhenStartDaemonFails(t *testing.T
 		StartDaemon: func(context.Context) error {
 			return daemonErr
 		},
+		Now: fixedNow,
 	})
 	if !errors.Is(err, daemonErr) {
 		t.Fatalf("Ensure() error = %v, want %v", err, daemonErr)
@@ -449,6 +537,7 @@ func TestProxySettingsWrittenInProxyMode(t *testing.T) {
 	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
 	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
 	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(time.Hour).Format(time.RFC3339))
 	var setEnvKey, setEnvValue, persistEnvKey, persistEnvValue string
 	var daemonStarted bool
 
@@ -468,6 +557,7 @@ func TestProxySettingsWrittenInProxyMode(t *testing.T) {
 			daemonStarted = true
 			return nil
 		},
+		Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatalf("Ensure() error = %v", err)

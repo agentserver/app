@@ -84,6 +84,9 @@ func ServeDriverMCP(ctx context.Context, opts DriverMCPOptions) error {
 	if err := writeDriverConfig(sessionConfig, st, proxyToken, tunnelToken, workDir); err != nil {
 		return err
 	}
+	defer func() {
+		_ = os.Remove(sessionConfig)
+	}()
 	run := opts.Exec
 	if run == nil {
 		run = execDriverMCP
