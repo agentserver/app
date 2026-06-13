@@ -252,7 +252,7 @@ func driverRegistered(p paths.Paths, sec secrets.Store) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if strings.TrimSpace(st.Agentserver.SandboxID) == "" || strings.TrimSpace(st.Agentserver.WorkspaceID) == "" {
+	if strings.TrimSpace(st.Agentserver.SandboxID) == "" {
 		return false, nil
 	}
 	if ok, err := secretPresent(sec, driverProxySecretKey); err != nil || !ok {
