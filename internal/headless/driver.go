@@ -240,11 +240,10 @@ func repairRegisteredDriverState(ctx context.Context, opts DriverOptions) error 
 		if s.Agentserver.ShortID == "" {
 			s.Agentserver.ShortID = s.Agentserver.SandboxID
 		}
-		if s.Agentserver.WorkspaceID == "" && workspace.ID != "" {
+		if workspace.ID != "" {
 			s.Agentserver.WorkspaceID = workspace.ID
 		}
-		if s.Agentserver.WorkspaceName == "" && workspace.Name != "" &&
-			(workspace.ID == "" || s.Agentserver.WorkspaceID == "" || workspace.ID == s.Agentserver.WorkspaceID) {
+		if workspace.Name != "" && workspace.ID == s.Agentserver.WorkspaceID {
 			s.Agentserver.WorkspaceName = workspace.Name
 		}
 		if s.Agentserver.WorkspaceAPIKeySuffix == "" {

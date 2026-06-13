@@ -427,6 +427,59 @@ func TestInstallDriverRepairsMissingWorkspaceIDWithoutDeviceFlow(t *testing.T) {
 	}
 }
 
+func TestInstallDriverRepairsStaleWorkspaceFromCurrentSecrets(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	sec := secrets.New(p.SecretsFile)
+	if err := sec.Set("agentserver_ws_api_key", "proxy-new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sec.Set("agentserver_tunnel_token", "tunnel-new"); err != nil {
+		t.Fatal(err)
+	}
+	writeDriverState(t, p, state.AgentserverState{
+		BaseURL:       "https://agent.test",
+		SandboxID:     "sb-1",
+		ShortID:       "abc123",
+		WorkspaceID:   "ws-old",
+		WorkspaceName: "Old Workspace",
+	})
+	fakeAS := &fakeDriverAgentserver{
+		whoami: agentserver.Identity{
+			Workspace: agentserver.Workspace{ID: "ws-new", Name: "New Workspace"},
+		},
+	}
+
+	err := InstallDriver(context.Background(), DriverOptions{
+		Paths:   p,
+		Package: testDriverPackage(temp),
+		Secrets: sec,
+		AS:      fakeAS,
+		ASOAuth: oauth.Config{Endpoint: "https://agent.test"},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			t.Fatal("RequestDeviceCode called for repairable existing registration")
+			return oauth.DeviceCodeChallenge{}, nil
+		},
+		PollToken: driverPollToken,
+		Stdout:    ioDiscard{},
+	})
+	if err != nil {
+		t.Fatalf("InstallDriver: %v", err)
+	}
+
+	st, err := state.NewStore(p.StateFile).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Agentserver.WorkspaceID != "ws-new" || st.Agentserver.WorkspaceName != "New Workspace" {
+		t.Fatalf("workspace state=%+v", st.Agentserver)
+	}
+	driverConfig := readTextFile(t, filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml"))
+	if !strings.Contains(driverConfig, `workspace_id: "ws-new"`) {
+		t.Fatalf("driver config kept stale workspace:\n%s", driverConfig)
+	}
+}
+
 func TestSwitchWorkspaceBypassesBrokenExistingSecretReads(t *testing.T) {
 	temp := t.TempDir()
 	p := testDriverPaths(temp)
