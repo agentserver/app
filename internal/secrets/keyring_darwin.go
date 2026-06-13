@@ -3,9 +3,10 @@
 package secrets
 
 import (
-	"fmt"
+	"errors"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // keyringAvailable probes the macOS keychain via security(1).
@@ -14,9 +15,18 @@ func keyringAvailable() bool {
 	return err == nil
 }
 
-type keyringStore struct{}
+type keyringStore struct {
+	mu sync.Mutex
+}
+
+func newKeyringStore() *keyringStore {
+	return &keyringStore{}
+}
 
 func (k *keyringStore) Get(key string) (string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
 	out, err := exec.Command(
 		"security", "find-generic-password",
 		"-s", serviceName,
@@ -30,17 +40,28 @@ func (k *keyringStore) Get(key string) (string, error) {
 }
 
 func (k *keyringStore) Set(key, value string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
 	// Delete first to avoid "already exists" errors.
-	_ = k.Delete(key)
-	return exec.Command(
+	_ = k.deleteLocked(key)
+	cmd := exec.Command(
 		"security", "add-generic-password",
 		"-s", serviceName,
 		"-a", key,
 		"-w", value,
-	).Run()
+	)
+	return cmd.Run()
 }
 
 func (k *keyringStore) Delete(key string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	return k.deleteLocked(key)
+}
+
+func (k *keyringStore) deleteLocked(key string) error {
 	err := exec.Command(
 		"security", "delete-generic-password",
 		"-s", serviceName,
@@ -48,8 +69,7 @@ func (k *keyringStore) Delete(key string) error {
 	).Run()
 	if err != nil {
 		var exitErr *exec.ExitError
-		if fmt.Sprintf("%T", err) == "*exec.ExitError" {
-			_ = exitErr
+		if errors.As(err, &exitErr) {
 			return nil // Not found is OK
 		}
 	}

@@ -147,19 +147,24 @@ func fillOAuth(t *testing.T, wd *harness.WebDriver, user, pass string) {
 }
 
 func codexDesktopInstalledPowerShell() string {
-	return `(Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\codex\shell\open\command') -or (Test-Path 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\codex\shell\open\command') -or [bool](Get-AppxPackage | Where-Object { $_.Name -like '*Codex*' -or $_.PackageFullName -like '*Codex*' } | Select-Object -First 1)`
+	return `(Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\codex\shell\open\command') -or (Test-Path 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\codex\shell\open\command') -or [bool](Get-AppxPackage | Where-Object { $_.PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0' } | Select-Object -First 1)`
 }
 
-func TestCodexDesktopInstalledPowerShellIncludesAppxFallback(t *testing.T) {
+func TestCodexDesktopInstalledPowerShellUsesExactAppxFallback(t *testing.T) {
 	script := codexDesktopInstalledPowerShell()
 	for _, want := range []string{
 		`Test-Path 'Registry::HKEY_CURRENT_USER\Software\Classes\codex\shell\open\command'`,
 		`Test-Path 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\codex\shell\open\command'`,
 		"Get-AppxPackage",
-		"*Codex*",
+		"PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0'",
 	} {
 		if !strings.Contains(script, want) {
 			t.Fatalf("codex desktop check script missing %q:\n%s", want, script)
+		}
+	}
+	for _, notWant := range []string{"Name -like '*Codex*'", "PackageFullName -like '*Codex*'"} {
+		if strings.Contains(script, notWant) {
+			t.Fatalf("codex desktop check script should not use fuzzy Appx matching %q:\n%s", notWant, script)
 		}
 	}
 }

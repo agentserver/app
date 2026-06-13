@@ -1,6 +1,7 @@
 package console
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net"
@@ -24,12 +25,15 @@ func TestDiscoverInstanceUsesHealthyPortFile(t *testing.T) {
 	port := serverPort(t, srv.URL)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "console-port.json")
-	if err := WriteInstanceInfo(path, InstanceInfo{Port: port, PID: 123}); err != nil {
+	if err := WriteInstanceInfo(path, InstanceInfo{Port: port, PID: os.Getpid()}); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := DiscoverInstance(context.Background(), path)
 	if !ok || got.Port != port {
 		t.Fatalf("got %+v ok=%v", got, ok)
+	}
+	if got.Token == "" {
+		t.Fatal("Token empty")
 	}
 	req := receiveHealthRequest(t, requests)
 	if req.Method != http.MethodGet {
@@ -37,6 +41,46 @@ func TestDiscoverInstanceUsesHealthyPortFile(t *testing.T) {
 	}
 	if req.Path != "/api/console/health" {
 		t.Fatalf("path=%s", req.Path)
+	}
+}
+
+func TestDiscoverInstanceRejectsPortFileWithoutToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"state":"ok"}`))
+	}))
+	defer srv.Close()
+	path := filepath.Join(t.TempDir(), "console-port.json")
+	body := []byte(`{"port":` + strconv.Itoa(serverPort(t, srv.URL)) + `,"pid":123}`)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := DiscoverInstance(context.Background(), path); ok {
+		t.Fatal("instance without token should not be healthy")
+	}
+	assertPortFileRemoved(t, path)
+}
+
+func TestDiscoverInstanceRejectsMissingPID(t *testing.T) {
+	requests := make(chan healthRequest, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- healthRequest{Method: r.Method, Path: r.URL.Path}
+		w.Write([]byte(`{"state":"ok"}`))
+	}))
+	defer srv.Close()
+	path := filepath.Join(t.TempDir(), "console-port.json")
+	if err := WriteInstanceInfo(path, InstanceInfo{Port: serverPort(t, srv.URL), PID: 0}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := DiscoverInstance(context.Background(), path); ok {
+		t.Fatal("instance without PID should not be healthy")
+	}
+	assertPortFileRemoved(t, path)
+	select {
+	case req := <-requests:
+		t.Fatalf("health endpoint should not be called for dead PID, got %+v", req)
+	default:
 	}
 }
 
@@ -63,6 +107,20 @@ func TestDiscoverInstanceRejectsUnexpectedHealthPayload(t *testing.T) {
 
 	if _, ok := DiscoverInstance(context.Background(), path); ok {
 		t.Fatal("unexpected health payload should not be healthy")
+	}
+	assertPortFileRemoved(t, path)
+}
+
+func TestDiscoverInstanceRejectsOversizedHealthPayload(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"state":"ok"}`))
+		w.Write(bytes.Repeat([]byte(" "), maxHealthBodyBytes))
+	}))
+	defer srv.Close()
+	path := writeInstanceForServer(t, srv)
+
+	if _, ok := DiscoverInstance(context.Background(), path); ok {
+		t.Fatal("oversized health payload should not be healthy")
 	}
 	assertPortFileRemoved(t, path)
 }
@@ -159,6 +217,9 @@ func TestWriteInstanceInfoPublishesValidJSON(t *testing.T) {
 	if got.Port != 4321 || got.PID != 123 {
 		t.Fatalf("got %+v", got)
 	}
+	if got.Token == "" {
+		t.Fatal("Token empty")
+	}
 	if _, err := time.Parse(time.RFC3339, got.StartedAt); err != nil {
 		t.Fatalf("StartedAt=%q err=%v", got.StartedAt, err)
 	}
@@ -231,7 +292,7 @@ func serverPort(t *testing.T, raw string) int {
 func writeInstanceForServer(t *testing.T, srv *httptest.Server) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "console-port.json")
-	if err := WriteInstanceInfo(path, InstanceInfo{Port: serverPort(t, srv.URL), PID: 123}); err != nil {
+	if err := WriteInstanceInfo(path, InstanceInfo{Port: serverPort(t, srv.URL), PID: os.Getpid()}); err != nil {
 		t.Fatal(err)
 	}
 	return path

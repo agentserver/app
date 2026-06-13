@@ -252,8 +252,8 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 			},
 		},
 		{
-			name: "package-windows-zip.sh",
-			path: "../../scripts/package-windows-zip.sh",
+			name: "windows-package-common.sh",
+			path: "../../scripts/windows-package-common.sh",
 			want: []string{
 				"LOOM_RELEASE=\"v0.0.5\"",
 				"LOOM_DRIVER_SHA256=\"be3836eba3fabc5006d83a8edf687b0c0183e87beb493d2cb3c1799577f0c322\"",
@@ -275,19 +275,19 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 				"slave-agent.exe",
 				"dist/windows/uninstall.exe",
 				"dist/windows/token-refresher.exe",
-				"cp \"$CODEX_DESKTOP_CACHE\"",
-				"cp \"$LOOM_DRIVER_CACHE\"",
-				"cp \"$LOOM_SLAVE_CACHE\"",
-				"cp \"$LOOM_DRIVER_SKILLS_CACHE\"",
-				"cp \"$SUPERPOWER_SKILLS_CACHE\"",
-				"cp \"$LOOM_DRIVER_CODEX_PROMPTS_CACHE\"",
-				"cp packaging/windows/ensure-vscode.ps1",
-				"cp packaging/windows/ensure-codex.ps1",
-				"cp packaging/windows/codex-manifest.json",
-				"cp packaging/windows/install-driver-support.ps1",
-				"cp packaging/windows/machine.ps1",
-				"cp dist/windows/uninstall.exe",
-				"cp dist/windows/token-refresher.exe",
+				"$CODEX_DESKTOP_CACHE::codex-desktop-installer.exe",
+				"$LOOM_DRIVER_CACHE::driver-agent.exe",
+				"$LOOM_SLAVE_CACHE::slave-agent.exe",
+				"$LOOM_DRIVER_SKILLS_CACHE::driver-skills.tar.gz",
+				"$SUPERPOWER_SKILLS_CACHE::driver-superpower-skills.tar.gz",
+				"$LOOM_DRIVER_CODEX_PROMPTS_CACHE::driver-codex-prompts.tar.gz",
+				"packaging/windows/ensure-vscode.ps1::ensure-vscode.ps1",
+				"packaging/windows/ensure-codex.ps1::ensure-codex.ps1",
+				"packaging/windows/codex-manifest.json::codex-manifest.json",
+				"packaging/windows/install-driver-support.ps1::install-driver-support.ps1",
+				"packaging/windows/machine.ps1::machine.ps1",
+				"dist/windows/uninstall.exe::uninstall.exe",
+				"dist/windows/token-refresher.exe::token-refresher.exe",
 			},
 		},
 		{
@@ -329,40 +329,23 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 			name: "package-windows.sh",
 			path: "../../scripts/package-windows.sh",
 			want: []string{
-				"CODEX_DESKTOP_CACHE",
-				"LOOM_RELEASE=\"v0.0.5\"",
-				"LOOM_DRIVER_SHA256=\"be3836eba3fabc5006d83a8edf687b0c0183e87beb493d2cb3c1799577f0c322\"",
-				"LOOM_SLAVE_SHA256=\"8e0dfe1b7ce57dac387207f19ed7ebe4f2ab3a398990fcb3acc6c0c2a52bd27d\"",
-				"LOOM_DRIVER_SKILLS_SHA256=\"4466b0342eaa90284dc4de0f0c03e6d08dbe02e4c12d0da6e7cb433c61ea1a0c\"",
-				"LOOM_DRIVER_CACHE",
-				"LOOM_SLAVE_CACHE",
-				"LOOM_DRIVER_SKILLS_CACHE",
-				"SUPERPOWER_SKILLS_CACHE",
-				"LOOM_DRIVER_CODEX_PROMPTS_CACHE",
-				"driver-agent.windows-amd64.exe",
-				"slave-agent.windows-amd64.exe",
-				"driver-skills.tar.gz",
-				"driver-superpower-skills.tar.gz",
-				"driver-codex-prompts.tar.gz",
-				"Codex Installer.exe",
-				"packaging/windows/ensure-codex.ps1",
-				"packaging/windows/codex-manifest.json",
-				"packaging/windows/ensure-codex-desktop.ps1",
-				"packaging/windows/install-driver-support.ps1",
-				"packaging/windows/write-install-mode.ps1",
-				"packaging/windows/machine.ps1",
-				"packaging/windows/ChineseSimplified.isl",
-				"dist/windows/uninstall.exe",
-				"dist/windows/token-refresher.exe",
+				"source scripts/windows-package-common.sh",
+				"fetch_windows_package_assets",
+				"check_windows_package_required_files",
 				"ISCC=()",
 				"ISCC=(\"wine\" \"$HOME/.wine/drive_c/Program Files (x86)/Inno Setup 6/ISCC.exe\")",
 				"\"${ISCC[@]}\" installer.iss",
-				"\"$CODEX_DESKTOP_CACHE\"",
-				"\"$LOOM_DRIVER_CACHE\"",
-				"\"$LOOM_SLAVE_CACHE\"",
-				"\"$LOOM_DRIVER_SKILLS_CACHE\"",
-				"\"$SUPERPOWER_SKILLS_CACHE\"",
-				"\"$LOOM_DRIVER_CODEX_PROMPTS_CACHE\"",
+			},
+		},
+		{
+			name: "package-windows-zip.sh",
+			path: "../../scripts/package-windows-zip.sh",
+			want: []string{
+				"source scripts/windows-package-common.sh",
+				"fetch_windows_package_assets",
+				"check_windows_package_required_files",
+				"copy_portable_payloads \"$STAGE\"",
+				"agentserver-app-$VERSION-portable.zip",
 			},
 		},
 	} {
@@ -377,6 +360,46 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWindowsPackageScriptsUseSharedPayloadManifest(t *testing.T) {
+	common, err := os.ReadFile("../../scripts/windows-package-common.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commonText := string(common)
+	for _, want := range []string{
+		"WINDOWS_PACKAGE_REQUIRED_FILES=(",
+		"PORTABLE_PAYLOADS=(",
+		"fetch_windows_package_assets()",
+		"copy_portable_payloads()",
+		"dist/windows/token-refresher.exe::token-refresher.exe",
+		"packaging/windows/codex-manifest.json::codex-manifest.json",
+		"$LOOM_DRIVER_CODEX_PROMPTS_CACHE::driver-codex-prompts.tar.gz",
+	} {
+		if !strings.Contains(commonText, want) {
+			t.Fatalf("windows-package-common.sh missing %q", want)
+		}
+	}
+	for _, path := range []string{
+		"../../scripts/package-windows.sh",
+		"../../scripts/package-windows-zip.sh",
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(body)
+		for _, want := range []string{
+			`source scripts/windows-package-common.sh`,
+			`fetch_windows_package_assets`,
+			`check_windows_package_required_files`,
+		} {
+			if !strings.Contains(s, want) {
+				t.Fatalf("%s missing shared manifest use %q", path, want)
+			}
+		}
 	}
 }
 
@@ -433,7 +456,7 @@ func TestWindowsPackagingIncludesCodexRuntimeEnsure(t *testing.T) {
 			},
 		},
 		{
-			path: "../../scripts/package-windows.sh",
+			path: "../../scripts/windows-package-common.sh",
 			want: []string{
 				"packaging/windows/ensure-codex.ps1",
 				"packaging/windows/codex-manifest.json",
@@ -442,8 +465,8 @@ func TestWindowsPackagingIncludesCodexRuntimeEnsure(t *testing.T) {
 		{
 			path: "../../scripts/package-windows-zip.sh",
 			want: []string{
-				"cp packaging/windows/ensure-codex.ps1",
-				"cp packaging/windows/codex-manifest.json",
+				"source scripts/windows-package-common.sh",
+				"copy_portable_payloads",
 			},
 		},
 	} {
@@ -569,6 +592,8 @@ func TestWindowsDriverSupportScriptInstallsSkillsAndConcisePrompt(t *testing.T) 
 	s := string(body)
 	for _, want := range []string{
 		"function Expand-SkillsArchive",
+		"function Expand-SafeTarGzArchive",
+		"function Assert-SafeTarArchive",
 		"function Read-SkillsManifest",
 		"function Write-SkillsManifest",
 		"function Install-ManagedSkillFile",
@@ -581,7 +606,8 @@ func TestWindowsDriverSupportScriptInstallsSkillsAndConcisePrompt(t *testing.T) 
 		"prompts-codex\\AGENTS.md",
 		"ReadAllText($promptPath)",
 		"agentserver-app loom driver prompt:start",
-		"tar.exe -xzf",
+		"Assert-SafeTarArchive $ArchivePath",
+		"& tar.exe -xzf $ArchivePath -C $Destination",
 		".agents\\skills",
 		".codex\\skills",
 	} {
@@ -592,6 +618,7 @@ func TestWindowsDriverSupportScriptInstallsSkillsAndConcisePrompt(t *testing.T) 
 	for _, notWant := range []string{
 		"$CodexDriverPrompt",
 		"Copy-Item $_.FullName -Destination $DestRoot -Recurse -Force",
+		"& tar.exe -xzf $ArchivePath -C $tmp",
 	} {
 		if strings.Contains(s, notWant) {
 			t.Fatalf("install-driver-support.ps1 should not contain %q", notWant)
@@ -647,8 +674,7 @@ func TestWindowsDriverCodexPromptsPackageUsesConcisePrompt(t *testing.T) {
 
 func TestWindowsPackageScriptsBuildDriverCodexPromptsFromLocalConciseSource(t *testing.T) {
 	for _, path := range []string{
-		"../../scripts/package-windows.sh",
-		"../../scripts/package-windows-zip.sh",
+		"../../scripts/windows-package-common.sh",
 	} {
 		body, err := os.ReadFile(path)
 		if err != nil {
@@ -1183,6 +1209,22 @@ func TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback(t *tes
 	}
 }
 
+func TestEnsureCodexDesktopDetectionUsesExactPackageFamily(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-codex-desktop.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	if !strings.Contains(s, "$_.PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0'") {
+		t.Fatalf("ensure-codex-desktop.ps1 should match the exact Codex PackageFamilyName:\n%s", s)
+	}
+	for _, notWant := range []string{"$_.Name -like '*Codex*'", "$_.PackageFullName -like '*Codex*'"} {
+		if strings.Contains(s, notWant) {
+			t.Fatalf("ensure-codex-desktop.ps1 should not use fuzzy Codex appx matching %q:\n%s", notWant, s)
+		}
+	}
+}
+
 func TestEnsureCodexDesktopScriptFallsBackToWingetWhenBundledInstallerFails(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/ensure-codex-desktop.ps1")
 	if err != nil {
@@ -1196,7 +1238,7 @@ func TestEnsureCodexDesktopScriptFallsBackToWingetWhenBundledInstallerFails(t *t
 		"try {",
 		"Start-Process -FilePath $LocalInstallerPath -Wait -PassThru",
 		"} catch {",
-		"Bundled Codex Desktop installer failed to start",
+		"Bundled Codex Desktop installer failed verification or startup",
 		"Bundled Codex Desktop installer failed with exit code",
 		"falling back to winget",
 		"return $false",
@@ -1208,39 +1250,47 @@ func TestEnsureCodexDesktopScriptFallsBackToWingetWhenBundledInstallerFails(t *t
 }
 
 func TestWindowsPackageScriptsRefreshCodexDesktopInstallerEveryBuild(t *testing.T) {
+	body, err := os.ReadFile("../../scripts/windows-package-common.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	fetch := strings.Index(s, "Fetching Codex Desktop installer")
+	if fetch < 0 {
+		t.Fatal("windows-package-common.sh missing Codex Desktop installer download block")
+	}
+	if strings.Contains(s[:fetch], `if [[ ! -f "$CODEX_DESKTOP_CACHE" ]]`) {
+		t.Fatal("Codex Desktop installer must refresh every build, not skip download when cache exists")
+	}
+	for _, want := range []string{
+		`CODEX_DESKTOP_MIN_SIZE=`,
+		`verify_codex_desktop_installer()`,
+		`head -c 2 "$path"`,
+		`[[ "$magic" == "MZ" ]]`,
+		`codex_desktop_tmp=$(mktemp "$CODEX_DESKTOP_CACHE.part.XXXXXX")`,
+		`curl --fail --location --retry 2 --retry-delay 2 --output "$codex_desktop_tmp" "$CODEX_DESKTOP_URL"`,
+		`if ! verify_codex_desktop_installer "$codex_desktop_tmp"; then`,
+		`ERROR: invalid Codex Desktop installer download`,
+		`mv -f "$codex_desktop_tmp" "$CODEX_DESKTOP_CACHE"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("windows-package-common.sh should refresh Codex Desktop installer; missing %q", want)
+		}
+	}
+	if strings.Contains(s, `rm -f "$CODEX_DESKTOP_CACHE"`) {
+		t.Fatal("windows-package-common.sh should not remove the shared Codex Desktop cache before publishing a verified replacement")
+	}
 	for _, path := range []string{
 		"../../scripts/package-windows.sh",
 		"../../scripts/package-windows-zip.sh",
 	} {
-		t.Run(path, func(t *testing.T) {
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			s := string(body)
-			fetch := strings.Index(s, "Fetching Codex Desktop installer")
-			if fetch < 0 {
-				t.Fatalf("%s missing Codex Desktop installer download block", path)
-			}
-			if strings.Contains(s[:fetch], `if [[ ! -f "$CODEX_DESKTOP_CACHE" ]]`) {
-				t.Fatalf("%s must refresh the Codex Desktop installer every build, not skip download when cache exists", path)
-			}
-			for _, want := range []string{
-				`CODEX_DESKTOP_MIN_SIZE=`,
-				`verify_codex_desktop_installer()`,
-				`head -c 2 "$path"`,
-				`[[ "$magic" == "MZ" ]]`,
-				`rm -f "$CODEX_DESKTOP_CACHE" "$CODEX_DESKTOP_CACHE.part"`,
-				`curl --fail --location --retry 2 --retry-delay 2 --output "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_URL"`,
-				`if ! verify_codex_desktop_installer "$CODEX_DESKTOP_CACHE.part"; then`,
-				`ERROR: invalid Codex Desktop installer download`,
-				`mv "$CODEX_DESKTOP_CACHE.part" "$CODEX_DESKTOP_CACHE"`,
-			} {
-				if !strings.Contains(s, want) {
-					t.Fatalf("%s should refresh Codex Desktop installer; missing %q", path, want)
-				}
-			}
-		})
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), `fetch_windows_package_assets`) {
+			t.Fatalf("%s should call shared Codex Desktop refresh", path)
+		}
 	}
 }
 

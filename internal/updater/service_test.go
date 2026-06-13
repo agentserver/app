@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -67,6 +69,155 @@ func TestServiceCheckReportsAvailableUpdate(t *testing.T) {
 	}
 	if saved.Status != StatusAvailable {
 		t.Fatalf("saved Status=%q, want %q", saved.Status, StatusAvailable)
+	}
+}
+
+func TestNormalizeStateForCurrentVersionClearsAbandonedTransientStatuses(t *testing.T) {
+	for _, status := range []Status{StatusChecking, StatusDownloading} {
+		t.Run(string(status), func(t *testing.T) {
+			got := NormalizeStateForCurrentVersion(State{
+				Status: status,
+				Update: &AvailableUpdate{
+					Version: "1.2.0",
+					URL:     "https://assets.agent.cs.ac.cn/agentserver-app.exe",
+					SHA256:  strings.Repeat("a", 64),
+					Size:    12,
+				},
+				LastError: "old error",
+			}, "1.0.0")
+
+			if got.Status != StatusIdle {
+				t.Fatalf("Status=%q, want %q", got.Status, StatusIdle)
+			}
+			if got.Update != nil || got.LastError != "" {
+				t.Fatalf("normalized state kept stale update/error: %+v", got)
+			}
+		})
+	}
+}
+
+func TestNormalizeStateForCurrentVersionMarksCompletedInstallerLatest(t *testing.T) {
+	got := NormalizeStateForCurrentVersion(State{
+		Status: StatusInstallerStarted,
+		Update: &AvailableUpdate{
+			Version: "1.2.0",
+			URL:     "https://assets.agent.cs.ac.cn/agentserver-app.exe",
+			SHA256:  strings.Repeat("a", 64),
+			Size:    12,
+		},
+		LastError: "old error",
+	}, "1.2.0")
+
+	if got.Status != StatusLatest {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusLatest)
+	}
+	if got.Update != nil || got.LastError != "" {
+		t.Fatalf("normalized state kept stale update/error: %+v", got)
+	}
+}
+
+func TestServiceAutomaticCheckIgnoresFutureLastCheckedAt(t *testing.T) {
+	now := time.Date(2026, 6, 12, 11, 0, 0, 0, time.UTC)
+	manifest := Manifest{
+		Version: "0.1.2",
+		URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-0.1.2-setup.exe",
+		SHA256:  strings.Repeat("b", 64),
+		Size:    123,
+	}
+	requested := false
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = true
+		if err := json.NewEncoder(w).Encode(manifest); err != nil {
+			t.Fatalf("Encode manifest: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	store := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	if err := store.Save(State{
+		Status:        StatusLatest,
+		LastCheckedAt: now.Add(48 * time.Hour),
+	}); err != nil {
+		t.Fatalf("Save state: %v", err)
+	}
+
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		ManifestURL:    server.URL,
+		State:          store,
+		Client:         assetsHostClient(t, server),
+		Now:            func() time.Time { return now },
+	}.Check(context.Background(), true)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !requested {
+		t.Fatal("future LastCheckedAt throttled automatic check")
+	}
+	if got.Status != StatusAvailable {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusAvailable)
+	}
+}
+
+func TestServiceCheckSerializesConcurrentRequests(t *testing.T) {
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(releaseFirst) })
+	var requests atomic.Int32
+	manifest := Manifest{
+		Version: "0.1.2",
+		URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-0.1.2-setup.exe",
+		SHA256:  strings.Repeat("c", 64),
+		Size:    123,
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		}
+		if err := json.NewEncoder(w).Encode(manifest); err != nil {
+			t.Fatalf("Encode manifest: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	store := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	svc := Service{
+		CurrentVersion: "0.1.1",
+		ManifestURL:    server.URL,
+		State:          store,
+		Client:         assetsHostClient(t, server),
+		Now:            func() time.Time { return time.Date(2026, 6, 12, 11, 0, 0, 0, time.UTC) },
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := svc.Check(context.Background(), false)
+		firstDone <- err
+	}()
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first Check did not start")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := svc.Check(context.Background(), false)
+		secondDone <- err
+	}()
+	select {
+	case <-secondDone:
+		t.Fatal("second Check returned before first Check released")
+	case <-time.After(100 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(releaseFirst) })
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Check: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second Check: %v", err)
 	}
 }
 

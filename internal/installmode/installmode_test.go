@@ -39,8 +39,8 @@ func TestReadMalformedDefaultsToCodexDesktop(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := Read(path)
-	if err != nil {
-		t.Fatalf("Read malformed: %v", err)
+	if err == nil {
+		t.Fatal("Read malformed returned nil error")
 	}
 	if got != state.FrontendModeCodexDesktop {
 		t.Fatalf("mode = %q", got)

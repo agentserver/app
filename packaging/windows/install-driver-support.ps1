@@ -82,6 +82,52 @@ function Install-ManagedSkillFile([string]$Source, [string]$Dest, [string]$Rel, 
     $Manifest[$relKey] = $nextHash
 }
 
+function Assert-SafeTarEntryName([string]$Name) {
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        throw "Archive contains an empty path"
+    }
+    $slashName = $Name.Replace('\', '/')
+    if ($slashName.StartsWith('/') -or ($slashName -match '^[A-Za-z]:')) {
+        throw "Archive entry must be relative: $Name"
+    }
+    foreach ($part in $slashName.Split('/')) {
+        if ($part -eq '..') {
+            throw "Archive entry escapes destination: $Name"
+        }
+    }
+}
+
+function Assert-SafeTarArchive([string]$ArchivePath) {
+    $names = & tar.exe -tzf $ArchivePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "tar.exe failed to list $ArchivePath with exit code $LASTEXITCODE"
+    }
+    foreach ($name in @($names)) {
+        Assert-SafeTarEntryName $name
+    }
+    $listing = & tar.exe -tvzf $ArchivePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "tar.exe failed to inspect $ArchivePath with exit code $LASTEXITCODE"
+    }
+    foreach ($line in @($listing)) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        $type = $line.Substring(0, 1)
+        if ($type -eq 'l' -or $type -eq 'h') {
+            throw "Archive contains unsupported link entry: $line"
+        }
+    }
+}
+
+function Expand-SafeTarGzArchive([string]$ArchivePath, [string]$Destination) {
+    Assert-SafeTarArchive $ArchivePath
+    & tar.exe -xzf $ArchivePath -C $Destination
+    if ($LASTEXITCODE -ne 0) {
+        throw "tar.exe failed to extract $ArchivePath with exit code $LASTEXITCODE"
+    }
+}
+
 function Expand-SkillsArchive([string]$ArchivePath, [string]$DestRoot) {
     if (-not (Test-Path $ArchivePath)) {
         return
@@ -96,10 +142,7 @@ function Expand-SkillsArchive([string]$ArchivePath, [string]$DestRoot) {
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     try {
         $manifest = Read-SkillsManifest $DestRoot
-        & tar.exe -xzf $ArchivePath -C $tmp
-        if ($LASTEXITCODE -ne 0) {
-            throw "tar.exe failed to extract $ArchivePath with exit code $LASTEXITCODE"
-        }
+        Expand-SafeTarGzArchive $ArchivePath $tmp
         $sourceRoot = $tmp
         $skillsRoot = Join-Path $tmp 'skills'
         if (Test-Path $skillsRoot) {
@@ -138,10 +181,7 @@ function Read-DriverCodexPrompt([string]$ArchivePath) {
     $tmp = Join-Path $env:TEMP ("agentserver-codex-prompt-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $tmp | Out-Null
     try {
-        & tar.exe -xzf $ArchivePath -C $tmp
-        if ($LASTEXITCODE -ne 0) {
-            throw "tar.exe failed to extract $ArchivePath with exit code $LASTEXITCODE"
-        }
+        Expand-SafeTarGzArchive $ArchivePath $tmp
         $promptPath = Join-Path $tmp 'prompts-codex\AGENTS.md'
         if (-not (Test-Path $promptPath)) {
             return $null

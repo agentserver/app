@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushPromises, mount } from '@vue/test-utils';
+import { ElMessageBox } from 'element-plus';
 import Dashboard from '../components/Dashboard.vue';
 import * as api from '../api';
 
@@ -155,7 +156,7 @@ describe('Dashboard', () => {
     mockConsoleState();
     const check = deferred<api.ConsoleUpdateState>();
     vi.spyOn(api, 'checkConsoleUpdate').mockReturnValue(check.promise);
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never);
     const installSpy = vi.spyOn(api, 'installConsoleUpdate').mockResolvedValue(consoleUpdate({
       status: 'installer_started',
     }));
@@ -205,7 +206,8 @@ describe('Dashboard', () => {
       update: { version: '1.3.0' },
     }));
     mockConsoleState();
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const windowConfirmSpy = vi.spyOn(window, 'confirm');
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockRejectedValue(new Error('cancel'));
     const installSpy = vi.spyOn(api, 'installConsoleUpdate').mockResolvedValue(consoleUpdate({
       status: 'installer_started',
     }));
@@ -217,7 +219,12 @@ describe('Dashboard', () => {
     await installButton.trigger('click');
     await flushPromises();
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('1.3.0'));
+    expect(windowConfirmSpy).not.toHaveBeenCalled();
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining('1.3.0'),
+      expect.any(String),
+      expect.any(Object),
+    );
     expect(installSpy).not.toHaveBeenCalled();
   });
 
@@ -231,7 +238,8 @@ describe('Dashboard', () => {
       },
     }));
     mockConsoleState();
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const windowConfirmSpy = vi.spyOn(window, 'confirm');
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never);
     const installSpy = vi.spyOn(api, 'installConsoleUpdate').mockResolvedValue(consoleUpdate({
       status: 'installer_started',
       update: { version: '1.3.0' },
@@ -244,6 +252,7 @@ describe('Dashboard', () => {
 
     expect(installSpy).toHaveBeenCalledTimes(1);
     expect(installSpy).toHaveBeenCalledWith();
+    expect(windowConfirmSpy).not.toHaveBeenCalled();
     expect(w.text()).toContain('安装程序已启动');
   });
 
@@ -258,7 +267,7 @@ describe('Dashboard', () => {
         update: undefined,
       }));
     mockConsoleState();
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never);
     vi.spyOn(api, 'installConsoleUpdate').mockRejectedValue(new api.OnboardingError(
       '/api/console/update/install 返回 409: update changed',
       409,
@@ -377,7 +386,8 @@ describe('Dashboard', () => {
 
   it('logs out modelserver after confirmation and refreshes state', async () => {
     mockConsoleState();
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const windowConfirmSpy = vi.spyOn(window, 'confirm');
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never);
     const logoutSpy = vi.spyOn(api, 'logoutConsoleModelserver').mockResolvedValue({ state: 'logged_out' });
     const refreshed = consoleState();
     refreshed.modelserver = { reconnect_required: true, auth_message: '大模型连接已失效，请重新连接。' };
@@ -391,7 +401,12 @@ describe('Dashboard', () => {
     await logoutButton!.trigger('click');
     await flushPromises();
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('退出大模型登录'));
+    expect(windowConfirmSpy).not.toHaveBeenCalled();
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining('退出大模型登录'),
+      expect.any(String),
+      expect.any(Object),
+    );
     expect(logoutSpy).toHaveBeenCalledTimes(1);
     expect(refreshSpy).toHaveBeenCalledTimes(1);
     expect(w.text()).toContain('大模型连接已失效，请重新连接。');
@@ -518,6 +533,45 @@ describe('Dashboard', () => {
     const authLink = w.find('a[href="https://auth.example/device"]');
     expect(authLink.exists()).toBe(true);
     expect(authLink.text()).toContain('认证');
+  });
+
+  it('does not render unsafe oauth reconnect links or slave auth links', async () => {
+    const expired = consoleState();
+    expired.modelserver.reconnect_required = true;
+    expired.modelserver.auth_message = '大模型连接已失效，请重新连接。';
+    expired.agentserver.reconnect_required = true;
+    expired.agentserver.auth_message = '星池工作区连接已失效，请重新连接。';
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(expired);
+    vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves({
+      slaves: [{
+        id: 'sl-1',
+        name: 'worker',
+        display_name: 'devbox-worker',
+        folder: '/repo/app',
+        status: 'auth_required',
+        auth_url: "javascript:fetch('/api/console/quit',{method:'POST'})",
+      }],
+    }));
+    vi.spyOn(api, 'startStep')
+      .mockResolvedValueOnce({
+        state: 'started',
+        oauth_url: "javascript:fetch('/api/console/quit',{method:'POST'})",
+      })
+      .mockResolvedValueOnce({
+        state: 'started',
+        oauth_url: 'data:text/html,<script>alert(1)</script>',
+      });
+    vi.spyOn(api, 'pollStepStatus').mockReturnValue(new Promise(() => {}));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await w.findAll('button').find(b => b.text().includes('重新连接大模型'))!.trigger('click');
+    await w.findAll('button').find(b => b.text().includes('重新连接星池工作区'))!.trigger('click');
+    await flushPromises();
+
+    expect(w.find('a[href^="javascript:"]').exists()).toBe(false);
+    expect(w.find('a[href^="data:"]').exists()).toBe(false);
+    expect(w.text()).not.toContain('完成认证');
   });
 
   it('creates a local slave with folder and custom name then refreshes', async () => {
@@ -773,7 +827,7 @@ describe('Dashboard', () => {
     const pauseSpy = vi.spyOn(api, 'pauseConsoleSlave').mockResolvedValue({} as api.ConsoleSlave);
     const openRemoteSpy = vi.spyOn(api, 'openConsoleSlaveRemote').mockResolvedValue({ state: 'unavailable' });
     const deleteSpy = vi.spyOn(api, 'deleteConsoleSlave').mockResolvedValue({ state: 'deleted' });
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never);
 
     const w = mount(Dashboard);
     await flushPromises();
@@ -788,7 +842,11 @@ describe('Dashboard', () => {
     expect(restartSpy).toHaveBeenCalledWith('sl-1');
     expect(pauseSpy).toHaveBeenCalledWith('sl-1');
     expect(openRemoteSpy).toHaveBeenCalledWith('sl-1');
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('删除这台电脑上的本地配置和进程'));
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining('删除这台电脑上的本地配置和进程'),
+      expect.any(String),
+      expect.any(Object),
+    );
     expect(deleteSpy).toHaveBeenCalledWith('sl-1');
     expect(getSlavesSpy).toHaveBeenCalledTimes(4);
   });
@@ -809,7 +867,7 @@ describe('Dashboard', () => {
       url: 'https://agent.cs.ac.cn/w/workspace-1/sandboxes/sandbox-1',
     });
     const deleteSpy = vi.spyOn(api, 'deleteConsoleSlave').mockResolvedValue({ state: 'deleted' });
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never);
 
     const w = mount(Dashboard);
     await flushPromises();
@@ -825,7 +883,11 @@ describe('Dashboard', () => {
     await w.find('[data-test="delete-slave-sl-1"]').trigger('click');
     await flushPromises();
 
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('我已在 agentserver 网页删除远程记录'));
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining('我已在 agentserver 网页删除远程记录'),
+      expect.any(String),
+      expect.any(Object),
+    );
     expect(deleteSpy).toHaveBeenCalledWith('sl-1');
     expect(getSlavesSpy).toHaveBeenCalledTimes(2);
   });
@@ -843,7 +905,7 @@ describe('Dashboard', () => {
     }));
     const openRemoteSpy = vi.spyOn(api, 'openConsoleSlaveRemote').mockRejectedValue(new Error('config unreadable'));
     const deleteSpy = vi.spyOn(api, 'deleteConsoleSlave').mockResolvedValue({ state: 'deleted' });
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never);
 
     const w = mount(Dashboard);
     await flushPromises();
@@ -852,7 +914,11 @@ describe('Dashboard', () => {
     await flushPromises();
 
     expect(openRemoteSpy).toHaveBeenCalledWith('sl-1');
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('远程记录可能需要手动清理'));
+    expect(confirmSpy).toHaveBeenCalledWith(
+      expect.stringContaining('远程记录可能需要手动清理'),
+      expect.any(String),
+      expect.any(Object),
+    );
     expect(deleteSpy).toHaveBeenCalledWith('sl-1');
     expect(getSlavesSpy).toHaveBeenCalledTimes(2);
     expect(w.text()).not.toContain('config unreadable');

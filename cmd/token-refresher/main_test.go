@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -87,6 +88,23 @@ func TestRunWithDepsServesLocalModelProxy(t *testing.T) {
 	case <-refreshCalled:
 		t.Fatal("refresh should not run while stored token expires in the future")
 	default:
+	}
+}
+
+func TestRunWithDepsReturnsWhenDaemonLockAlreadyHeld(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "token-refresher.lock")
+	lock, err := tokenrefresh.AcquireDaemonLock(lockPath)
+	if err != nil {
+		t.Fatalf("AcquireDaemonLock: %v", err)
+	}
+	defer lock.Close()
+
+	err = runWithDeps(context.Background(), runDeps{
+		Secrets:  secrets.New(filepath.Join(t.TempDir(), "secrets.json")),
+		LockPath: lockPath,
+	})
+	if !errors.Is(err, tokenrefresh.ErrDaemonAlreadyRunning) {
+		t.Fatalf("runWithDeps err=%v, want %v", err, tokenrefresh.ErrDaemonAlreadyRunning)
 	}
 }
 

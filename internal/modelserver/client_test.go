@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestListProjects(t *testing.T) {
@@ -167,6 +169,31 @@ func TestProxyUsage(t *testing.T) {
 	}
 	if got[1].Window != "7d" || got[1].Percentage != 22.0 {
 		t.Fatalf("got[1]=%+v", got[1])
+	}
+}
+
+func TestNewClientUsesBoundedHTTPTimeout(t *testing.T) {
+	got := New("https://code.cs.ac.cn").http.Timeout
+	if got != 60*time.Second {
+		t.Fatalf("timeout=%s, want 60s", got)
+	}
+}
+
+func TestErrorResponseDoesNotEchoBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Authorization: Bearer secret-token", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, err := New(srv.URL).ListProjects(context.Background(), "secret-token")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "Authorization") {
+		t.Fatalf("error leaked response body: %q", err)
+	}
+	if !strings.Contains(err.Error(), "status 401") {
+		t.Fatalf("error=%q, want status", err)
 	}
 }
 

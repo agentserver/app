@@ -73,8 +73,10 @@ func RefreshOnce(ctx context.Context, opts Options) (time.Time, error) {
 	}
 	rt, err := opts.Secrets.Get(RefreshTokenKey)
 	if err != nil {
-		_ = MarkReauthRequired(opts.Secrets, ErrNoRefreshToken, opts.Now())
-		return time.Time{}, ErrNoRefreshToken
+		if errors.Is(err, secrets.ErrNotFound) {
+			return time.Time{}, ErrNoRefreshToken
+		}
+		return time.Time{}, err
 	}
 	tok, err := opts.Refresh(ctx, opts.OAuth, rt)
 	if err != nil {
@@ -177,6 +179,9 @@ func Run(ctx context.Context, opts Options) error {
 		}
 		_, err := RefreshOnce(ctx, opts)
 		if err != nil {
+			if errors.Is(err, ErrNoRefreshToken) {
+				return err
+			}
 			lastErr = err
 			if opts.Logf != nil {
 				opts.Logf("token refresh failed: %v", err)
@@ -193,6 +198,17 @@ func StartDaemon(exePath string) error {
 	}
 	if _, err := os.Stat(exePath); err != nil {
 		return err
+	}
+	lockPath, err := DefaultDaemonLockPath()
+	if err == nil {
+		if lock, err := AcquireDaemonLock(lockPath); err != nil {
+			if errors.Is(err, ErrDaemonAlreadyRunning) {
+				return nil
+			}
+			return err
+		} else {
+			_ = lock.Close()
+		}
 	}
 	cmd := exec.Command(exePath, "--daemon")
 	cmd.Stdin = nil

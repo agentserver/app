@@ -21,6 +21,8 @@ const (
 	loomPromptEndMarker   = "<!-- agentserver-app loom driver prompt:end -->"
 )
 
+var maxArchiveEntryBytes int64 = 8 * 1024 * 1024
+
 type DriverSupportInput struct {
 	UserHome                    string
 	SkillsArchivePath           string
@@ -119,7 +121,7 @@ func extractSkillsArchive(archivePath, destRoot string) error {
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			data, err := io.ReadAll(r)
+			data, err := readTarEntryLimited(h, r)
 			if err != nil {
 				return fmt.Errorf("read tar entry %s: %w", h.Name, err)
 			}
@@ -158,7 +160,7 @@ func readArchiveFile(archivePath, want string) ([]byte, bool, error) {
 		if h.Typeflag != tar.TypeReg {
 			return fmt.Errorf("tar entry %s is not a regular file", h.Name)
 		}
-		out, err = io.ReadAll(r)
+		out, err = readTarEntryLimited(h, r)
 		if err != nil {
 			return fmt.Errorf("read tar entry %s: %w", h.Name, err)
 		}
@@ -166,6 +168,20 @@ func readArchiveFile(archivePath, want string) ([]byte, bool, error) {
 		return nil
 	})
 	return out, found, err
+}
+
+func readTarEntryLimited(h *tar.Header, r io.Reader) ([]byte, error) {
+	if h.Size > maxArchiveEntryBytes {
+		return nil, fmt.Errorf("tar entry too large: %s is %d bytes, limit %d", h.Name, h.Size, maxArchiveEntryBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(r, maxArchiveEntryBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxArchiveEntryBytes {
+		return nil, fmt.Errorf("tar entry too large: %s exceeds limit %d", h.Name, maxArchiveEntryBytes)
+	}
+	return data, nil
 }
 
 func walkTarGz(archivePath string, fn func(*tar.Header, io.Reader) error) error {

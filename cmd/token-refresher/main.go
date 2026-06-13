@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"log"
+	"path/filepath"
 
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
@@ -17,7 +18,9 @@ import (
 func main() {
 	_ = flag.Bool("daemon", false, "run token refresh loop")
 	flag.Parse()
-	if err := run(); err != nil && !errors.Is(err, tokenrefresh.ErrNoRefreshToken) {
+	if err := run(); err != nil &&
+		!errors.Is(err, tokenrefresh.ErrNoRefreshToken) &&
+		!errors.Is(err, tokenrefresh.ErrDaemonAlreadyRunning) {
 		log.Fatalf("token-refresher: %v", err)
 	}
 }
@@ -28,9 +31,10 @@ func run() error {
 		return err
 	}
 	return runWithDeps(context.Background(), runDeps{
-		Secrets: secrets.New(p.SecretsFile),
-		OAuth:   modelserver.OAuthConfig(),
-		Logf:    log.Printf,
+		Secrets:  secrets.New(p.SecretsFile),
+		OAuth:    modelserver.OAuthConfig(),
+		LockPath: filepath.Join(p.InstallRoot, "token-refresher.lock"),
+		Logf:     log.Printf,
 	})
 }
 
@@ -39,6 +43,7 @@ type runDeps struct {
 	OAuth                oauth.AuthCodeConfig
 	ProxyAddr            string
 	ProxyUpstreamBaseURL string
+	LockPath             string
 	Refresh              func(context.Context, oauth.AuthCodeConfig, string) (oauth.Token, error)
 	Logf                 func(string, ...any)
 }
@@ -49,6 +54,13 @@ func runWithDeps(ctx context.Context, deps runDeps) error {
 	}
 	if deps.Logf == nil {
 		deps.Logf = log.Printf
+	}
+	if deps.LockPath != "" {
+		lock, err := tokenrefresh.AcquireDaemonLock(deps.LockPath)
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
 	}
 
 	proxyErr := make(chan error, 1)

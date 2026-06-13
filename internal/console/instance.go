@@ -2,6 +2,8 @@ package console
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,7 +16,18 @@ import (
 type InstanceInfo struct {
 	Port      int    `json:"port"`
 	PID       int    `json:"pid"`
+	Token     string `json:"token,omitempty"`
 	StartedAt string `json:"started_at,omitempty"`
+}
+
+const maxHealthBodyBytes = 64 * 1024
+
+func NewInstanceToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 func WriteInstanceInfo(path string, info InstanceInfo) error {
@@ -23,6 +36,13 @@ func WriteInstanceInfo(path string, info InstanceInfo) error {
 	}
 	if info.StartedAt == "" {
 		info.StartedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if info.Token == "" {
+		token, err := NewInstanceToken()
+		if err != nil {
+			return err
+		}
+		info.Token = token
 	}
 	b, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
@@ -63,7 +83,14 @@ func DiscoverInstance(ctx context.Context, path string) (InstanceInfo, bool) {
 		return InstanceInfo{}, false
 	}
 	var info InstanceInfo
-	if err := json.Unmarshal(b, &info); err != nil || info.Port <= 0 {
+	if err := json.Unmarshal(b, &info); err != nil || info.Port <= 0 || info.Token == "" {
+		_ = os.Remove(path)
+		return InstanceInfo{}, false
+	}
+	if ctx.Err() != nil {
+		return InstanceInfo{}, false
+	}
+	if !instanceProcessBelongsToCurrentUser(info.PID) {
 		_ = os.Remove(path)
 		return InstanceInfo{}, false
 	}
@@ -93,7 +120,7 @@ func DiscoverInstance(ctx context.Context, path string) (InstanceInfo, bool) {
 	var health struct {
 		State string `json:"state"`
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := readLimited(resp.Body, maxHealthBodyBytes)
 	if err != nil {
 		if ctx.Err() != nil {
 			return InstanceInfo{}, false
@@ -106,4 +133,15 @@ func DiscoverInstance(ctx context.Context, path string) (InstanceInfo, bool) {
 		return InstanceInfo{}, false
 	}
 	return info, true
+}
+
+func readLimited(r io.Reader, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("response body exceeds %d bytes", limit)
+	}
+	return body, nil
 }

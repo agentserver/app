@@ -206,7 +206,31 @@ func (f *FileReminderStore) saveLocked() {
 		f.lastErr = err
 		return
 	}
-	if err := os.WriteFile(f.path, b, 0o644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(f.path), filepath.Base(f.path)+".*.tmp")
+	if err != nil {
+		f.lastErr = err
+		return
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		f.lastErr = err
+		return
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		f.lastErr = err
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		f.lastErr = err
+		return
+	}
+	if err := os.Rename(tmpPath, f.path); err != nil {
+		_ = os.Remove(tmpPath)
 		f.lastErr = err
 		return
 	}

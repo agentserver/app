@@ -292,10 +292,14 @@ func (r *Registry) saveLocked(all []Slave) error {
 		_ = closeTemp()
 		return fmt.Errorf("write slaves temp: %w", err)
 	}
+	if err := f.Sync(); err != nil {
+		_ = closeTemp()
+		return fmt.Errorf("sync slaves temp: %w", err)
+	}
 	if err := closeTemp(); err != nil {
 		return fmt.Errorf("close slaves temp: %w", err)
 	}
-	if err := os.Rename(tmpPath, r.path); err != nil {
+	if err := replaceFile(tmpPath, r.path); err != nil {
 		return fmt.Errorf("publish slaves: %w", err)
 	}
 	tmpPath = ""

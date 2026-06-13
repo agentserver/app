@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,9 +30,11 @@ type ManagerDeps struct {
 }
 
 type Manager struct {
-	Machines *MachineStore
-	Registry *Registry
-	d        ManagerDeps
+	Machines    *MachineStore
+	Registry    *Registry
+	d           ManagerDeps
+	slaveLockMu sync.Mutex
+	slaveLocks  map[string]*sync.Mutex
 }
 
 type Runner interface {
@@ -84,7 +87,7 @@ func NewManager(d ManagerDeps) *Manager {
 	if d.Runner == nil {
 		d.Runner = execRunner{}
 	}
-	return &Manager{Machines: d.Machines, Registry: d.Registry, d: d}
+	return &Manager{Machines: d.Machines, Registry: d.Registry, d: d, slaveLocks: map[string]*sync.Mutex{}}
 }
 
 func StopProcess(ctx context.Context, pid int, expectedExe string) error {
@@ -153,6 +156,8 @@ func (m *Manager) Restart(ctx context.Context, id string) (Slave, error) {
 	if err := m.requireDeps(false, true, true); err != nil {
 		return Slave{}, err
 	}
+	unlock := m.lockSlave(id)
+	defer unlock()
 	sl, err := m.d.Registry.Get(id)
 	if err != nil {
 		return Slave{}, err
@@ -182,6 +187,8 @@ func (m *Manager) Pause(ctx context.Context, id string) (Slave, error) {
 	if err := m.requireDeps(false, true, true); err != nil {
 		return Slave{}, err
 	}
+	unlock := m.lockSlave(id)
+	defer unlock()
 	sl, err := m.d.Registry.Get(id)
 	if err != nil {
 		return Slave{}, err
@@ -212,6 +219,8 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if err := m.requireDeps(false, true, true); err != nil {
 		return err
 	}
+	unlock := m.lockSlave(id)
+	defer unlock()
 	sl, err := m.d.Registry.Get(id)
 	if err != nil {
 		return err
@@ -281,14 +290,15 @@ func (m *Manager) start(ctx context.Context, sl Slave) (Slave, error) {
 	if err != nil {
 		return recordStartError(err)
 	}
+	authURL := sanitizeAuthURL(res.AuthURL)
 	status := StatusStarting
-	if res.AuthURL != "" {
+	if authURL != "" {
 		status = StatusAuthRequired
 	}
 	updated, err := m.d.Registry.Update(sl.ID, func(s *Slave) error {
 		s.Status = status
 		s.PID = res.PID
-		s.AuthURL = res.AuthURL
+		s.AuthURL = authURL
 		s.LastError = ""
 		return nil
 	})
@@ -298,8 +308,8 @@ func (m *Manager) start(ctx context.Context, sl Slave) (Slave, error) {
 		}
 		return Slave{}, err
 	}
-	if res.AuthURL != "" {
-		m.openAuthURL(res.AuthURL)
+	if authURL != "" {
+		m.openAuthURL(authURL)
 	}
 	m.monitor(sl.ID, sl.ConfigPath, res)
 	return updated, nil
@@ -385,6 +395,22 @@ func (m *Manager) requireDeps(needsMachine, needsRegistry, needsRunner bool) err
 	return nil
 }
 
+func (m *Manager) lockSlave(id string) func() {
+	m.slaveLockMu.Lock()
+	if m.slaveLocks == nil {
+		m.slaveLocks = map[string]*sync.Mutex{}
+	}
+	lock := m.slaveLocks[id]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		m.slaveLocks[id] = lock
+	}
+	m.slaveLockMu.Unlock()
+
+	lock.Lock()
+	return lock.Unlock
+}
+
 var errStaleProcessEvent = errors.New("stale slave process event")
 
 func (m *Manager) monitor(id string, configPath string, res StartResult) {
@@ -401,7 +427,20 @@ func (m *Manager) monitor(id string, configPath string, res StartResult) {
 			defer ticker.Stop()
 			readiness = ticker.C
 		}
-		for authURLs != nil || exit != nil || readiness != nil {
+		var startup <-chan time.Time
+		var startupTimer *time.Timer
+		if configPath != "" && res.AuthURL == "" {
+			startupTimer = time.NewTimer(readinessTimeout)
+			defer startupTimer.Stop()
+			startup = startupTimer.C
+		}
+		stopStartupTimer := func() {
+			startup = nil
+			if startupTimer != nil {
+				startupTimer.Stop()
+			}
+		}
+		for authURLs != nil || exit != nil || readiness != nil || startup != nil {
 			select {
 			case url, ok := <-authURLs:
 				if !ok {
@@ -409,6 +448,7 @@ func (m *Manager) monitor(id string, configPath string, res StartResult) {
 					continue
 				}
 				if m.recordAuthURL(id, res.PID, url) {
+					stopStartupTimer()
 					m.openAuthURL(url)
 				}
 			case err, ok := <-exit:
@@ -418,19 +458,28 @@ func (m *Manager) monitor(id string, configPath string, res StartResult) {
 				}
 				m.recordProcessExit(id, res.PID, err)
 				exit = nil
+				readiness = nil
+				stopStartupTimer()
 			case <-readiness:
 				if m.recordReady(id, res.PID, configPath) {
 					readiness = nil
+					stopStartupTimer()
 				}
+			case <-startup:
+				m.recordStartupTimeout(id, res.PID)
+				readiness = nil
+				stopStartupTimer()
 			}
 		}
 	}()
 }
 
 func (m *Manager) recordAuthURL(id string, pid int, url string) bool {
+	url = sanitizeAuthURL(url)
 	if url == "" {
 		return false
 	}
+	changed := false
 	_, err := m.d.Registry.Update(id, func(s *Slave) error {
 		if s.PID != pid || s.Status == StatusPaused || s.Status == StatusRunning {
 			return errStaleProcessEvent
@@ -438,19 +487,54 @@ func (m *Manager) recordAuthURL(id string, pid int, url string) bool {
 		if s.Status != StatusStarting && s.Status != StatusAuthRequired {
 			return errStaleProcessEvent
 		}
+		if s.AuthURL == url {
+			return nil
+		}
 		s.Status = StatusAuthRequired
 		s.AuthURL = url
 		s.LastError = ""
+		changed = true
 		return nil
 	})
-	return err == nil
+	return err == nil && changed
+}
+
+func (m *Manager) recordStartupTimeout(id string, pid int) {
+	_, _ = m.d.Registry.Update(id, func(s *Slave) error {
+		if s.PID != pid || s.Status != StatusStarting {
+			return errStaleProcessEvent
+		}
+		s.Status = StatusError
+		s.PID = 0
+		s.AuthURL = ""
+		s.LastError = fmt.Sprintf("slave startup timeout after %s", readinessTimeout)
+		return nil
+	})
 }
 
 func (m *Manager) openAuthURL(url string) {
+	url = sanitizeAuthURL(url)
 	if url == "" || m.d.OpenAuthURL == nil {
 		return
 	}
 	go m.d.OpenAuthURL(url)
+}
+
+func sanitizeAuthURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		return raw
+	default:
+		return ""
+	}
 }
 
 func (m *Manager) recordReady(id string, pid int, configPath string) bool {
@@ -557,6 +641,7 @@ type execRunner struct{}
 var startupTimeout = 3 * time.Second
 var execStopWaitTimeout = 2 * time.Second
 var readinessPollInterval = 100 * time.Millisecond
+var readinessTimeout = 30 * time.Second
 
 type trackedExecProcess struct {
 	proc *os.Process
@@ -753,6 +838,7 @@ var authURLPattern = regexp.MustCompile(`(?i)https?://\S*(?:device|user[_-]code|
 
 func copyAndDetectURL(r io.Reader, w io.Writer, authCh chan<- string) {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 1<<16), 1<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
 		_, _ = fmt.Fprintln(w, line)
@@ -762,5 +848,8 @@ func copyAndDetectURL(r io.Reader, w io.Writer, authCh chan<- string) {
 			default:
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		_, _ = fmt.Fprintf(w, "slave log scan error: %v\n", err)
 	}
 }

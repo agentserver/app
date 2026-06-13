@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"errors"
 	"fmt"
@@ -87,7 +88,7 @@ func StartListening(ctx context.Context, ln net.Listener, cfg AuthCodeConfig, ex
 			return
 		}
 		state := q.Get("state")
-		if state != expectedState {
+		if !stateMatches(state, expectedState) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write(callbackPage("state_mismatch"))
 			return // no send → caller will time out
@@ -127,4 +128,8 @@ func StartListening(ctx context.Context, ln net.Listener, cfg AuthCodeConfig, ex
 		closeOnce()
 	}
 	return out, shutdown
+}
+
+func stateMatches(got, want string) bool {
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }

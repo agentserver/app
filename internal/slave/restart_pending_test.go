@@ -236,11 +236,7 @@ func TestRestorePendingRestartsNilCallbackWithIDsReturnsErrorAndKeepsFile(t *tes
 }
 
 func TestWindowsReplaceFileUsesMoveFileExWithReplaceAndWriteThrough(t *testing.T) {
-	source, err := os.ReadFile("replace_file_windows.go")
-	if err != nil {
-		t.Fatalf("read windows replace helper: %v", err)
-	}
-	text := string(source)
+	text := readPackageSourceFile(t, "replace_file_windows.go")
 	for _, want := range []string{
 		"windows.MoveFileEx",
 		"windows.MOVEFILE_REPLACE_EXISTING",

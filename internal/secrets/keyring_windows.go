@@ -5,6 +5,7 @@ package secrets
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"syscall"
 	"unicode/utf16"
 	"unsafe"
@@ -51,9 +52,18 @@ func utf16Ptr(s string) *uint16 {
 
 func keyringAvailable() bool { return true }
 
-type keyringStore struct{}
+type keyringStore struct {
+	mu sync.Mutex
+}
+
+func newKeyringStore() *keyringStore {
+	return &keyringStore{}
+}
 
 func (k *keyringStore) Get(key string) (string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
 	target := utf16Ptr(credTarget(key))
 	var pcred *winCredential
 	r, _, err := procCredReadW.Call(
@@ -69,6 +79,9 @@ func (k *keyringStore) Get(key string) (string, error) {
 		return "", fmt.Errorf("CredReadW: %w", err)
 	}
 	defer procCredFree.Call(uintptr(unsafe.Pointer(pcred)))
+	if pcred.CredentialBlobSize%2 != 0 {
+		return "", fmt.Errorf("CredReadW: odd credential blob size %d", pcred.CredentialBlobSize)
+	}
 	blob := unsafe.Slice(pcred.CredentialBlob, pcred.CredentialBlobSize)
 	u16 := make([]uint16, pcred.CredentialBlobSize/2)
 	for i := range u16 {
@@ -78,6 +91,9 @@ func (k *keyringStore) Get(key string) (string, error) {
 }
 
 func (k *keyringStore) Set(key, value string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
 	u16 := utf16.Encode([]rune(value))
 	blob := make([]byte, len(u16)*2)
 	for i, v := range u16 {
@@ -103,6 +119,9 @@ func (k *keyringStore) Set(key, value string) error {
 }
 
 func (k *keyringStore) Delete(key string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
 	target := utf16Ptr(credTarget(key))
 	r, _, err := procCredDeleteW.Call(
 		uintptr(unsafe.Pointer(target)),

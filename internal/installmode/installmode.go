@@ -26,7 +26,7 @@ func Read(path string) (state.FrontendMode, error) {
 	b = bytes.TrimPrefix(b, []byte{0xef, 0xbb, 0xbf})
 	var f fileShape
 	if err := json.Unmarshal(b, &f); err != nil {
-		return state.FrontendModeCodexDesktop, nil
+		return state.FrontendModeCodexDesktop, fmt.Errorf("parse install mode: %w", err)
 	}
 	return state.NormalizeFrontendMode(f.FrontendMode), nil
 }

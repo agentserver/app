@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/updater"
@@ -13,6 +14,8 @@ import (
 var errUpdaterUnavailable = errors.New("console: updater unavailable")
 
 var ErrUpdateInstallInProgress = errors.New("console: update install already in progress")
+
+var installerStartedQuitDelay = 3 * time.Second
 
 func (c *Controller) UpdateState(context.Context) (updater.State, error) {
 	if c.d.Updates == nil || c.d.Updates.State == nil {
@@ -90,7 +93,11 @@ func (c *Controller) InstallUpdate(ctx context.Context, m updater.Manifest) (upd
 			return nil
 		}
 	}
-	return updates.DownloadAndStart(ctx, m)
+	state, err := updates.DownloadAndStart(ctx, m)
+	if err == nil && state.Status == updater.StatusInstallerStarted && c.d.Quit != nil {
+		time.AfterFunc(installerStartedQuitDelay, c.d.Quit)
+	}
+	return state, err
 }
 
 func (c *Controller) currentUpdateStateForInstallConflict() updater.State {

@@ -1,11 +1,15 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestStoreLoadMissing(t *testing.T) {
@@ -106,6 +110,103 @@ func TestStoreUpdateConcurrent(t *testing.T) {
 	if len(s.Onboarding.CompletedSteps) != 1 {
 		t.Errorf("dedup failed under concurrency: %v", s.Onboarding.CompletedSteps)
 	}
+}
+
+func TestStoreRejectsReentrantAccessInsteadOfDeadlocking(t *testing.T) {
+	dir := t.TempDir()
+	store := NewStore(filepath.Join(dir, "state.json"))
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- store.Update(func(*State) error {
+			return store.Update(func(*State) error {
+				return nil
+			})
+		})
+	}()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrReentrantStoreAccess) {
+			t.Fatalf("Update error=%v, want ErrReentrantStoreAccess", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reentrant Store.Update deadlocked")
+	}
+}
+
+func TestStoreUpdateUsesInterprocessLock(t *testing.T) {
+	if path := os.Getenv("AGENTSERVER_STATE_LOCK_CHILD_PATH"); path != "" {
+		runStoreLockChild(t, path, os.Getenv("AGENTSERVER_STATE_LOCK_CHILD_READY"))
+		return
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	readyPath := filepath.Join(dir, "child-ready")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStoreUpdateUsesInterprocessLock$")
+	cmd.Env = append(os.Environ(),
+		"AGENTSERVER_STATE_LOCK_CHILD_PATH="+path,
+		"AGENTSERVER_STATE_LOCK_CHILD_READY="+readyPath,
+	)
+	var childOutput bytes.Buffer
+	cmd.Stdout = &childOutput
+	cmd.Stderr = &childOutput
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start child test process: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	waitForPath(t, readyPath)
+
+	started := time.Now()
+	if err := NewStore(path).Update(func(s *State) error {
+		s.Modelserver.ProjectID = "parent"
+		return nil
+	}); err != nil {
+		t.Fatalf("parent Update: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 200*time.Millisecond {
+		t.Fatalf("parent Update returned before child released file lock after %s", elapsed)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("child test process failed: %v\n%s", err, childOutput.String())
+	}
+	loaded, err := NewStore(path).Load()
+	if err != nil {
+		t.Fatalf("load final state: %v", err)
+	}
+	if loaded.Agentserver.WorkspaceID != "child" || loaded.Modelserver.ProjectID != "parent" {
+		t.Fatalf("final state lost serialized updates: %+v", loaded)
+	}
+}
+
+func runStoreLockChild(t *testing.T, path, readyPath string) {
+	t.Helper()
+	if err := NewStore(path).Update(func(s *State) error {
+		s.Agentserver.WorkspaceID = "child"
+		if err := os.WriteFile(readyPath, []byte("ready"), 0o644); err != nil {
+			return err
+		}
+		time.Sleep(300 * time.Millisecond)
+		return nil
+	}); err != nil {
+		t.Fatalf("child Update: %v", err)
+	}
+}
+
+func waitForPath(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", path)
 }
 
 func TestStoreCorruptionRecovery(t *testing.T) {

@@ -82,6 +82,7 @@ type QuotaWindow struct {
 type Controller struct {
 	d               Deps
 	updateInstallMu sync.Mutex
+	refreshMu       sync.Mutex
 }
 
 func NewController(d Deps) *Controller {
@@ -138,7 +139,7 @@ func (c *Controller) State(ctx context.Context) (State, error) {
 		}
 		usage, err := c.modelserverUsage(ctx, usageClient, msToken, out.Modelserver.ProjectID)
 		if err != nil && isModelserverAuthError(err) && c.canRefreshModelserverToken(st) {
-			if refreshErr := c.refreshModelserverToken(ctx); refreshErr != nil {
+			if refreshErr := c.refreshModelserverToken(ctx, msToken); refreshErr != nil {
 				if tokenrefresh.ReauthRequired(refreshErr) {
 					markModelserverReconnect(&out)
 				}
@@ -275,15 +276,13 @@ func (c *Controller) LogoutModelserver(context.Context) error {
 			tokenrefresh.AccessTokenKey,
 			tokenrefresh.RefreshTokenKey,
 			tokenrefresh.AccessTokenExpiresAtKey,
+			tokenrefresh.ReauthRequiredKey,
 			tokenrefresh.RefreshErrorKey,
 			tokenrefresh.RefreshErrorAtKey,
 		} {
 			if err := c.d.Secrets.Delete(key); err != nil {
 				return err
 			}
-		}
-		if err := c.d.Secrets.Set(tokenrefresh.ReauthRequiredKey, "true"); err != nil {
-			return err
 		}
 	}
 	if c.d.State != nil {
@@ -332,7 +331,15 @@ func (c *Controller) refreshExpiredModelserverToken(ctx context.Context, st *sta
 	if !c.modelserverAccessTokenNeedsRefresh(msToken) {
 		return nil
 	}
-	return c.refreshModelserverToken(ctx)
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	if !c.canRefreshModelserverToken(st) {
+		return nil
+	}
+	if !c.modelserverAccessTokenNeedsRefresh(c.secret(tokenrefresh.AccessTokenKey)) {
+		return nil
+	}
+	return c.callRefreshModelserverToken(ctx)
 }
 
 func (c *Controller) canRefreshModelserverToken(st *state.State) bool {
@@ -363,7 +370,19 @@ func (c *Controller) modelserverAccessTokenNeedsRefresh(msToken string) bool {
 	return !expiresAt.After(c.now().Add(2 * time.Minute))
 }
 
-func (c *Controller) refreshModelserverToken(ctx context.Context) error {
+func (c *Controller) refreshModelserverToken(ctx context.Context, staleToken string) error {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+	if staleToken != "" {
+		current := c.secret(tokenrefresh.AccessTokenKey)
+		if current != "" && current != staleToken {
+			return nil
+		}
+	}
+	return c.callRefreshModelserverToken(ctx)
+}
+
+func (c *Controller) callRefreshModelserverToken(ctx context.Context) error {
 	if c.d.RefreshModelserverToken == nil {
 		return errors.New("console: modelserver token refresh unavailable")
 	}

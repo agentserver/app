@@ -2,9 +2,13 @@ package ui
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"html"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -30,11 +34,24 @@ func NewServer(o Orchestrator) http.Handler {
 }
 
 func NewServerWithConsole(o Orchestrator, c ConsoleController) http.Handler {
-	s := &server{o: o, c: c, sse: newSSEHub()}
+	return NewServerWithConsoleToken(o, c, "")
+}
+
+const ConsoleInstanceTokenHeader = "X-AgentServer-Console-Token"
+
+func NewServerWithConsoleToken(o Orchestrator, c ConsoleController, token string) http.Handler {
+	s := &server{o: o, c: c, sse: newSSEHub(), consoleToken: token}
 	mux := http.NewServeMux()
 	// Static
 	staticFS, _ := fs.Sub(assetsFS, "assets/dist")
-	mux.Handle("/", http.FileServer(http.FS(staticFS)))
+	fileServer := http.FileServer(http.FS(staticFS))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if token != "" && (r.URL.Path == "/" || r.URL.Path == "/index.html") {
+			s.handleIndex(w, r, staticFS)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 
 	// JSON
 	mux.HandleFunc("/api/state", s.handleState)
@@ -71,9 +88,27 @@ func NewServerWithConsole(o Orchestrator, c ConsoleController) http.Handler {
 }
 
 type server struct {
-	o   Orchestrator
-	c   ConsoleController
-	sse *sseHub
+	o            Orchestrator
+	c            ConsoleController
+	sse          *sseHub
+	consoleToken string
+}
+
+func (s *server) handleIndex(w http.ResponseWriter, r *http.Request, staticFS fs.FS) {
+	if !requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	body, err := fs.ReadFile(staticFS, "index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	marker := "</head>"
+	meta := `<meta name="agentserver-console-token" content="` + html.EscapeString(s.consoleToken) + `">`
+	text := strings.Replace(string(body), marker, "    "+meta+"\n  "+marker, 1)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(text))
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -121,7 +156,30 @@ func requirePostTrustedMutation(w http.ResponseWriter, r *http.Request) bool {
 	return requireTrustedConsoleMutation(w, r)
 }
 
+func (s *server) requireTrustedConsoleMutation(w http.ResponseWriter, r *http.Request) bool {
+	if trustedConsoleMutationRequestWithToken(r, s.consoleToken) {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+	return false
+}
+
+func (s *server) requirePostTrustedConsoleMutation(w http.ResponseWriter, r *http.Request) bool {
+	if !requireMethod(w, r, http.MethodPost) {
+		return false
+	}
+	return s.requireTrustedConsoleMutation(w, r)
+}
+
 func trustedConsoleMutationRequest(r *http.Request) bool {
+	return trustedConsoleMutationRequestWithToken(r, "")
+}
+
+func trustedConsoleMutationRequestWithToken(r *http.Request, token string) bool {
+	if token != "" {
+		got := strings.TrimSpace(r.Header.Get(ConsoleInstanceTokenHeader))
+		return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+	}
 	fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
 	switch fetchSite {
 	case "", "same-origin", "same-site", "none":
@@ -244,10 +302,19 @@ func (s *server) handleFrontendInstall(w http.ResponseWriter, r *http.Request) {
 	streamID := s.sse.newStream()
 	go func() {
 		defer s.sse.close(streamID)
-		ch := s.sse.channel(streamID)
-		if err := s.o.EnsureFrontend(context.Background(), ch); err != nil {
-			ch <- ProgressEvent{Stage: "error", Msg: err.Error()}
+		progress := make(chan ProgressEvent, 128)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for ev := range progress {
+				_ = s.sse.send(streamID, ev)
+			}
+		}()
+		if err := s.o.EnsureFrontend(context.Background(), progress); err != nil {
+			s.sse.send(streamID, ProgressEvent{Stage: "error", Msg: err.Error()})
 		}
+		close(progress)
+		<-done
 	}()
 	writeJSON(w, 200, map[string]string{"stream_id": streamID})
 }
@@ -314,7 +381,7 @@ func (s *server) handleConsoleRefresh(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	st, err := s.c.Refresh(r.Context())
@@ -338,7 +405,7 @@ func (s *server) handleConsoleUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleConsoleUpdateCheck(w http.ResponseWriter, r *http.Request) {
-	if !requirePostTrustedMutation(w, r) {
+	if !s.requirePostTrustedConsoleMutation(w, r) {
 		return
 	}
 	st, err := s.c.CheckUpdate(r.Context(), false)
@@ -350,7 +417,7 @@ func (s *server) handleConsoleUpdateCheck(w http.ResponseWriter, r *http.Request
 }
 
 func (s *server) handleConsoleUpdateInstall(w http.ResponseWriter, r *http.Request) {
-	if !requirePostTrustedMutation(w, r) {
+	if !s.requirePostTrustedConsoleMutation(w, r) {
 		return
 	}
 	confirmed, err := s.c.UpdateState(r.Context())
@@ -374,17 +441,15 @@ func (s *server) handleConsoleUpdateInstall(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	fresh, err := s.c.CheckUpdate(r.Context(), false)
-	if err != nil {
-		writeErr(w, 500, err)
-		return
-	}
-	if fresh.Status != updater.StatusAvailable || fresh.Update == nil {
-		writeErr(w, http.StatusConflict, errors.New("console: update is no longer available"))
-		return
-	}
-	if !sameAvailableUpdate(*confirmed.Update, *fresh.Update) {
-		writeErr(w, http.StatusConflict, errors.New("console: update changed; check again before installing"))
-		return
+	if err == nil {
+		if fresh.Status != updater.StatusAvailable || fresh.Update == nil {
+			writeErr(w, http.StatusConflict, errors.New("console: update is no longer available"))
+			return
+		}
+		if !sameAvailableUpdate(*confirmed.Update, *fresh.Update) {
+			writeErr(w, http.StatusConflict, errors.New("console: update changed; check again before installing"))
+			return
+		}
 	}
 	st, err := s.c.InstallUpdate(r.Context(), manifest)
 	if err != nil {
@@ -426,7 +491,7 @@ func (s *server) handleConsoleSlaves(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"machine": machine, "slaves": slaves})
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 
@@ -447,7 +512,7 @@ func (s *server) handleConsoleSelectFolder(w http.ResponseWriter, r *http.Reques
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	folder, err := s.c.SelectFolder(r.Context())
@@ -471,7 +536,7 @@ func (s *server) handleConsoleSlave(w http.ResponseWriter, r *http.Request) {
 		if !requireMethod(w, r, http.MethodDelete) {
 			return
 		}
-		if !requireTrustedConsoleMutation(w, r) {
+		if !s.requireTrustedConsoleMutation(w, r) {
 			return
 		}
 		if err := s.c.DeleteSlave(r.Context(), id); err != nil {
@@ -494,7 +559,7 @@ func (s *server) handleConsoleSlave(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if action == "open-remote" {
@@ -526,7 +591,7 @@ func (s *server) handleConsoleOpenFrontend(w http.ResponseWriter, r *http.Reques
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if err := s.c.OpenFrontend(r.Context()); err != nil {
@@ -540,7 +605,7 @@ func (s *server) handleConsoleOpenSubscription(w http.ResponseWriter, r *http.Re
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if err := s.c.OpenSubscription(r.Context()); err != nil {
@@ -554,7 +619,7 @@ func (s *server) handleConsoleLogoutModelserver(w http.ResponseWriter, r *http.R
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if err := s.c.LogoutModelserver(r.Context()); err != nil {
@@ -568,7 +633,7 @@ func (s *server) handleConsoleQuit(w http.ResponseWriter, r *http.Request) {
 	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
-	if !requireTrustedConsoleMutation(w, r) {
+	if !s.requireTrustedConsoleMutation(w, r) {
 		return
 	}
 	if err := s.c.Quit(r.Context()); err != nil {
@@ -582,36 +647,67 @@ func (s *server) handleConsoleQuit(w http.ResponseWriter, r *http.Request) {
 
 type sseHub struct {
 	mu      sync.Mutex
-	streams map[string]chan ProgressEvent
+	streams map[string]*sseStream
+}
+
+type sseStream struct {
+	ch     chan ProgressEvent
+	closed bool
 }
 
 func newSSEHub() *sseHub {
-	return &sseHub{streams: map[string]chan ProgressEvent{}}
+	return &sseHub{streams: map[string]*sseStream{}}
 }
 
 func (h *sseHub) newStream() string {
-	id := time.Now().Format("20060102-150405.000000000")
+	id := randomStreamID()
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.streams[id] = make(chan ProgressEvent, 128)
+	h.streams[id] = &sseStream{ch: make(chan ProgressEvent, 128)}
 	return id
+}
+
+func randomStreamID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return time.Now().Format("20060102-150405.000000000")
 }
 
 func (h *sseHub) channel(id string) chan<- ProgressEvent {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.streams[id]
+	if st := h.streams[id]; st != nil {
+		return st.ch
+	}
+	return nil
+}
+
+func (h *sseHub) send(id string, ev ProgressEvent) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	st := h.streams[id]
+	if st == nil || st.closed {
+		return false
+	}
+	select {
+	case st.ch <- ev:
+	default:
+	}
+	return true
 }
 
 func (h *sseHub) close(id string) {
 	h.mu.Lock()
-	ch, ok := h.streams[id]
-	if ok {
-		close(ch)
+	st := h.streams[id]
+	if st != nil && !st.closed {
+		st.closed = true
+		close(st.ch)
 		time.AfterFunc(5*time.Minute, func() {
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			if h.streams[id] == ch {
+			if h.streams[id] == st {
 				delete(h.streams, id)
 			}
 		})
@@ -622,26 +718,40 @@ func (h *sseHub) close(id string) {
 func (h *sseHub) handle(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("stream")
 	h.mu.Lock()
-	ch, ok := h.streams[id]
+	st := h.streams[id]
 	h.mu.Unlock()
-	if !ok {
+	if st == nil {
 		http.Error(w, "no such stream", 404)
 		return
 	}
+	ch := st.ch
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	flusher, _ := w.(http.Flusher)
 	enc := json.NewEncoder(w)
-	for ev := range ch {
-		w.Write([]byte("data: "))
-		enc.Encode(ev)
-		w.Write([]byte("\n"))
-		if flusher != nil {
-			flusher.Flush()
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				h.deleteStream(id, ch)
+				return
+			}
+			w.Write([]byte("data: "))
+			enc.Encode(ev)
+			w.Write([]byte("\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		case <-r.Context().Done():
+			h.deleteStream(id, ch)
+			return
 		}
 	}
+}
+
+func (h *sseHub) deleteStream(id string, ch chan ProgressEvent) {
 	h.mu.Lock()
-	if h.streams[id] == ch {
+	if st := h.streams[id]; st != nil && st.ch == ch {
 		delete(h.streams, id)
 	}
 	h.mu.Unlock()

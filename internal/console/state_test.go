@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -417,6 +419,126 @@ func TestControllerStateRefreshesExpiredModelserverTokenBeforeQuota(t *testing.T
 	}
 }
 
+func TestControllerStateSerializesModelserverTokenRefresh(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	now := time.Date(2026, 6, 12, 10, 0, 0, 0, time.UTC)
+	for key, value := range map[string]string{
+		tokenrefresh.AccessTokenKey:          "expired",
+		tokenrefresh.RefreshTokenKey:         "rtok",
+		tokenrefresh.AccessTokenExpiresAtKey: now.Add(-time.Minute).Format(time.RFC3339),
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var refreshCalls atomic.Int32
+	c := NewController(Deps{
+		State:   store,
+		Secrets: sec,
+		Now:     func() time.Time { return now },
+		RefreshModelserverToken: func(context.Context) error {
+			if refreshCalls.Add(1) == 1 {
+				close(entered)
+			}
+			<-release
+			if err := sec.Set(tokenrefresh.AccessTokenKey, "fresh"); err != nil {
+				return err
+			}
+			return sec.Set(tokenrefresh.AccessTokenExpiresAtKey, now.Add(time.Hour).Format(time.RFC3339))
+		},
+	})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := c.State(context.Background())
+		firstDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("first State did not enter refresh")
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := c.State(context.Background())
+		secondDone <- err
+	}()
+	select {
+	case <-secondDone:
+		t.Fatal("second State returned before first refresh released")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first State: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second State: %v", err)
+	}
+	if got := refreshCalls.Load(); got != 1 {
+		t.Fatalf("refresh calls=%d, want 1", got)
+	}
+}
+
+func TestLogoutModelserverDeletesRefreshStateWithoutReauthFlag(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Modelserver.ProjectID = "proj-1"
+		s.Modelserver.APIKeySuffix = "abcd"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	for _, key := range []string{
+		tokenrefresh.AccessTokenKey,
+		tokenrefresh.RefreshTokenKey,
+		tokenrefresh.AccessTokenExpiresAtKey,
+		tokenrefresh.RefreshErrorKey,
+		tokenrefresh.RefreshErrorAtKey,
+		tokenrefresh.ReauthRequiredKey,
+	} {
+		if err := sec.Set(key, "value"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := NewController(Deps{State: store, Secrets: sec}).LogoutModelserver(context.Background()); err != nil {
+		t.Fatalf("LogoutModelserver: %v", err)
+	}
+	for _, key := range []string{
+		tokenrefresh.AccessTokenKey,
+		tokenrefresh.RefreshTokenKey,
+		tokenrefresh.AccessTokenExpiresAtKey,
+		tokenrefresh.RefreshErrorKey,
+		tokenrefresh.RefreshErrorAtKey,
+		tokenrefresh.ReauthRequiredKey,
+	} {
+		if got, err := sec.Get(key); err == nil {
+			t.Fatalf("%s=%q, want deleted", key, got)
+		}
+	}
+	got, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Modelserver.ProjectID != "" || got.Modelserver.APIKeySuffix != "" {
+		t.Fatalf("modelserver state not cleared: %+v", got.Modelserver)
+	}
+}
+
 func TestControllerStateRetriesQuotaAfterRefreshingStaleModelserverToken(t *testing.T) {
 	usageCalls := 0
 	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -479,6 +601,99 @@ func TestControllerStateRetriesQuotaAfterRefreshingStaleModelserverToken(t *test
 	}
 	if got.Modelserver.ReconnectRequired || got.QuotaError != "" || len(got.Quotas) != 1 {
 		t.Fatalf("state=%+v", got)
+	}
+}
+
+func TestControllerStateSerializesAuthErrorModelserverTokenRefresh(t *testing.T) {
+	var usageCalls atomic.Int32
+	ms := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/usage" {
+			t.Fatalf("modelserver unexpected path %s", r.URL.Path)
+		}
+		usageCalls.Add(1)
+		switch r.Header.Get("Authorization") {
+		case "Bearer stale-token":
+			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+		case "Bearer refreshed-token":
+			w.Write([]byte(`{"credit_usage":[{"window":"5h","percentage":40}]}`))
+		default:
+			t.Fatalf("Authorization=%q", r.Header.Get("Authorization"))
+		}
+	}))
+	defer ms.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.Onboarding.CompletedSteps = []string{"modelserver_login"}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sec := newTestSecrets()
+	now := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	for key, value := range map[string]string{
+		tokenrefresh.AccessTokenKey:          "stale-token",
+		tokenrefresh.RefreshTokenKey:         "refresh-token",
+		tokenrefresh.AccessTokenExpiresAtKey: now.Add(time.Hour).Format(time.RFC3339),
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var refreshCalls atomic.Int32
+	c := NewController(Deps{
+		State:   store,
+		Secrets: sec,
+		MS:      modelserver.New(ms.URL),
+		Now:     func() time.Time { return now },
+		RefreshModelserverToken: func(context.Context) error {
+			if refreshCalls.Add(1) == 1 {
+				close(entered)
+			}
+			<-release
+			if err := sec.Set(tokenrefresh.AccessTokenKey, "refreshed-token"); err != nil {
+				return err
+			}
+			return sec.Set(tokenrefresh.AccessTokenExpiresAtKey, now.Add(time.Hour).Format(time.RFC3339))
+		},
+	})
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := c.State(context.Background())
+		firstDone <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("first State did not enter refresh")
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := c.State(context.Background())
+		secondDone <- err
+	}()
+	select {
+	case <-secondDone:
+		t.Fatal("second State returned before first refresh released")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first State: %v", err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second State: %v", err)
+	}
+	if got := refreshCalls.Load(); got != 1 {
+		t.Fatalf("refresh calls=%d, want 1", got)
+	}
+	if got := usageCalls.Load(); got != 4 {
+		t.Fatalf("usage calls=%d, want 4", got)
 	}
 }
 
@@ -597,15 +812,13 @@ func TestControllerLogoutModelserverClearsLocalLogin(t *testing.T) {
 		tokenrefresh.AccessTokenKey,
 		tokenrefresh.RefreshTokenKey,
 		tokenrefresh.AccessTokenExpiresAtKey,
+		tokenrefresh.ReauthRequiredKey,
 		tokenrefresh.RefreshErrorKey,
 		tokenrefresh.RefreshErrorAtKey,
 	} {
 		if got, err := sec.Get(key); err == nil {
 			t.Fatalf("%s still stored as %q", key, got)
 		}
-	}
-	if got, err := sec.Get(tokenrefresh.ReauthRequiredKey); err != nil || got != "true" {
-		t.Fatalf("reauth required=%q err=%v", got, err)
 	}
 	loaded, err := store.Load()
 	if err != nil {
@@ -995,6 +1208,7 @@ func mkdir(path string) error {
 }
 
 type testSecrets struct {
+	mu     sync.Mutex
 	values map[string]string
 }
 
@@ -1003,6 +1217,9 @@ func newTestSecrets() *testSecrets {
 }
 
 func (s *testSecrets) Get(key string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	v, ok := s.values[key]
 	if !ok {
 		return "", errors.New("secret not found")
@@ -1011,11 +1228,17 @@ func (s *testSecrets) Get(key string) (string, error) {
 }
 
 func (s *testSecrets) Set(key, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.values[key] = value
 	return nil
 }
 
 func (s *testSecrets) Delete(key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	delete(s.values, key)
 	return nil
 }

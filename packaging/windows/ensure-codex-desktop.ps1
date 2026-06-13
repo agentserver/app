@@ -31,9 +31,7 @@ function Test-CodexDesktopInstalled {
     }
     try {
         $pkg = Get-AppxPackage | Where-Object {
-            $_.PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0' -or
-            $_.Name -like '*Codex*' -or
-            $_.PackageFullName -like '*Codex*'
+            $_.PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0'
         } | Select-Object -First 1
         if ($pkg) { return $true }
     } catch {
@@ -52,6 +50,49 @@ function Wait-CodexDesktopInstalled([int]$TimeoutSeconds) {
     return $false
 }
 
+function Test-CodexDesktopInstallerFile([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Codex Desktop installer missing: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path
+    if ($item.Length -lt 65536) {
+        throw "Codex Desktop installer is too small: $($item.Length) bytes"
+    }
+
+    $fs = [System.IO.File]::OpenRead($Path)
+    try {
+        $magic = New-Object byte[] 2
+        $read = $fs.Read($magic, 0, 2)
+        if ($read -ne 2 -or $magic[0] -ne 0x4d -or $magic[1] -ne 0x5a) {
+            throw "Codex Desktop installer is not a valid MZ executable"
+        }
+    } finally {
+        $fs.Dispose()
+    }
+
+    $sig = Get-AuthenticodeSignature -FilePath $Path
+    if ($sig.Status -ne 'Valid') {
+        throw "Codex Desktop installer Authenticode signature is $($sig.Status)"
+    }
+    if ($null -eq $sig.SignerCertificate) {
+        throw "Codex Desktop installer has no signer certificate"
+    }
+    $subject = $sig.SignerCertificate.Subject
+    if ($subject -notmatch 'O=Microsoft Corporation' -and $subject -notmatch 'Microsoft Corporation') {
+        throw "Codex Desktop installer signer is not Microsoft Corporation: $subject"
+    }
+    $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+    $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+    if (-not $chain.Build($sig.SignerCertificate)) {
+        $statuses = ($chain.ChainStatus | ForEach-Object { $_.Status }) -join ', '
+        throw "Codex Desktop installer signer chain is invalid: $statuses"
+    }
+    $chainSubjects = @($chain.ChainElements | ForEach-Object { $_.Certificate.Subject })
+    if (-not ($chainSubjects -match 'Microsoft')) {
+        throw "Codex Desktop installer signer chain is not Microsoft"
+    }
+}
+
 function Invoke-CodexDesktopLocalInstaller {
     if (-not (Test-Path $LocalInstallerPath)) {
         return $false
@@ -59,9 +100,10 @@ function Invoke-CodexDesktopLocalInstaller {
     Write-Step "Running bundled Codex Desktop installer..."
     Write-Step $LocalInstallerPath
     try {
+        Test-CodexDesktopInstallerFile $LocalInstallerPath
         $p = Start-Process -FilePath $LocalInstallerPath -Wait -PassThru
     } catch {
-        Write-Warning "Bundled Codex Desktop installer failed to start: $($_.Exception.Message); falling back to winget."
+        Write-Warning "Bundled Codex Desktop installer failed verification or startup: $($_.Exception.Message); falling back to winget."
         return $false
     }
     if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0) {

@@ -4,6 +4,7 @@ import * as api from '../api';
 describe('api', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    document.head.innerHTML = '';
   });
 
   it('getState returns parsed ServerState on 200', async () => {
@@ -90,6 +91,24 @@ describe('api', () => {
     } as Response);
     await api.openConsoleFrontend();
     expect(fetchSpy).toHaveBeenCalledWith('/api/console/open-frontend', expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('console mutations include configured instance token header', async () => {
+    const meta = document.createElement('meta');
+    meta.name = 'agentserver-console-token';
+    meta.content = 'token-123';
+    document.head.appendChild(meta);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ state: 'opened' }),
+    } as Response);
+
+    await api.openConsoleFrontend();
+
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(init.method).toBe('POST');
+    expect(new Headers(init.headers).get('X-AgentServer-Console-Token')).toBe('token-123');
   });
 
   it('refreshConsoleState POSTs to console refresh endpoint', async () => {

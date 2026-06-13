@@ -36,15 +36,12 @@ func runUninstall(args []string) {
 		appDir = filepath.Dir(exe)
 	}
 	if err := uninstall.Run(uninstall.Options{
-		Paths:   p,
-		Secrets: sec,
-		AppDir:  appDir,
+		Paths:        p,
+		Secrets:      sec,
+		AppDir:       appDir,
+		RemoveVSCode: *removeVSCode,
 	}); err != nil {
 		fmt.Println("warning:", err)
-	}
-
-	if *removeVSCode {
-		fmt.Println("--vscode removal not implemented in v1; please remove manually via Apps & Features.")
 	}
 	fmt.Println("done.")
 }

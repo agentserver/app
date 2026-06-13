@@ -3,6 +3,7 @@ package tokenrefresh
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 type memSecrets struct {
 	values map[string]string
+	getErr map[string]error
 }
 
 func newMemSecrets() *memSecrets {
@@ -19,6 +21,9 @@ func newMemSecrets() *memSecrets {
 }
 
 func (m *memSecrets) Get(key string) (string, error) {
+	if err := m.getErr[key]; err != nil {
+		return "", err
+	}
 	v, ok := m.values[key]
 	if !ok {
 		return "", secrets.ErrNotFound
@@ -169,6 +174,34 @@ func TestRefreshOnceMarksReauthRequiredOnInvalidGrant(t *testing.T) {
 	}
 	if got, _ := sec.Get(RefreshErrorKey); got == "" {
 		t.Fatal("refresh error should be stored")
+	}
+}
+
+func TestRefreshOnceDoesNotMarkReauthRequiredForTransientSecretError(t *testing.T) {
+	sec := newMemSecrets()
+	sec.getErr = map[string]error{RefreshTokenKey: errors.New("keyring locked")}
+
+	_, err := RefreshOnce(context.Background(), Options{Secrets: sec})
+	if err == nil || !strings.Contains(err.Error(), "keyring locked") {
+		t.Fatalf("RefreshOnce err=%v, want original secret error", err)
+	}
+	if got, err := sec.Get(ReauthRequiredKey); err == nil {
+		t.Fatalf("reauth flag=%q, want absent", got)
+	}
+}
+
+func TestRefreshOnceDoesNotMarkReauthRequiredWhenRefreshTokenMissing(t *testing.T) {
+	sec := newMemSecrets()
+
+	_, err := RefreshOnce(context.Background(), Options{Secrets: sec})
+	if !errors.Is(err, ErrNoRefreshToken) {
+		t.Fatalf("RefreshOnce err=%v, want %v", err, ErrNoRefreshToken)
+	}
+	if got, err := sec.Get(ReauthRequiredKey); err == nil {
+		t.Fatalf("reauth flag=%q, want absent", got)
+	}
+	if got, err := sec.Get(RefreshErrorKey); err == nil {
+		t.Fatalf("refresh error=%q, want absent", got)
 	}
 }
 

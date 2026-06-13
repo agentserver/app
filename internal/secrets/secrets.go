@@ -17,7 +17,8 @@ const serviceName = "agentserver-app"
 // ErrNotFound is returned by Get when the key does not exist.
 var ErrNotFound = errors.New("secret not found")
 
-// Store is the secrets storage interface.
+// Store is the secrets storage interface. Implementations must be safe for
+// concurrent use by multiple goroutines.
 type Store interface {
 	Get(key string) (string, error)
 	Set(key, value string) error
@@ -28,7 +29,7 @@ type Store interface {
 // falls back to a chmod 600 JSON file at fallbackPath.
 func New(fallbackPath string) Store {
 	if keyringAvailable() {
-		return &keyringStore{}
+		return newKeyringStore()
 	}
 	return newFileStore(fallbackPath)
 }
@@ -67,9 +68,35 @@ func (f *fileStore) save(m map[string]string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(f.path, b, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(f.path), filepath.Base(f.path)+".*.tmp")
+	if err != nil {
 		return err
 	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, f.path); err != nil {
+		return err
+	}
+	tmpPath = ""
 	if runtime.GOOS != "windows" {
 		_ = os.Chmod(f.path, 0o600)
 	}

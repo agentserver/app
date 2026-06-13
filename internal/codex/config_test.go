@@ -3,6 +3,7 @@ package codex
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -104,6 +105,35 @@ base_url = "https://old/v1"
 	matches, _ := filepath.Glob(path + ".bak.*")
 	if len(matches) == 0 {
 		t.Errorf("expected backup")
+	}
+}
+
+func TestUpdateConfigPrunesOldBackups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeCodexTestFile(t, path, `model_provider = "old"`+"\n")
+	for i := 1; i <= maxConfigBackups+3; i++ {
+		writeCodexTestFile(t, filepath.Join(dir, "config.toml.bak."+strconv.Itoa(i)), "backup\n")
+	}
+
+	if err := UpdateConfig(path, Settings{
+		Provider: "modelserver",
+		Model:    "gpt-5.5",
+		BaseURL:  "https://code.ai.cs.ac.cn/v1",
+		EnvKey:   "OPENAI_API_KEY",
+		WireAPI:  "responses",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	matches, _ := filepath.Glob(path + ".bak.*")
+	if len(matches) != maxConfigBackups {
+		t.Fatalf("backup count=%d want %d: %v", len(matches), maxConfigBackups, matches)
+	}
+	for _, old := range []string{"1", "2", "3", "4"} {
+		if _, err := os.Stat(path + ".bak." + old); !os.IsNotExist(err) {
+			t.Fatalf("old backup %s was not pruned, stat err=%v", old, err)
+		}
 	}
 }
 
