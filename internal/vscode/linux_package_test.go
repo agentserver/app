@@ -84,7 +84,10 @@ func TestPackageLinuxPreflightsBinariesBeforeDownloads(t *testing.T) {
 		t.Fatalf("package-linux.sh missing download_support_assets")
 	}
 	if preflight > downloads {
-		t.Fatalf("package-linux.sh should preflight binaries before downloads")
+		t.Fatalf("package-linux.sh should define preflight before downloads")
+	}
+	if !strings.Contains(text, "preflight_binaries\ndownload_support_assets") {
+		t.Fatalf("package-linux.sh should call preflight_binaries immediately before download_support_assets")
 	}
 }
 
