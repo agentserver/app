@@ -114,6 +114,64 @@ func TestRunSlaveDefaultsNewEntryToCommanderName(t *testing.T) {
 	}
 }
 
+func TestRunSlaveDefaultsSecondNewEntryToFolderName(t *testing.T) {
+	temp := t.TempDir()
+	repoA := filepath.Join(temp, "repo-a")
+	repoB := filepath.Join(temp, "repo-b")
+	if err := os.Mkdir(repoA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(repoB, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := testSlavePaths(temp)
+
+	firstRunner := &fakeSlaveProcessRunner{}
+	if err := RunSlave(context.Background(), SlaveOptions{
+		Paths:        p,
+		Package:      Package{SlaveAgent: filepath.Join(temp, "pkg", "slave-agent")},
+		WorkDir:      repoA,
+		ComputerName: "host",
+		NamePrompt: func(defaultName string) (string, error) {
+			if defaultName != "星池指挥官" {
+				t.Fatalf("first defaultName=%q, want 星池指挥官", defaultName)
+			}
+			return "", nil
+		},
+		Runner: firstRunner,
+		Stdout: ioDiscard{},
+	}); err != nil {
+		t.Fatalf("first RunSlave: %v", err)
+	}
+
+	secondRunner := &fakeSlaveProcessRunner{}
+	if err := RunSlave(context.Background(), SlaveOptions{
+		Paths:        p,
+		Package:      Package{SlaveAgent: filepath.Join(temp, "pkg", "slave-agent")},
+		WorkDir:      repoB,
+		ComputerName: "host",
+		NamePrompt: func(defaultName string) (string, error) {
+			if defaultName != "repo-b" {
+				t.Fatalf("second defaultName=%q, want repo-b", defaultName)
+			}
+			return "", nil
+		},
+		Runner: secondRunner,
+		Stdout: ioDiscard{},
+	}); err != nil {
+		t.Fatalf("second RunSlave: %v", err)
+	}
+
+	configBody, err := os.ReadFile(secondRunner.request.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(configBody)
+	if !strings.Contains(config, "display_name: host-repo-b") {
+		t.Fatalf("config missing second default display name:\n%s", config)
+	}
+}
+
 func TestRunSlaveReusesExistingEntryWithoutPrompt(t *testing.T) {
 	temp := t.TempDir()
 	repo := filepath.Join(temp, "repo")

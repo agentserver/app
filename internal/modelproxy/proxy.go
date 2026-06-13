@@ -3,14 +3,17 @@ package modelproxy
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 )
@@ -68,6 +71,10 @@ func NewHandler(opts Options) (http.Handler, error) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		if !validLocalBearer(r.Header.Get("Authorization")) {
+			http.Error(w, "local model proxy authorization required", http.StatusUnauthorized)
+			return
+		}
 		token, err := opts.Secrets.Get(tokenrefresh.AccessTokenKey)
 		if err != nil || token == "" {
 			http.Error(w, "modelserver login required", http.StatusUnauthorized)
@@ -78,6 +85,14 @@ func NewHandler(opts Options) (http.Handler, error) {
 		r2.Header.Set("Authorization", "Bearer "+token)
 		proxy.ServeHTTP(w, r2)
 	}), nil
+}
+
+func validLocalBearer(auth string) bool {
+	parts := strings.Fields(auth)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(codex.LocalProxyAPIKeyValue)) == 1
 }
 
 func ListenAndServe(ctx context.Context, opts ServerOptions) error {

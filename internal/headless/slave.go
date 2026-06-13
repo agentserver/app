@@ -83,6 +83,13 @@ func RunSlave(ctx context.Context, opts SlaveOptions) error {
 		name = existing.Name
 	} else {
 		name = defaultHeadlessSlaveName
+		existingSlaves, err := registry.List()
+		if err != nil {
+			return err
+		}
+		if len(existingSlaves) > 0 {
+			name = filepath.Base(canonicalFolder)
+		}
 		if opts.NamePrompt != nil {
 			prompted, err := opts.NamePrompt(name)
 			if err != nil {

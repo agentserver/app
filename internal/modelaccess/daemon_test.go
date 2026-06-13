@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -55,7 +56,12 @@ func TestRunDaemonServesLocalModelProxyAndKeepsServingWithoutRefreshToken(t *tes
 		t.Fatalf("AcquireDaemonLock err=%v, want %v", err, tokenrefresh.ErrDaemonAlreadyRunning)
 	}
 
-	resp, err := http.Get("http://" + addr + "/v1/models")
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+codex.LocalProxyAPIKeyValue)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("proxy request: %v", err)
 	}
