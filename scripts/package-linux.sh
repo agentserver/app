@@ -16,6 +16,16 @@ loom_cache_path() {
   echo "$OUT/cache/loom/$LOOM_RELEASE/$asset"
 }
 
+preflight_binaries() {
+  local arch
+  for arch in amd64 arm64; do
+    if [[ ! -x "$OUT/linux/$arch/agentserver" ]]; then
+      echo "ERROR: missing prebuilt $OUT/linux/$arch/agentserver; run make cross-linux first" >&2
+      exit 2
+    fi
+  done
+}
+
 download_support_assets() {
   download_loom_asset \
     "$LOOM_DRIVER_SKILLS_ASSET" \
@@ -59,12 +69,9 @@ stage_arch() {
   echo "wrote $tarball"
 }
 
+preflight_binaries
 download_support_assets
 for arch in amd64 arm64; do
-  if [[ ! -x "$OUT/linux/$arch/agentserver" ]]; then
-    echo "ERROR: missing prebuilt $OUT/linux/$arch/agentserver; run make cross-linux first" >&2
-    exit 2
-  fi
   download_arch_assets "$arch"
   stage_arch "$arch"
 done

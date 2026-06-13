@@ -81,7 +81,7 @@ package: cross-windows ext-build
 	bash scripts/package-windows.sh
 
 package-linux: cross-linux
-	bash scripts/package-linux.sh
+	OUT="$(DIST)" bash scripts/package-linux.sh
 
 clean:
 	rm -rf $(DIST) out coverage.out internal/ui/assets/dist

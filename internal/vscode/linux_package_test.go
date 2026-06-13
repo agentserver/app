@@ -69,6 +69,25 @@ func TestPackageLinuxConsumesCrossLinuxBuildOutputs(t *testing.T) {
 	}
 }
 
+func TestPackageLinuxPreflightsBinariesBeforeDownloads(t *testing.T) {
+	body, err := os.ReadFile("../../scripts/package-linux.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	preflight := strings.Index(text, "preflight_binaries")
+	downloads := strings.Index(text, "download_support_assets")
+	if preflight < 0 {
+		t.Fatalf("package-linux.sh missing preflight_binaries")
+	}
+	if downloads < 0 {
+		t.Fatalf("package-linux.sh missing download_support_assets")
+	}
+	if preflight > downloads {
+		t.Fatalf("package-linux.sh should preflight binaries before downloads")
+	}
+}
+
 func TestMakefileExposesLinuxTargets(t *testing.T) {
 	body, err := os.ReadFile("../../Makefile")
 	if err != nil {
@@ -80,7 +99,7 @@ func TestMakefileExposesLinuxTargets(t *testing.T) {
 		`package-linux: cross-linux`,
 		`GOOS=linux GOARCH=$$arch`,
 		`./cmd/agentserver`,
-		`bash scripts/package-linux.sh`,
+		`OUT="$(DIST)" bash scripts/package-linux.sh`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Makefile missing %q", want)
