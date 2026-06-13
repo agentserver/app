@@ -60,6 +60,32 @@ func TestEnsurePrefersLongLivedAPIKey(t *testing.T) {
 	)
 }
 
+func TestEnsureDirectAPIKeyModeDoesNotRequireSecrets(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "codex", "config.toml")
+
+	result, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: configPath,
+		Env: func(key string) string {
+			if key == tokenrefresh.OpenAIAPIKeyEnv {
+				return "sk-test"
+			}
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if result.Mode != ModeDirectAPIKey {
+		t.Fatalf("Mode = %q, want %q", result.Mode, ModeDirectAPIKey)
+	}
+	assertConfigContains(t, configPath,
+		`model_provider = "modelserver"`,
+		`base_url = "https://code.ai.cs.ac.cn/v1"`,
+		`env_key = "OPENAI_API_KEY"`,
+	)
+}
+
 func TestEnsureProxyModeRunsDeviceLoginWhenRefreshMissing(t *testing.T) {
 	tmp := t.TempDir()
 	sec := secrets.New(filepath.Join(tmp, "secrets.json"))

@@ -50,9 +50,6 @@ func Ensure(ctx context.Context, opts EnsureOptions) (Result, error) {
 		ctx = context.Background()
 	}
 	opts = defaultEnsureOptions(opts)
-	if opts.Secrets == nil {
-		return Result{}, tokenrefresh.ErrNoSecrets
-	}
 
 	if opts.Env(tokenrefresh.OpenAIAPIKeyEnv) != "" {
 		if err := codex.UpdateConfig(opts.CodexConfigPath, codex.ModelserverSettings()); err != nil {
@@ -61,6 +58,9 @@ func Ensure(ctx context.Context, opts EnsureOptions) (Result, error) {
 		return Result{Mode: ModeDirectAPIKey}, nil
 	}
 
+	if opts.Secrets == nil {
+		return Result{}, tokenrefresh.ErrNoSecrets
+	}
 	if err := ensureProxyCredentials(ctx, opts); err != nil {
 		return Result{}, err
 	}
