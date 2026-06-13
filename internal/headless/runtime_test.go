@@ -151,6 +151,58 @@ func TestResolveCodexRequiresManagedRuntimePathsWhenPathMissing(t *testing.T) {
 			pkg:     Package{},
 			wantErr: "PackageDir required",
 		},
+		{
+			name: "relative codex exe path",
+			paths: paths.Paths{
+				CodexExePath: filepath.Join("bin-root", "bin", exeName("codex")),
+				CacheDir:     validPaths.CacheDir,
+			},
+			pkg:     validPackage,
+			wantErr: "CodexExePath",
+		},
+		{
+			name: "parent relative codex exe path",
+			paths: paths.Paths{
+				CodexExePath: filepath.Join("..", "bin-root", "bin", exeName("codex")),
+				CacheDir:     validPaths.CacheDir,
+			},
+			pkg:     validPackage,
+			wantErr: "CodexExePath",
+		},
+		{
+			name: "relative cache dir",
+			paths: paths.Paths{
+				CodexExePath: validPaths.CodexExePath,
+				CacheDir:     "cache",
+			},
+			pkg:     validPackage,
+			wantErr: "CacheDir",
+		},
+		{
+			name: "parent relative cache dir",
+			paths: paths.Paths{
+				CodexExePath: validPaths.CodexExePath,
+				CacheDir:     filepath.Join("..", "cache"),
+			},
+			pkg:     validPackage,
+			wantErr: "CacheDir",
+		},
+		{
+			name:  "relative package dir",
+			paths: validPaths,
+			pkg: Package{
+				PackageDir: filepath.Join("packaging", "linux"),
+			},
+			wantErr: "PackageDir",
+		},
+		{
+			name:  "parent relative package dir",
+			paths: validPaths,
+			pkg: Package{
+				PackageDir: filepath.Join("..", "packaging", "linux"),
+			},
+			wantErr: "PackageDir",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

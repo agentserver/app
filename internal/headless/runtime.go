@@ -86,11 +86,20 @@ func validateManagedCodexOptions(opts CodexResolveOptions) error {
 	if opts.Paths.CodexExePath == "" {
 		return errors.New("CodexExePath required")
 	}
+	if !filepath.IsAbs(opts.Paths.CodexExePath) {
+		return errors.New("CodexExePath must be absolute")
+	}
 	if opts.Paths.CacheDir == "" {
 		return errors.New("CacheDir required")
 	}
+	if !filepath.IsAbs(opts.Paths.CacheDir) {
+		return errors.New("CacheDir must be absolute")
+	}
 	if opts.Package.PackageDir == "" {
 		return errors.New("PackageDir required")
+	}
+	if !filepath.IsAbs(opts.Package.PackageDir) {
+		return errors.New("PackageDir must be absolute")
 	}
 	return nil
 }
