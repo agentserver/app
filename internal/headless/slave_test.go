@@ -165,6 +165,43 @@ func TestRunSlavePrintsDuplicateAuthURLOnce(t *testing.T) {
 	}
 }
 
+func TestRunSlaveIgnoresNonAgentserverAuthURLs(t *testing.T) {
+	temp := t.TempDir()
+	repo := filepath.Join(temp, "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeSlaveProcessRunner{authURLs: []string{
+		"https://example.com/help",
+		"https://example.com/device-docs",
+		"ftp://agent.cs.ac.cn/device?user_code=ABCD",
+		"https://agent.cs.ac.cn/help",
+	}}
+	var out bytes.Buffer
+
+	err := RunSlave(context.Background(), SlaveOptions{
+		Paths:        testSlavePaths(temp),
+		Package:      Package{SlaveAgent: filepath.Join(temp, "pkg", "slave-agent")},
+		WorkDir:      repo,
+		ComputerName: "host",
+		NamePrompt:   func(string) (string, error) { return "worker", nil },
+		Runner:       runner,
+		Stdout:       &out,
+		QR:           markerQR("fake QR marker"),
+	})
+	if err != nil {
+		t.Fatalf("RunSlave: %v", err)
+	}
+
+	gotOutput := out.String()
+	if strings.Contains(gotOutput, "Agentserver 登录") {
+		t.Fatalf("output printed auth title for unrelated URLs:\n%s", gotOutput)
+	}
+	if strings.Contains(gotOutput, "fake QR marker") {
+		t.Fatalf("output printed QR for unrelated URLs:\n%s", gotOutput)
+	}
+}
+
 func TestRunSlaveStopsChildOnContextCancel(t *testing.T) {
 	temp := t.TempDir()
 	repo := filepath.Join(temp, "repo")
@@ -290,6 +327,28 @@ func TestCopyForegroundSlaveOutputDrainsLongLinesAndDetectsLaterAuthURL(t *testi
 	}
 	if !strings.Contains(gotOutput, authURL) {
 		t.Fatalf("output missing auth URL after long line")
+	}
+	if len(authURLs) != 1 || authURLs[0] != authURL {
+		t.Fatalf("authURLs=%v, want [%q]", authURLs, authURL)
+	}
+}
+
+func TestCopyForegroundSlaveOutputIgnoresNonAgentserverAuthURLs(t *testing.T) {
+	authURL := "https://agent.cs.ac.cn/device?user_code=ABCD"
+	input := strings.Join([]string{
+		"https://example.com/help",
+		"https://example.com/device-docs",
+		authURL,
+	}, "\n")
+	var out bytes.Buffer
+	var authURLs []string
+
+	copyForegroundSlaveOutput(strings.NewReader(input), &out, func(url string) {
+		authURLs = append(authURLs, url)
+	})
+
+	if gotOutput := out.String(); !strings.Contains(gotOutput, authURL) {
+		t.Fatalf("output missing accepted auth URL:\n%s", gotOutput)
 	}
 	if len(authURLs) != 1 || authURLs[0] != authURL {
 		t.Fatalf("authURLs=%v, want [%q]", authURLs, authURL)

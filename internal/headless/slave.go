@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -125,7 +126,6 @@ type execSlaveRunner struct {
 	output *foregroundOutput
 }
 
-var foregroundAuthURLPattern = regexp.MustCompile(`(?i)https?://\S*(?:device|user[_-]code|verification)\S*`)
 var foregroundHTTPURLPattern = regexp.MustCompile(`(?i)https?://\S+`)
 
 func (r execSlaveRunner) Run(ctx context.Context, req SlaveProcessRequest) error {
@@ -202,8 +202,11 @@ func copyForegroundSlaveOutput(r io.Reader, w io.Writer, authURL func(string)) {
 	line := make([]byte, 0, 4096)
 	flushLine := func() {
 		if authURL != nil {
-			if match := foregroundAuthURLPattern.Find(line); len(match) > 0 {
-				authURL(string(match))
+			for _, match := range foregroundHTTPURLPattern.FindAll(line, -1) {
+				if url := sanitizeForegroundAuthURL(string(match)); url != "" {
+					authURL(url)
+					break
+				}
 			}
 		}
 		line = line[:0]
@@ -243,7 +246,35 @@ func sanitizeForegroundAuthURL(raw string) string {
 	if raw == "" {
 		return ""
 	}
-	return foregroundHTTPURLPattern.FindString(raw)
+	for _, match := range foregroundHTTPURLPattern.FindAllString(raw, -1) {
+		if isForegroundAuthURL(match) {
+			return match
+		}
+	}
+	return ""
+}
+
+func isForegroundAuthURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https":
+	default:
+		return false
+	}
+	if !strings.EqualFold(parsed.Hostname(), "agent.cs.ac.cn") {
+		return false
+	}
+	path := strings.ToLower(parsed.EscapedPath())
+	query := strings.ToLower(parsed.RawQuery)
+	for _, marker := range []string{"device", "user_code", "user-code", "verification"} {
+		if strings.Contains(path, marker) || strings.Contains(query, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 type foregroundOutput struct {
