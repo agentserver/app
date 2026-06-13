@@ -175,7 +175,11 @@ async function installUpdate() {
   } catch (e) {
     if (!dashboardMounted) return;
     if (seq !== updateLoadSeq) return;
-    updateError.value = errorMessage(e);
+    const message = errorMessage(e);
+    updateError.value = message;
+    await loadUpdate();
+    if (!dashboardMounted) return;
+    updateError.value = message;
   } finally {
     if (dashboardMounted) installingUpdate.value = false;
   }

@@ -231,6 +231,38 @@ describe('Dashboard', () => {
     expect(w.text()).toContain('安装程序已启动');
   });
 
+  it('reloads update state when install is rejected after a fresh backend check', async () => {
+    const getUpdateSpy = vi.spyOn(api, 'getConsoleUpdate')
+      .mockResolvedValueOnce(consoleUpdate({
+        status: 'available',
+        update: { version: '1.3.0' },
+      }))
+      .mockResolvedValueOnce(consoleUpdate({
+        status: 'latest',
+        update: undefined,
+      }));
+    mockConsoleState();
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.spyOn(api, 'installConsoleUpdate').mockRejectedValue(new api.OnboardingError(
+      '/api/console/update/install 返回 409: update changed',
+      409,
+      'update changed',
+    ));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    expect(w.text()).toContain('发现新版本 1.3.0');
+    expect(w.find('[data-test="install-console-update"]').exists()).toBe(true);
+
+    await w.find('[data-test="install-console-update"]').trigger('click');
+    await flushPromises();
+
+    expect(getUpdateSpy).toHaveBeenCalledTimes(2);
+    expect(w.text()).toContain('已是最新版本');
+    expect(w.find('[data-test="install-console-update"]').exists()).toBe(false);
+    expect(w.text()).toContain('update changed');
+  });
+
   it('displays console update API errors with dashboard errors', async () => {
     mockConsoleState();
     vi.spyOn(api, 'checkConsoleUpdate').mockRejectedValue(new Error('update service unavailable'));
