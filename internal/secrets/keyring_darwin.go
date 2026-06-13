@@ -3,7 +3,7 @@
 package secrets
 
 import (
-	"fmt"
+	"errors"
 	"os/exec"
 	"strings"
 	"sync"
@@ -49,8 +49,8 @@ func (k *keyringStore) Set(key, value string) error {
 		"security", "add-generic-password",
 		"-s", serviceName,
 		"-a", key,
+		"-w", value,
 	)
-	cmd.Stdin = strings.NewReader(value)
 	return cmd.Run()
 }
 
@@ -69,8 +69,7 @@ func (k *keyringStore) deleteLocked(key string) error {
 	).Run()
 	if err != nil {
 		var exitErr *exec.ExitError
-		if fmt.Sprintf("%T", err) == "*exec.ExitError" {
-			_ = exitErr
+		if errors.As(err, &exitErr) {
 			return nil // Not found is OK
 		}
 	}

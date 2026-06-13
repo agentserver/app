@@ -77,7 +77,7 @@ func parseLauncherOptions(args []string) (launcherOptions, error) {
 			opts.OpenPage = false
 			opts.OpenFrontend = false
 		default:
-			return launcherOptions{}, fmt.Errorf("unknown launcher option: %s", arg)
+			log.Printf("launcher: ignoring unknown option %s", arg)
 		}
 	}
 	return opts, nil

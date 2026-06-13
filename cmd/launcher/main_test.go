@@ -51,9 +51,13 @@ func TestLauncherOptionsBackgroundDoesNotOpenPageOrFrontend(t *testing.T) {
 	}
 }
 
-func TestLauncherOptionsRejectUnknownFlag(t *testing.T) {
-	if _, err := parseLauncherOptions([]string{"--backgrond"}); err == nil || !strings.Contains(err.Error(), "unknown launcher option") {
-		t.Fatalf("err=%v, want unknown launcher option", err)
+func TestLauncherOptionsIgnoresUnknownFlag(t *testing.T) {
+	got, err := parseLauncherOptions([]string{"--backgrond"})
+	if err != nil {
+		t.Fatalf("unknown flags should not abort GUI launcher: %v", err)
+	}
+	if got.Background || !got.OpenPage || !got.OpenFrontend {
+		t.Fatalf("options=%+v, want default foreground behavior", got)
 	}
 }
 
