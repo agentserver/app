@@ -3,6 +3,7 @@ package modelaccess
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,14 @@ func TestEnsurePrefersLongLivedAPIKey(t *testing.T) {
 		StartDaemon: func(context.Context) error {
 			daemonStarted = true
 			return nil
+		},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			t.Fatal("RequestDeviceCode called in direct API key mode")
+			return oauth.DeviceCodeChallenge{}, nil
+		},
+		PollToken: func(context.Context, oauth.Config, oauth.DeviceCodeChallenge) (oauth.Token, error) {
+			t.Fatal("PollToken called in direct API key mode")
+			return oauth.Token{}, nil
 		},
 	})
 	if err != nil {
@@ -185,6 +194,97 @@ func TestEnsureProxyModeRefreshesWhenAccessTokenMissing(t *testing.T) {
 	assertSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
 }
 
+func TestEnsureProxyModeRunsDeviceLoginWhenRefreshNeedsReauth(t *testing.T) {
+	tmp := t.TempDir()
+	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
+	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	var refreshed, requestedDeviceCode, polledToken, daemonStarted bool
+
+	result, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
+		Secrets:         sec,
+		Env:             func(string) string { return "" },
+		Refresh: func(_ context.Context, _ oauth.AuthCodeConfig, refreshToken string) (oauth.Token, error) {
+			refreshed = true
+			if refreshToken != "existing-refresh" {
+				t.Fatalf("refresh token = %q, want %q", refreshToken, "existing-refresh")
+			}
+			return oauth.Token{}, fmt.Errorf("refresh failed: %w", oauth.ErrInvalidGrant)
+		},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			requestedDeviceCode = true
+			return oauth.DeviceCodeChallenge{DeviceCode: "device", UserCode: "code", ExpiresIn: 600}, nil
+		},
+		PrintChallenge: func(string, oauth.DeviceCodeChallenge) {},
+		PollToken: func(context.Context, oauth.Config, oauth.DeviceCodeChallenge) (oauth.Token, error) {
+			polledToken = true
+			return oauth.Token{AccessToken: "device-access", RefreshToken: "device-refresh", ExpiresIn: 3600}, nil
+		},
+		StartDaemon: func(context.Context) error {
+			daemonStarted = true
+			return nil
+		},
+		Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if result.Mode != ModeLocalProxy {
+		t.Fatalf("Mode = %q, want %q", result.Mode, ModeLocalProxy)
+	}
+	if !refreshed || !requestedDeviceCode || !polledToken || !daemonStarted {
+		t.Fatalf("calls: refresh=%v request=%v poll=%v daemon=%v", refreshed, requestedDeviceCode, polledToken, daemonStarted)
+	}
+	assertSecret(t, sec, tokenrefresh.AccessTokenKey, "device-access")
+	assertSecret(t, sec, tokenrefresh.RefreshTokenKey, "device-refresh")
+	if _, err := sec.Get(tokenrefresh.ReauthRequiredKey); !errors.Is(err, secrets.ErrNotFound) {
+		t.Fatalf("ReauthRequiredKey error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestEnsureProxyModePropagatesRefreshErrorWithoutPrompt(t *testing.T) {
+	tmp := t.TempDir()
+	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
+	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	refreshErr := errors.New("refresh unavailable")
+	var refreshed bool
+
+	_, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
+		Secrets:         sec,
+		Env:             func(string) string { return "" },
+		Refresh: func(_ context.Context, _ oauth.AuthCodeConfig, refreshToken string) (oauth.Token, error) {
+			refreshed = true
+			if refreshToken != "existing-refresh" {
+				t.Fatalf("refresh token = %q, want %q", refreshToken, "existing-refresh")
+			}
+			return oauth.Token{}, refreshErr
+		},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			t.Fatal("RequestDeviceCode called after non-reauth refresh error")
+			return oauth.DeviceCodeChallenge{}, nil
+		},
+		PollToken: func(context.Context, oauth.Config, oauth.DeviceCodeChallenge) (oauth.Token, error) {
+			t.Fatal("PollToken called after non-reauth refresh error")
+			return oauth.Token{}, nil
+		},
+		StartDaemon: func(context.Context) error {
+			t.Fatal("StartDaemon called after refresh error")
+			return nil
+		},
+		Now: fixedNow,
+	})
+	if !errors.Is(err, refreshErr) {
+		t.Fatalf("Ensure() error = %v, want %v", err, refreshErr)
+	}
+	if !refreshed {
+		t.Fatal("Refresh was not called")
+	}
+	if _, err := sec.Get(tokenrefresh.AccessTokenKey); !errors.Is(err, secrets.ErrNotFound) {
+		t.Fatalf("AccessTokenKey error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestEnsureRerunsLoginWhenReauthFlagSet(t *testing.T) {
 	tmp := t.TempDir()
 	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
@@ -221,6 +321,16 @@ func TestEnsureRerunsLoginWhenReauthFlagSet(t *testing.T) {
 	assertSecret(t, sec, tokenrefresh.RefreshTokenKey, "new-refresh")
 	if _, err := sec.Get(tokenrefresh.ReauthRequiredKey); !errors.Is(err, secrets.ErrNotFound) {
 		t.Fatalf("ReauthRequiredKey error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestEnsureRequiresSecrets(t *testing.T) {
+	_, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: filepath.Join(t.TempDir(), "codex", "config.toml"),
+		Env:             func(string) string { return "" },
+	})
+	if !errors.Is(err, tokenrefresh.ErrNoSecrets) {
+		t.Fatalf("Ensure() error = %v, want %v", err, tokenrefresh.ErrNoSecrets)
 	}
 }
 
