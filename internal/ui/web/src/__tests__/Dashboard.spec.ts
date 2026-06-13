@@ -520,6 +520,45 @@ describe('Dashboard', () => {
     expect(authLink.text()).toContain('认证');
   });
 
+  it('does not render unsafe oauth reconnect links or slave auth links', async () => {
+    const expired = consoleState();
+    expired.modelserver.reconnect_required = true;
+    expired.modelserver.auth_message = '大模型连接已失效，请重新连接。';
+    expired.agentserver.reconnect_required = true;
+    expired.agentserver.auth_message = '星池工作区连接已失效，请重新连接。';
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(expired);
+    vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves({
+      slaves: [{
+        id: 'sl-1',
+        name: 'worker',
+        display_name: 'devbox-worker',
+        folder: '/repo/app',
+        status: 'auth_required',
+        auth_url: "javascript:fetch('/api/console/quit',{method:'POST'})",
+      }],
+    }));
+    vi.spyOn(api, 'startStep')
+      .mockResolvedValueOnce({
+        state: 'started',
+        oauth_url: "javascript:fetch('/api/console/quit',{method:'POST'})",
+      })
+      .mockResolvedValueOnce({
+        state: 'started',
+        oauth_url: 'data:text/html,<script>alert(1)</script>',
+      });
+    vi.spyOn(api, 'pollStepStatus').mockReturnValue(new Promise(() => {}));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await w.findAll('button').find(b => b.text().includes('重新连接大模型'))!.trigger('click');
+    await w.findAll('button').find(b => b.text().includes('重新连接星池工作区'))!.trigger('click');
+    await flushPromises();
+
+    expect(w.find('a[href^="javascript:"]').exists()).toBe(false);
+    expect(w.find('a[href^="data:"]').exists()).toBe(false);
+    expect(w.text()).not.toContain('完成认证');
+  });
+
   it('creates a local slave with folder and custom name then refreshes', async () => {
     vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
     const getSlavesSpy = vi.spyOn(api, 'getConsoleSlaves')

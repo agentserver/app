@@ -157,10 +157,14 @@ func writeConfigFile(path string, b []byte) error {
 		_ = closeTemp()
 		return fmt.Errorf("write slave config temp: %w", err)
 	}
+	if err := f.Sync(); err != nil {
+		_ = closeTemp()
+		return fmt.Errorf("sync slave config temp: %w", err)
+	}
 	if err := closeTemp(); err != nil {
 		return fmt.Errorf("close slave config temp: %w", err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := replaceFile(tmpPath, path); err != nil {
 		return fmt.Errorf("publish slave config: %w", err)
 	}
 	tmpPath = ""

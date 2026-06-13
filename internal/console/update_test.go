@@ -272,6 +272,43 @@ func TestControllerInstallUpdateRecordsEligibleSlavesImmediatelyBeforeInstallerS
 	}
 }
 
+func TestControllerInstallUpdateSchedulesQuitAfterInstallerStart(t *testing.T) {
+	dir := t.TempDir()
+	originalDelay := installerStartedQuitDelay
+	installerStartedQuitDelay = 10 * time.Millisecond
+	t.Cleanup(func() { installerStartedQuitDelay = originalDelay })
+	body := []byte("installer bytes")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write(body); err != nil {
+			t.Fatalf("Write body: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	quit := make(chan struct{}, 1)
+	got, err := NewController(Deps{
+		Quit: func() { quit <- struct{}{} },
+		Updates: &updater.Service{
+			CurrentVersion: "1.0.0",
+			CacheDir:       filepath.Join(dir, "cache"),
+			State:          updater.NewStateStore(filepath.Join(dir, "updates.json")),
+			Client:         consoleAssetsHostClient(t, server),
+			StartInstaller: func(context.Context, string) error { return nil },
+		},
+	}).InstallUpdate(context.Background(), validConsoleUpdateManifestForBody(body))
+	if err != nil {
+		t.Fatalf("InstallUpdate: %v", err)
+	}
+	if got.Status != updater.StatusInstallerStarted {
+		t.Fatalf("Status=%q, want %q", got.Status, updater.StatusInstallerStarted)
+	}
+	select {
+	case <-quit:
+	case <-time.After(time.Second):
+		t.Fatal("controller did not schedule Quit after installer start")
+	}
+}
+
 func TestControllerInstallUpdateRejectsConcurrentInstall(t *testing.T) {
 	dir := t.TempDir()
 	body := []byte("installer bytes")

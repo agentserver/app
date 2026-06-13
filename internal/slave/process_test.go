@@ -1,6 +1,7 @@
 package slave
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -157,6 +158,129 @@ func TestManagerPauseRestartAndDelete(t *testing.T) {
 	}
 	if len(all) != 0 {
 		t.Fatalf("slaves after delete=%+v", all)
+	}
+}
+
+func TestManagerRestartAndDeleteSameSlaveAreSerialized(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	startEntered := make(chan struct{}, 1)
+	releaseStart := make(chan struct{}, 2)
+	runner := &fakeRunner{
+		pid: 1111,
+		onStart: func() {
+			select {
+			case startEntered <- struct{}{}:
+				<-releaseStart
+			default:
+			}
+		},
+	}
+	manager := NewManager(ManagerDeps{
+		Machines: NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry: NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:   runner,
+		SlaveExe: filepath.Join(dir, "slave-agent.exe"),
+	})
+	_, _ = manager.Machines.Ensure("PC")
+	releaseStart <- struct{}{}
+	sl, err := manager.CreateAndStart(context.Background(), CreateInput{Folder: folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-startEntered
+
+	runner.pid = 2222
+	restartDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Restart(context.Background(), sl.ID)
+		restartDone <- err
+	}()
+	select {
+	case <-startEntered:
+	case <-time.After(time.Second):
+		t.Fatal("restart did not reach Start")
+	}
+
+	deleteDone := make(chan error, 1)
+	go func() {
+		deleteDone <- manager.Delete(context.Background(), sl.ID)
+	}()
+	select {
+	case <-deleteDone:
+		t.Fatal("Delete returned while Restart for same slave was still in progress")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseStart <- struct{}{}
+	if err := <-restartDone; err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if err := <-deleteDone; err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+}
+
+func TestCopyAndDetectURLHandlesLongLogLineAndLogsScannerErrors(t *testing.T) {
+	longURL := "https://agent.cs.ac.cn/device?user_code=" + strings.Repeat("A", 70*1024)
+	authCh := make(chan string, 1)
+	var out bytes.Buffer
+
+	copyAndDetectURL(strings.NewReader(longURL+"\n"), &out, authCh)
+
+	select {
+	case got := <-authCh:
+		if got != longURL {
+			t.Fatalf("auth URL length=%d, want %d", len(got), len(longURL))
+		}
+	default:
+		t.Fatal("auth URL from long log line was not detected")
+	}
+	if !strings.Contains(out.String(), longURL) {
+		t.Fatal("long log line was not copied")
+	}
+
+	out.Reset()
+	copyAndDetectURL(strings.NewReader(strings.Repeat("x", 2*1024*1024)), &out, authCh)
+	if !strings.Contains(out.String(), "slave log scan error") {
+		t.Fatalf("scanner error was not logged: %q", out.String())
+	}
+}
+
+func TestRecordAuthURLRejectsUnsafeURLSchemes(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	authURLs := make(chan string, 1)
+	opened := make(chan string, 1)
+	manager := NewManager(ManagerDeps{
+		Machines:    NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:    NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:      &fakeRunner{pid: 4321, authURLs: authURLs},
+		SlaveExe:    filepath.Join(dir, "slave-agent.exe"),
+		OpenAuthURL: func(url string) { opened <- url },
+	})
+	_, _ = manager.Machines.Ensure("PC")
+
+	sl, err := manager.CreateAndStart(context.Background(), CreateInput{Folder: folder})
+	if err != nil {
+		t.Fatalf("CreateAndStart: %v", err)
+	}
+	authURLs <- "javascript:fetch('/api/console/quit',{method:'POST'})"
+
+	time.Sleep(100 * time.Millisecond)
+	got, err := manager.Registry.Get(sl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AuthURL != "" || got.Status == StatusAuthRequired {
+		t.Fatalf("unsafe auth URL was persisted: %+v", got)
+	}
+	select {
+	case url := <-opened:
+		t.Fatalf("unsafe auth URL was opened: %q", url)
+	default:
 	}
 }
 
@@ -1030,11 +1154,7 @@ func TestExecRunnerStartPassesConfigArgAndLogsStdoutAndStderr(t *testing.T) {
 }
 
 func TestExecRunnerStartHidesSlaveProcessWindow(t *testing.T) {
-	body, err := os.ReadFile("process.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(body)
+	s := readPackageSourceFile(t, "process.go")
 	command := strings.Index(s, "cmd := exec.Command(req.Exe, req.ConfigPath)")
 	hide := strings.Index(s, "process.HideWindow(cmd)")
 	start := strings.Index(s, "if err := cmd.Start(); err != nil")

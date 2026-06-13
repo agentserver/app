@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestGetOrCreateDefaultWorkspace_Existing(t *testing.T) {
@@ -111,5 +113,30 @@ func TestRegisterAgentUsesOAuthToken(t *testing.T) {
 	}
 	if got.ProxyToken != "sandbox-proxy-token" || got.WorkspaceID != "ws-1" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestNewClientUsesBoundedHTTPTimeout(t *testing.T) {
+	got := New("https://agent.cs.ac.cn").http.Timeout
+	if got != 60*time.Second {
+		t.Fatalf("timeout=%s, want 60s", got)
+	}
+}
+
+func TestErrorResponseDoesNotEchoBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Authorization: Bearer secret-token", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, err := New(srv.URL).ListWorkspaces(context.Background(), "secret-token")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "secret-token") || strings.Contains(err.Error(), "Authorization") {
+		t.Fatalf("error leaked response body: %q", err)
+	}
+	if !strings.Contains(err.Error(), "status 401") {
+		t.Fatalf("error=%q, want status", err)
 	}
 }

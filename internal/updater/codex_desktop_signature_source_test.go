@@ -1,0 +1,30 @@
+package updater
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestWindowsPackagingVerifiesCodexDesktopAuthenticodeSignature(t *testing.T) {
+	files := []string{
+		filepath.Join("..", "..", "scripts", "package-windows.sh"),
+		filepath.Join("..", "..", "scripts", "package-windows-zip.sh"),
+		filepath.Join("..", "..", "packaging", "windows", "ensure-codex-desktop.ps1"),
+	}
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			body, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := string(body)
+			for _, want := range []string{"Get-AuthenticodeSignature", "Microsoft Corporation", "X509Chain"} {
+				if !strings.Contains(source, want) {
+					t.Fatalf("%s should verify Codex Desktop installer signature with %q:\n%s", file, want, source)
+				}
+			}
+		})
+	}
+}

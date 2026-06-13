@@ -9,7 +9,10 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
+
+const maxResponseBytes = 1 << 20
 
 type Client struct {
 	baseURL string
@@ -19,7 +22,7 @@ type Client struct {
 func New(baseURL string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    http.DefaultClient,
+		http:    &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
@@ -92,7 +95,10 @@ func (c *Client) do(ctx context.Context, method, path, token string,
 	body, out any) error {
 	var rdr io.Reader
 	if body != nil {
-		b, _ := json.Marshal(body)
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
 		rdr = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, rdr)
@@ -112,13 +118,13 @@ func (c *Client) do(ctx context.Context, method, path, token string,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s %s: status %d: %s", method, path, resp.StatusCode, b)
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
+		return fmt.Errorf("%s %s: status %d", method, path, resp.StatusCode)
 	}
 	if out == nil {
 		return nil
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(out)
 }
 
 func identityFromWhoami(raw map[string]any) Identity {

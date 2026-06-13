@@ -39,7 +39,36 @@ verify_codex_desktop_installer() {
   size=$(stat -c%s "$path")
   (( size >= CODEX_DESKTOP_MIN_SIZE )) || return 1
   magic=$(head -c 2 "$path" 2>/dev/null || true)
-  [[ "$magic" == "MZ" ]]
+  [[ "$magic" == "MZ" ]] || return 1
+  verify_codex_desktop_signature "$path"
+}
+
+verify_codex_desktop_signature() {
+  local path ps script
+  path="$1"
+  if command -v pwsh >/dev/null 2>&1; then
+    ps="pwsh"
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    ps="powershell.exe"
+  else
+    echo "ERROR: PowerShell required to verify Codex Desktop Authenticode signature" >&2
+    return 1
+  fi
+  script='param([string]$Path)
+$sig = Get-AuthenticodeSignature -FilePath $Path
+if ($sig.Status -ne "Valid") { throw "Codex Desktop installer Authenticode signature is $($sig.Status)" }
+if ($null -eq $sig.SignerCertificate) { throw "Codex Desktop installer has no signer certificate" }
+$subject = $sig.SignerCertificate.Subject
+if ($subject -notmatch "O=Microsoft Corporation" -and $subject -notmatch "Microsoft Corporation") { throw "Codex Desktop installer signer is not Microsoft Corporation: $subject" }
+$chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+$chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+if (-not $chain.Build($sig.SignerCertificate)) {
+  $statuses = ($chain.ChainStatus | ForEach-Object { $_.Status }) -join ", "
+  throw "Codex Desktop installer signer chain is invalid: $statuses"
+}
+$chainSubjects = @($chain.ChainElements | ForEach-Object { $_.Certificate.Subject })
+if (-not ($chainSubjects -match "Microsoft")) { throw "Codex Desktop installer signer chain is not Microsoft" }'
+  "$ps" -NoProfile -Command "$script" "$path"
 }
 
 download_loom_asset() {

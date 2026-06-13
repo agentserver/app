@@ -35,7 +35,7 @@ func inspectOSProcess(pid int, expectedExe string) (processInspection, error) {
 		return processMatch, nil
 	}
 	if runtime.GOOS != "linux" {
-		return processUnknown, fmt.Errorf("process executable inspection unsupported on %s", runtime.GOOS)
+		return processMatch, nil
 	}
 	procExe, err := os.Readlink(filepath.Join("/proc", fmt.Sprint(pid), "exe"))
 	if err != nil {
@@ -79,6 +79,7 @@ func terminateUntrackedProcess(ctx context.Context, pid int, expectedExe string,
 }
 
 func sameExecutable(got, want string) (bool, error) {
+	got = strings.TrimSuffix(got, " (deleted)")
 	gotAbs, err := filepath.Abs(got)
 	if err != nil {
 		return false, err
@@ -87,13 +88,16 @@ func sameExecutable(got, want string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if gotAbs == wantAbs {
+		return true, nil
+	}
 	gotInfo, err := os.Stat(gotAbs)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("stat got executable: %w", err)
 	}
 	wantInfo, err := os.Stat(wantAbs)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("stat expected executable: %w", err)
 	}
 	return os.SameFile(gotInfo, wantInfo), nil
 }

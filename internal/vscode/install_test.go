@@ -1196,7 +1196,7 @@ func TestEnsureCodexDesktopScriptFallsBackToWingetWhenBundledInstallerFails(t *t
 		"try {",
 		"Start-Process -FilePath $LocalInstallerPath -Wait -PassThru",
 		"} catch {",
-		"Bundled Codex Desktop installer failed to start",
+		"Bundled Codex Desktop installer failed verification or startup",
 		"Bundled Codex Desktop installer failed with exit code",
 		"falling back to winget",
 		"return $false",

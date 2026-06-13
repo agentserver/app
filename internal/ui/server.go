@@ -2,7 +2,9 @@ package ui
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -244,10 +246,19 @@ func (s *server) handleFrontendInstall(w http.ResponseWriter, r *http.Request) {
 	streamID := s.sse.newStream()
 	go func() {
 		defer s.sse.close(streamID)
-		ch := s.sse.channel(streamID)
-		if err := s.o.EnsureFrontend(context.Background(), ch); err != nil {
-			ch <- ProgressEvent{Stage: "error", Msg: err.Error()}
+		progress := make(chan ProgressEvent, 128)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for ev := range progress {
+				_ = s.sse.send(streamID, ev)
+			}
+		}()
+		if err := s.o.EnsureFrontend(context.Background(), progress); err != nil {
+			s.sse.send(streamID, ProgressEvent{Stage: "error", Msg: err.Error()})
 		}
+		close(progress)
+		<-done
 	}()
 	writeJSON(w, 200, map[string]string{"stream_id": streamID})
 }
@@ -374,17 +385,15 @@ func (s *server) handleConsoleUpdateInstall(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	fresh, err := s.c.CheckUpdate(r.Context(), false)
-	if err != nil {
-		writeErr(w, 500, err)
-		return
-	}
-	if fresh.Status != updater.StatusAvailable || fresh.Update == nil {
-		writeErr(w, http.StatusConflict, errors.New("console: update is no longer available"))
-		return
-	}
-	if !sameAvailableUpdate(*confirmed.Update, *fresh.Update) {
-		writeErr(w, http.StatusConflict, errors.New("console: update changed; check again before installing"))
-		return
+	if err == nil {
+		if fresh.Status != updater.StatusAvailable || fresh.Update == nil {
+			writeErr(w, http.StatusConflict, errors.New("console: update is no longer available"))
+			return
+		}
+		if !sameAvailableUpdate(*confirmed.Update, *fresh.Update) {
+			writeErr(w, http.StatusConflict, errors.New("console: update changed; check again before installing"))
+			return
+		}
 	}
 	st, err := s.c.InstallUpdate(r.Context(), manifest)
 	if err != nil {
@@ -582,36 +591,67 @@ func (s *server) handleConsoleQuit(w http.ResponseWriter, r *http.Request) {
 
 type sseHub struct {
 	mu      sync.Mutex
-	streams map[string]chan ProgressEvent
+	streams map[string]*sseStream
+}
+
+type sseStream struct {
+	ch     chan ProgressEvent
+	closed bool
 }
 
 func newSSEHub() *sseHub {
-	return &sseHub{streams: map[string]chan ProgressEvent{}}
+	return &sseHub{streams: map[string]*sseStream{}}
 }
 
 func (h *sseHub) newStream() string {
-	id := time.Now().Format("20060102-150405.000000000")
+	id := randomStreamID()
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.streams[id] = make(chan ProgressEvent, 128)
+	h.streams[id] = &sseStream{ch: make(chan ProgressEvent, 128)}
 	return id
+}
+
+func randomStreamID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return time.Now().Format("20060102-150405.000000000")
 }
 
 func (h *sseHub) channel(id string) chan<- ProgressEvent {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.streams[id]
+	if st := h.streams[id]; st != nil {
+		return st.ch
+	}
+	return nil
+}
+
+func (h *sseHub) send(id string, ev ProgressEvent) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	st := h.streams[id]
+	if st == nil || st.closed {
+		return false
+	}
+	select {
+	case st.ch <- ev:
+	default:
+	}
+	return true
 }
 
 func (h *sseHub) close(id string) {
 	h.mu.Lock()
-	ch, ok := h.streams[id]
-	if ok {
-		close(ch)
+	st := h.streams[id]
+	if st != nil && !st.closed {
+		st.closed = true
+		close(st.ch)
 		time.AfterFunc(5*time.Minute, func() {
 			h.mu.Lock()
 			defer h.mu.Unlock()
-			if h.streams[id] == ch {
+			if h.streams[id] == st {
 				delete(h.streams, id)
 			}
 		})
@@ -622,26 +662,40 @@ func (h *sseHub) close(id string) {
 func (h *sseHub) handle(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("stream")
 	h.mu.Lock()
-	ch, ok := h.streams[id]
+	st := h.streams[id]
 	h.mu.Unlock()
-	if !ok {
+	if st == nil {
 		http.Error(w, "no such stream", 404)
 		return
 	}
+	ch := st.ch
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	flusher, _ := w.(http.Flusher)
 	enc := json.NewEncoder(w)
-	for ev := range ch {
-		w.Write([]byte("data: "))
-		enc.Encode(ev)
-		w.Write([]byte("\n"))
-		if flusher != nil {
-			flusher.Flush()
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				h.deleteStream(id, ch)
+				return
+			}
+			w.Write([]byte("data: "))
+			enc.Encode(ev)
+			w.Write([]byte("\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		case <-r.Context().Done():
+			h.deleteStream(id, ch)
+			return
 		}
 	}
+}
+
+func (h *sseHub) deleteStream(id string, ch chan ProgressEvent) {
 	h.mu.Lock()
-	if h.streams[id] == ch {
+	if st := h.streams[id]; st != nil && st.ch == ch {
 		delete(h.streams, id)
 	}
 	h.mu.Unlock()

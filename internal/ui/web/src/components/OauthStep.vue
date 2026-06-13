@@ -35,7 +35,7 @@ async function pollLoop() {
         await props.onboarding.refreshState();
         return;
       }
-      if (s.error) {
+      if (s.error && !isLongPollTimeout(s.error)) {
         stopPoll();
         props.onboarding.markStepError(props.step.id, s.error);
         return;
@@ -63,6 +63,20 @@ function retry() {
   start();
 }
 
+function isLongPollTimeout(message: string) {
+  return message.includes('context deadline exceeded') || message.includes('deadline exceeded');
+}
+
+function safeExternalUrl(raw?: string) {
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? raw : '';
+  } catch {
+    return '';
+  }
+}
+
 onUnmounted(stopPoll);
 
 // If we're remounted in an in_progress state (refresh / navigation),
@@ -83,8 +97,8 @@ onMounted(() => {
     <el-icon class="is-loading"><Loading /></el-icon>
     <span>{{ step.runtime.stage }}</span>
     <a
-      v-if="step.runtime.oauthUrl"
-      :href="step.runtime.oauthUrl"
+      v-if="safeExternalUrl(step.runtime.oauthUrl)"
+      :href="safeExternalUrl(step.runtime.oauthUrl)"
       target="_blank"
       rel="noopener noreferrer"
       class="fallback"

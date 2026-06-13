@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,18 +35,23 @@ type Service struct {
 	AutoCheckEvery       time.Duration
 }
 
+var serviceStateMu sync.Mutex
+
 type stateStore interface {
 	Load() (State, error)
 	Save(State) error
 }
 
 func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
+	serviceStateMu.Lock()
+	defer serviceStateMu.Unlock()
+
 	now := s.now()
 	prior, err := s.loadState()
 	if err != nil {
 		return s.saveError(now, err)
 	}
-	if automatic && !prior.LastCheckedAt.IsZero() && now.Sub(prior.LastCheckedAt) < s.autoCheckEvery() {
+	if automatic && !prior.LastCheckedAt.IsZero() && !now.Before(prior.LastCheckedAt) && now.Sub(prior.LastCheckedAt) < s.autoCheckEvery() {
 		prior = NormalizeStateForCurrentVersion(prior, s.CurrentVersion)
 		if err := s.saveState(prior); err != nil {
 			return s.saveError(now, err)
@@ -96,7 +102,25 @@ func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
 
 func NormalizeStateForCurrentVersion(state State, currentVersion string) State {
 	state.CurrentVersion = currentVersion
-	if state.Status != StatusAvailable {
+	switch state.Status {
+	case StatusChecking, StatusDownloading:
+		state.Status = StatusIdle
+		state.Update = nil
+		state.LastError = ""
+		return state
+	case StatusInstallerStarted:
+		if state.Update == nil {
+			return state
+		}
+		cmp, err := CompareVersions(state.Update.Version, currentVersion)
+		if err == nil && cmp <= 0 {
+			state.Status = StatusLatest
+			state.Update = nil
+			state.LastError = ""
+		}
+		return state
+	case StatusAvailable:
+	default:
 		return state
 	}
 	if state.Update == nil {
@@ -113,6 +137,9 @@ func NormalizeStateForCurrentVersion(state State, currentVersion string) State {
 }
 
 func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error) {
+	serviceStateMu.Lock()
+	defer serviceStateMu.Unlock()
+
 	now := s.now()
 	if err := m.Validate(); err != nil {
 		return s.saveError(now, err)

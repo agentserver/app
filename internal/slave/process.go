@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,9 +30,11 @@ type ManagerDeps struct {
 }
 
 type Manager struct {
-	Machines *MachineStore
-	Registry *Registry
-	d        ManagerDeps
+	Machines    *MachineStore
+	Registry    *Registry
+	d           ManagerDeps
+	slaveLockMu sync.Mutex
+	slaveLocks  map[string]*sync.Mutex
 }
 
 type Runner interface {
@@ -84,7 +87,7 @@ func NewManager(d ManagerDeps) *Manager {
 	if d.Runner == nil {
 		d.Runner = execRunner{}
 	}
-	return &Manager{Machines: d.Machines, Registry: d.Registry, d: d}
+	return &Manager{Machines: d.Machines, Registry: d.Registry, d: d, slaveLocks: map[string]*sync.Mutex{}}
 }
 
 func StopProcess(ctx context.Context, pid int, expectedExe string) error {
@@ -153,6 +156,8 @@ func (m *Manager) Restart(ctx context.Context, id string) (Slave, error) {
 	if err := m.requireDeps(false, true, true); err != nil {
 		return Slave{}, err
 	}
+	unlock := m.lockSlave(id)
+	defer unlock()
 	sl, err := m.d.Registry.Get(id)
 	if err != nil {
 		return Slave{}, err
@@ -182,6 +187,8 @@ func (m *Manager) Pause(ctx context.Context, id string) (Slave, error) {
 	if err := m.requireDeps(false, true, true); err != nil {
 		return Slave{}, err
 	}
+	unlock := m.lockSlave(id)
+	defer unlock()
 	sl, err := m.d.Registry.Get(id)
 	if err != nil {
 		return Slave{}, err
@@ -212,6 +219,8 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if err := m.requireDeps(false, true, true); err != nil {
 		return err
 	}
+	unlock := m.lockSlave(id)
+	defer unlock()
 	sl, err := m.d.Registry.Get(id)
 	if err != nil {
 		return err
@@ -281,14 +290,15 @@ func (m *Manager) start(ctx context.Context, sl Slave) (Slave, error) {
 	if err != nil {
 		return recordStartError(err)
 	}
+	authURL := sanitizeAuthURL(res.AuthURL)
 	status := StatusStarting
-	if res.AuthURL != "" {
+	if authURL != "" {
 		status = StatusAuthRequired
 	}
 	updated, err := m.d.Registry.Update(sl.ID, func(s *Slave) error {
 		s.Status = status
 		s.PID = res.PID
-		s.AuthURL = res.AuthURL
+		s.AuthURL = authURL
 		s.LastError = ""
 		return nil
 	})
@@ -298,8 +308,8 @@ func (m *Manager) start(ctx context.Context, sl Slave) (Slave, error) {
 		}
 		return Slave{}, err
 	}
-	if res.AuthURL != "" {
-		m.openAuthURL(res.AuthURL)
+	if authURL != "" {
+		m.openAuthURL(authURL)
 	}
 	m.monitor(sl.ID, sl.ConfigPath, res)
 	return updated, nil
@@ -385,6 +395,22 @@ func (m *Manager) requireDeps(needsMachine, needsRegistry, needsRunner bool) err
 	return nil
 }
 
+func (m *Manager) lockSlave(id string) func() {
+	m.slaveLockMu.Lock()
+	if m.slaveLocks == nil {
+		m.slaveLocks = map[string]*sync.Mutex{}
+	}
+	lock := m.slaveLocks[id]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		m.slaveLocks[id] = lock
+	}
+	m.slaveLockMu.Unlock()
+
+	lock.Lock()
+	return lock.Unlock
+}
+
 var errStaleProcessEvent = errors.New("stale slave process event")
 
 func (m *Manager) monitor(id string, configPath string, res StartResult) {
@@ -428,6 +454,7 @@ func (m *Manager) monitor(id string, configPath string, res StartResult) {
 }
 
 func (m *Manager) recordAuthURL(id string, pid int, url string) bool {
+	url = sanitizeAuthURL(url)
 	if url == "" {
 		return false
 	}
@@ -447,10 +474,28 @@ func (m *Manager) recordAuthURL(id string, pid int, url string) bool {
 }
 
 func (m *Manager) openAuthURL(url string) {
+	url = sanitizeAuthURL(url)
 	if url == "" || m.d.OpenAuthURL == nil {
 		return
 	}
 	go m.d.OpenAuthURL(url)
+}
+
+func sanitizeAuthURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		return raw
+	default:
+		return ""
+	}
 }
 
 func (m *Manager) recordReady(id string, pid int, configPath string) bool {
@@ -753,6 +798,7 @@ var authURLPattern = regexp.MustCompile(`(?i)https?://\S*(?:device|user[_-]code|
 
 func copyAndDetectURL(r io.Reader, w io.Writer, authCh chan<- string) {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 1<<16), 1<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
 		_, _ = fmt.Fprintln(w, line)
@@ -762,5 +808,8 @@ func copyAndDetectURL(r io.Reader, w io.Writer, authCh chan<- string) {
 			default:
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		_, _ = fmt.Fprintf(w, "slave log scan error: %v\n", err)
 	}
 }

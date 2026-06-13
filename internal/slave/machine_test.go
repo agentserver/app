@@ -228,6 +228,55 @@ func TestMachineStoreLoadsInstallerWrittenFile(t *testing.T) {
 	}
 }
 
+func TestLoadMachineWithRetryRetriesTransientErrors(t *testing.T) {
+	transientErr := errors.New("transient")
+	want := Machine{MachineID: "machine-123", ComputerName: "INSTALL-PC"}
+	attempts := 0
+
+	got, err := loadMachineWithRetry(
+		func() (Machine, error) {
+			attempts++
+			if attempts < 3 {
+				return Machine{}, transientErr
+			}
+			return want, nil
+		},
+		func(err error) bool {
+			return errors.Is(err, transientErr)
+		},
+	)
+	if err != nil {
+		t.Fatalf("loadMachineWithRetry: %v", err)
+	}
+	if got != want {
+		t.Fatalf("machine=%+v, want %+v", got, want)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts=%d, want 3", attempts)
+	}
+}
+
+func TestLoadMachineWithRetryDoesNotRetryPermanentErrors(t *testing.T) {
+	permanentErr := errors.New("permanent")
+	attempts := 0
+
+	_, err := loadMachineWithRetry(
+		func() (Machine, error) {
+			attempts++
+			return Machine{}, permanentErr
+		},
+		func(error) bool {
+			return false
+		},
+	)
+	if !errors.Is(err, permanentErr) {
+		t.Fatalf("error=%v, want %v", err, permanentErr)
+	}
+	if attempts != 1 {
+		t.Fatalf("attempts=%d, want 1", attempts)
+	}
+}
+
 func assertMachineBackup(t *testing.T, dir string, want []byte) {
 	t.Helper()
 

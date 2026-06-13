@@ -273,6 +273,44 @@ func TestServerFrontendInstallReportsErrorsOnSSE(t *testing.T) {
 	t.Fatal("expected frontend install error event on SSE stream")
 }
 
+func TestSSEHubGeneratesUniqueStreamIDs(t *testing.T) {
+	h := newSSEHub()
+	seen := map[string]bool{}
+	for i := 0; i < 1000; i++ {
+		id := h.newStream()
+		if seen[id] {
+			t.Fatalf("duplicate stream id %q", id)
+		}
+		seen[id] = true
+	}
+}
+
+func TestSSEHubSendDropsWhenClientIsNotReading(t *testing.T) {
+	h := newSSEHub()
+	id := h.newStream()
+	for i := 0; i < 256; i++ {
+		h.send(id, ProgressEvent{Stage: "download"})
+	}
+}
+
+func TestSSEHandlerReturnsOnClientDisconnect(t *testing.T) {
+	h := newSSEHub()
+	id := h.newStream()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/events?stream="+id, nil).WithContext(ctx)
+	done := make(chan struct{})
+	go func() {
+		h.handle(httptest.NewRecorder(), req)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SSE handler did not return after request context cancellation")
+	}
+}
+
 type frontendInstallErrorOrchestrator struct{ noopOrchestrator }
 
 func (frontendInstallErrorOrchestrator) EnsureFrontend(context.Context, chan<- ProgressEvent) error {
@@ -500,6 +538,43 @@ func TestServerConsoleUpdateInstallEndpointConflictsWhenFreshCheckNoLongerMatche
 	}
 	if cc.updateStateCalls != 1 || !cc.checkUpdateCalled || cc.installUpdateCalled {
 		t.Fatalf("updateStateCalls=%d checkUpdateCalled=%v installUpdateCalled=%v", cc.updateStateCalls, cc.checkUpdateCalled, cc.installUpdateCalled)
+	}
+}
+
+func TestServerConsoleUpdateInstallEndpointInstallsCachedUpdateWhenFreshCheckOffline(t *testing.T) {
+	available := updater.AvailableUpdate{
+		Version: "1.2.4",
+		URL:     "https://assets.agent.cs.ac.cn/downloads/installer.exe",
+		SHA256:  strings.Repeat("a", 64),
+		Size:    123456,
+		Notes:   "bug fixes",
+	}
+	cc := &fakeConsoleController{
+		updateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusAvailable,
+			Update:         &available,
+		},
+		checkUpdateErr: errors.New("network offline"),
+		installUpdateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusInstallerStarted,
+			Update:         &available,
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/console/update/install", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if !cc.checkUpdateCalled || !cc.installUpdateCalled {
+		t.Fatalf("checkUpdateCalled=%v installUpdateCalled=%v", cc.checkUpdateCalled, cc.installUpdateCalled)
 	}
 }
 
@@ -1229,6 +1304,7 @@ type fakeConsoleController struct {
 	checkUpdateCalled    bool
 	checkUpdateAutomatic bool
 	checkUpdateState     updater.State
+	checkUpdateErr       error
 	installUpdateCalled  bool
 	installedManifest    updater.Manifest
 	installUpdateState   updater.State
@@ -1305,6 +1381,9 @@ func (f *fakeConsoleController) UpdateState(context.Context) (updater.State, err
 func (f *fakeConsoleController) CheckUpdate(_ context.Context, automatic bool) (updater.State, error) {
 	f.checkUpdateCalled = true
 	f.checkUpdateAutomatic = automatic
+	if f.checkUpdateErr != nil {
+		return f.checkUpdateState, f.checkUpdateErr
+	}
 	return f.checkUpdateState, nil
 }
 func (f *fakeConsoleController) InstallUpdate(_ context.Context, m updater.Manifest) (updater.State, error) {

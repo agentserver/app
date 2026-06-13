@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -101,6 +102,22 @@ func TestFileReminderStoreReportsSaveError(t *testing.T) {
 	}
 	if !store.Seen("5h", "r1", 50) {
 		t.Fatal("store should keep in-memory update when save fails")
+	}
+}
+
+func TestFileReminderStoreSaveUsesAtomicSyncAndRename(t *testing.T) {
+	body, err := os.ReadFile("reminder.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	for _, want := range []string{"os.CreateTemp(", ".Sync()", "os.Rename("} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("FileReminderStore should use %s before publishing:\n%s", want, source)
+		}
+	}
+	if strings.Contains(source, "os.WriteFile(f.path") {
+		t.Fatalf("FileReminderStore should not publish directly with os.WriteFile:\n%s", source)
 	}
 }
 

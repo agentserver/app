@@ -1,7 +1,9 @@
 package secrets
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -49,5 +51,21 @@ func TestFileFallbackPermissions(t *testing.T) {
 	// On Windows the umask may differ; only enforce on Unix.
 	if mode > 0o600 {
 		t.Errorf("secrets file too permissive: %v", mode)
+	}
+}
+
+func TestFileFallbackSaveUsesAtomicSyncAndRename(t *testing.T) {
+	body, err := os.ReadFile("secrets.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	for _, want := range []string{"os.CreateTemp(", ".Sync()", "os.Rename("} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("secrets file fallback should use %s before publishing:\n%s", want, source)
+		}
+	}
+	if strings.Contains(source, "os.WriteFile(f.path") {
+		t.Fatalf("secrets file fallback should not publish directly with os.WriteFile:\n%s", source)
 	}
 }

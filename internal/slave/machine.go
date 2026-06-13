@@ -14,6 +14,12 @@ import (
 
 var ErrInvalidMachineIdentity = errors.New("invalid machine identity")
 
+const (
+	machineLoadRetryTimeout      = time.Second
+	machineLoadRetryInitialDelay = time.Millisecond
+	machineLoadRetryMaxDelay     = 25 * time.Millisecond
+)
+
 type Machine struct {
 	MachineID    string `json:"machine_id"`
 	ComputerName string `json:"computer_name"`
@@ -46,7 +52,7 @@ func (s *MachineStore) Load() (Machine, error) {
 }
 
 func (s *MachineStore) Ensure(computerName string) (Machine, error) {
-	if existing, err := s.Load(); err == nil {
+	if existing, err := s.loadAfterConcurrentPublish(); err == nil {
 		return existing, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		if !errors.Is(err, ErrInvalidMachineIdentity) {
@@ -90,11 +96,35 @@ func (s *MachineStore) create(name string) (Machine, error) {
 		return Machine{}, fmt.Errorf("marshal machine: %w", err)
 	}
 	if err := publishMachineFile(s.path, append(b, '\n')); errors.Is(err, os.ErrExist) {
-		return s.Load()
+		return s.loadAfterConcurrentPublish()
 	} else if err != nil {
 		return Machine{}, err
 	}
 	return m, nil
+}
+
+func (s *MachineStore) loadAfterConcurrentPublish() (Machine, error) {
+	return loadMachineWithRetry(s.Load, isMachineSharingViolation)
+}
+
+func loadMachineWithRetry(load func() (Machine, error), retryable func(error) bool) (Machine, error) {
+	deadline := time.Now().Add(machineLoadRetryTimeout)
+	delay := machineLoadRetryInitialDelay
+
+	for {
+		m, err := load()
+		if err == nil || !retryable(err) {
+			return m, err
+		}
+		if time.Now().Add(delay).After(deadline) {
+			return Machine{}, err
+		}
+		time.Sleep(delay)
+		delay *= 2
+		if delay > machineLoadRetryMaxDelay {
+			delay = machineLoadRetryMaxDelay
+		}
+	}
 }
 
 func (s *MachineStore) backupInvalid() error {

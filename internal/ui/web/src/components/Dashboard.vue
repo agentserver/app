@@ -337,6 +337,16 @@ function isLongPollTimeout(message: string) {
   return message.includes('context deadline exceeded') || message.includes('deadline exceeded');
 }
 
+function safeExternalUrl(raw?: string) {
+  if (!raw) return '';
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? raw : '';
+  } catch {
+    return '';
+  }
+}
+
 function delay(ms: number) {
   return new Promise(resolve => window.setTimeout(resolve, ms));
 }
@@ -532,8 +542,8 @@ onBeforeUnmount(() => {
       </el-button>
       <span v-if="reconnectStatus">{{ reconnectStatus }}</span>
       <a
-        v-if="reconnectOauthUrl"
-        :href="reconnectOauthUrl"
+        v-if="safeExternalUrl(reconnectOauthUrl)"
+        :href="safeExternalUrl(reconnectOauthUrl)"
         target="_blank"
         rel="noopener noreferrer"
       >
@@ -559,8 +569,8 @@ onBeforeUnmount(() => {
       </el-button>
       <span v-if="agentserverReconnectStatus">{{ agentserverReconnectStatus }}</span>
       <a
-        v-if="agentserverReconnectOauthUrl"
-        :href="agentserverReconnectOauthUrl"
+        v-if="safeExternalUrl(agentserverReconnectOauthUrl)"
+        :href="safeExternalUrl(agentserverReconnectOauthUrl)"
         target="_blank"
         rel="noopener noreferrer"
       >
@@ -675,8 +685,8 @@ onBeforeUnmount(() => {
             </div>
             <span class="slave-folder">{{ sl.folder }}</span>
             <a
-              v-if="sl.status === 'auth_required' && sl.auth_url"
-              :href="sl.auth_url"
+              v-if="sl.status === 'auth_required' && safeExternalUrl(sl.auth_url)"
+              :href="safeExternalUrl(sl.auth_url)"
               target="_blank"
               rel="noopener noreferrer"
             >
