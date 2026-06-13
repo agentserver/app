@@ -55,14 +55,16 @@ stage_arch() {
 
   rm -f "$tarball" "$tarball.sha256"
   (cd "$OUT/linux" && tar -czf "agentserver-linux-$arch.tar.gz" "agentserver-linux-$arch")
-  sha256sum "$tarball" > "$tarball.sha256"
+  (cd "$OUT/linux" && sha256sum "agentserver-linux-$arch.tar.gz" > "agentserver-linux-$arch.tar.gz.sha256")
   echo "wrote $tarball"
 }
 
 download_support_assets
 for arch in amd64 arm64; do
-  mkdir -p "$OUT/linux/$arch"
-  GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "$OUT/linux/$arch/agentserver" ./cmd/agentserver
+  if [[ ! -x "$OUT/linux/$arch/agentserver" ]]; then
+    echo "ERROR: missing prebuilt $OUT/linux/$arch/agentserver; run make cross-linux first" >&2
+    exit 2
+  fi
   download_arch_assets "$arch"
   stage_arch "$arch"
 done

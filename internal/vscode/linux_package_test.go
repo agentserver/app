@@ -40,10 +40,28 @@ func TestPackageLinuxBuildsBothArchitectures(t *testing.T) {
 	text := string(body)
 	for _, want := range []string{
 		`for arch in amd64 arm64`,
-		`GOOS=linux GOARCH="$arch"`,
-		`./cmd/agentserver`,
+		`run make cross-linux first`,
 		`agentserver-linux-$arch.tar.gz`,
 		`codex-manifest-linux-$arch.json`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("package-linux.sh missing %q", want)
+		}
+	}
+}
+
+func TestPackageLinuxConsumesCrossLinuxBuildOutputs(t *testing.T) {
+	body, err := os.ReadFile("../../scripts/package-linux.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if strings.Contains(text, "go build") {
+		t.Fatalf("package-linux.sh should package cross-linux outputs, not rebuild:\n%s", text)
+	}
+	for _, want := range []string{
+		`cp "$OUT/linux/$arch/agentserver" "$stage/agentserver"`,
+		`sha256sum "agentserver-linux-$arch.tar.gz" > "agentserver-linux-$arch.tar.gz.sha256"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("package-linux.sh missing %q", want)
@@ -60,6 +78,8 @@ func TestMakefileExposesLinuxTargets(t *testing.T) {
 	for _, want := range []string{
 		`cross-linux:`,
 		`package-linux: cross-linux`,
+		`GOOS=linux GOARCH=$$arch`,
+		`./cmd/agentserver`,
 		`bash scripts/package-linux.sh`,
 	} {
 		if !strings.Contains(text, want) {
