@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -344,6 +345,8 @@ func restorePendingSlaveRestarts(ctx context.Context, path, currentVersion strin
 	if cmp < 0 {
 		return nil
 	}
+	// Equality means the target version has just come back up after the update;
+	// newer versions should also retry any still-pending slave restarts.
 	return slave.RestorePendingRestarts(ctx, path, restart)
 }
 
@@ -352,14 +355,24 @@ func scheduleAutomaticUpdateCheck(ctx context.Context, svc *updater.Service, del
 }
 
 func scheduleAutomaticUpdateCheckWithTiming(ctx context.Context, svc *updater.Service, delay, interval, timeout time.Duration) {
+	scheduleAutomaticUpdateCheckWithRetry(ctx, svc, delay, interval, time.Hour, timeout, jitterAutomaticUpdateInterval)
+}
+
+func scheduleAutomaticUpdateCheckWithRetry(ctx context.Context, svc *updater.Service, delay, interval, retryInterval, timeout time.Duration, jitter func(time.Duration) time.Duration) {
 	if svc == nil {
 		return
 	}
 	if interval <= 0 {
 		interval = 24 * time.Hour
 	}
+	if retryInterval <= 0 {
+		retryInterval = time.Hour
+	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
+	}
+	if jitter == nil {
+		jitter = func(d time.Duration) time.Duration { return d }
 	}
 	go func() {
 		timer := time.NewTimer(delay)
@@ -374,13 +387,26 @@ func scheduleAutomaticUpdateCheckWithTiming(ctx context.Context, svc *updater.Se
 			checkCtx, cancelCheck := context.WithTimeout(ctx, timeout)
 			_, err := svc.Check(checkCtx, true)
 			cancelCheck()
+			nextDelay := jitter(interval)
 			if err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("launcher: automatic update check: %v", err)
+				nextDelay = retryInterval
 			}
 
-			timer.Reset(interval)
+			timer.Reset(nextDelay)
 		}
 	}()
+}
+
+func jitterAutomaticUpdateInterval(interval time.Duration) time.Duration {
+	if interval <= 0 {
+		return interval
+	}
+	span := int64(float64(interval) * 0.1)
+	if span <= 0 {
+		return interval
+	}
+	return interval + time.Duration(rand.Int63n(2*span+1)-span)
 }
 
 func newCompletedSlaveManager(in completedServeInput) (*slave.Manager, error) {

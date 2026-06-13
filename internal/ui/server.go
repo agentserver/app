@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/updater"
 )
@@ -357,7 +358,7 @@ func (s *server) handleConsoleUpdateInstall(w http.ResponseWriter, r *http.Reque
 		writeErr(w, 500, err)
 		return
 	}
-	if confirmed.Status != updater.StatusAvailable || confirmed.Update == nil {
+	if !stateHasInstallableCachedUpdate(confirmed) {
 		writeErr(w, http.StatusConflict, errors.New("console: no update available"))
 		return
 	}
@@ -387,10 +388,21 @@ func (s *server) handleConsoleUpdateInstall(w http.ResponseWriter, r *http.Reque
 	}
 	st, err := s.c.InstallUpdate(r.Context(), manifest)
 	if err != nil {
+		if errors.Is(err, console.ErrUpdateInstallInProgress) {
+			writeErr(w, http.StatusConflict, err)
+			return
+		}
 		writeErr(w, 500, err)
 		return
 	}
 	writeJSON(w, 200, st)
+}
+
+func stateHasInstallableCachedUpdate(state updater.State) bool {
+	if state.Update == nil {
+		return false
+	}
+	return state.Status == updater.StatusAvailable || state.Status == updater.StatusError
 }
 
 func sameAvailableUpdate(a, b updater.AvailableUpdate) bool {

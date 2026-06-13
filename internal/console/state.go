@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
@@ -79,7 +80,8 @@ type QuotaWindow struct {
 }
 
 type Controller struct {
-	d Deps
+	d               Deps
+	updateInstallMu sync.Mutex
 }
 
 func NewController(d Deps) *Controller {

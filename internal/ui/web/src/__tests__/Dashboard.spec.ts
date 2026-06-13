@@ -183,6 +183,22 @@ describe('Dashboard', () => {
     expect(w.text().match(/manifest unavailable/g)).toHaveLength(1);
   });
 
+  it('keeps install action visible for a cached update after a transient update error', async () => {
+    vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
+      status: 'error',
+      last_error: 'temporary manifest outage',
+      update: { version: '1.3.0', notes: 'Fixes startup checks' },
+    }));
+    mockConsoleState();
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(w.text()).toContain('temporary manifest outage');
+    expect(w.text()).toContain('Fixes startup checks');
+    expect(w.find('[data-test="install-console-update"]').exists()).toBe(true);
+  });
+
   it('does not install an available console update when confirmation is cancelled', async () => {
     vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
       status: 'available',

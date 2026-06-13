@@ -109,7 +109,6 @@ export type ConsoleUpdateStatus =
   | 'latest'
   | 'available'
   | 'downloading'
-  | 'ready'
   | 'installer_started'
   | 'error';
 

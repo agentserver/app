@@ -304,6 +304,76 @@ func TestAutomaticUpdateCheckLogsNonCanceledErrors(t *testing.T) {
 	t.Fatalf("automatic update check error was not logged; logs=%q", logs.String())
 }
 
+func TestAutomaticUpdateCheckRetriesSoonAfterError(t *testing.T) {
+	hits := make(chan time.Time, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits <- time.Now()
+		http.Error(w, "manifest failed", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    server.URL,
+		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		AutoCheckEvery: time.Nanosecond,
+	}, time.Millisecond, time.Hour, 20*time.Millisecond, 50*time.Millisecond, func(d time.Duration) time.Duration {
+		return d
+	})
+
+	select {
+	case <-hits:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first automatic update check")
+	}
+	select {
+	case <-hits:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("automatic update check did not retry soon after error")
+	}
+}
+
+func TestAutomaticUpdateCheckAppliesSuccessJitter(t *testing.T) {
+	hits := make(chan time.Time, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits <- time.Now()
+		manifest := updater.Manifest{
+			Version: "99.0.0",
+			URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-99.0.0-setup.exe",
+			SHA256:  strings.Repeat("a", 64),
+			Size:    123,
+		}
+		if err := json.NewEncoder(w).Encode(manifest); err != nil {
+			t.Fatalf("Encode manifest: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    server.URL,
+		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		AutoCheckEvery: time.Nanosecond,
+	}, time.Millisecond, time.Hour, time.Hour, 50*time.Millisecond, func(time.Duration) time.Duration {
+		return 20 * time.Millisecond
+	})
+
+	select {
+	case <-hits:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first automatic update check")
+	}
+	select {
+	case <-hits:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("automatic update check did not use success jitter delay")
+	}
+}
+
 func TestAutomaticUpdateCheckTimesOutBlockingManifestRequest(t *testing.T) {
 	var logs lockedLogBuffer
 	previousWriter := log.Writer()
@@ -363,20 +433,35 @@ func (b *lockedLogBuffer) String() string {
 	return b.b.String()
 }
 
-func TestAutomaticUpdateCheckUsesConsoleScopedContext(t *testing.T) {
-	body, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatal(err)
+func TestAutomaticUpdateCheckStopsAfterContextCancel(t *testing.T) {
+	hits := make(chan struct{}, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits <- struct{}{}
+		http.Error(w, "manifest failed", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
+		CurrentVersion: appversion.Version,
+		ManifestURL:    server.URL,
+		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		AutoCheckEvery: time.Nanosecond,
+	}, time.Millisecond, time.Hour, 20*time.Millisecond, 50*time.Millisecond, func(d time.Duration) time.Duration {
+		return d
+	})
+
+	select {
+	case <-hits:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first automatic update check")
 	}
-	source := string(body)
-	for _, want := range []string{
-		"consoleCtx, stopConsole := context.WithCancel(ctx)",
-		"defer stopConsole()",
-		"scheduleAutomaticUpdateCheck(consoleCtx, updates, 30*time.Second)",
-	} {
-		if !strings.Contains(source, want) {
-			t.Fatalf("serveCompletedConsole should cancel automatic update checks on every return path; missing %q in:\n%s", want, source)
-		}
+	cancel()
+
+	select {
+	case <-hits:
+		t.Fatal("manifest server was hit after automatic update context cancellation")
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 

@@ -76,7 +76,6 @@ const updateStatusText = computed(() => {
   if (update.status === 'latest') return '已是最新版本';
   if (update.status === 'checking') return '正在检查更新';
   if (update.status === 'downloading') return '正在下载更新';
-  if (update.status === 'ready') return '更新已就绪';
   if (update.status === 'installer_started') return '安装程序已启动';
   if (update.status === 'error') return update.last_error || '更新检查失败';
   return '未检查更新';
@@ -84,6 +83,10 @@ const updateStatusText = computed(() => {
 
 const updateBusy = computed(() => checkingUpdate.value || installingUpdate.value);
 const updateButtonDisabled = computed(() => updateBusy.value);
+const updateInstallAvailable = computed(() => {
+  const update = updateState.value;
+  return !!update?.update && (update.status === 'available' || update.status === 'error');
+});
 const updateDetailError = computed(() => {
   const update = updateState.value;
   if (!update?.last_error) return '';
@@ -160,7 +163,7 @@ async function checkUpdate() {
 }
 
 async function installUpdate() {
-  if (updateBusy.value || !updateState.value?.update) return;
+  if (updateBusy.value || !updateInstallAvailable.value || !updateState.value?.update) return;
   const version = updateState.value.update.version;
   const confirmed = window.confirm(`安装星池指挥官更新 ${version}？安装程序启动后可能需要按提示完成更新。`);
   if (!confirmed) return;
@@ -605,7 +608,7 @@ onBeforeUnmount(() => {
             检查更新
           </el-button>
           <el-button
-            v-if="updateState?.status === 'available' && updateState.update"
+            v-if="updateInstallAvailable"
             data-test="install-console-update"
             type="primary"
             :loading="installingUpdate"

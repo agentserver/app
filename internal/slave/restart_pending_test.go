@@ -136,6 +136,26 @@ func TestRestorePendingRestartsRestartsEveryRecordedSlaveAndDeletesFile(t *testi
 	}
 }
 
+func TestRestorePendingRestartsIgnoresPendingFileAlreadyRemovedAfterSuccessfulRestarts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pending-slave-restarts.json")
+	if err := writePendingRestartFile(path, PendingRestarts{
+		Reason:    "app_update",
+		Version:   "0.1.2",
+		CreatedAt: time.Unix(10, 0).UTC(),
+		SlaveIDs:  []string{"a"},
+	}); err != nil {
+		t.Fatalf("write pending: %v", err)
+	}
+
+	err := RestorePendingRestarts(context.Background(), path, func(context.Context, string) error {
+		return os.Remove(path)
+	})
+
+	if err != nil {
+		t.Fatalf("RestorePendingRestarts: %v", err)
+	}
+}
+
 func TestRestorePendingRestartsKeepsFailedIDsForRetryAndDropsMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pending-slave-restarts.json")
 	createdAt := time.Unix(10, 0).UTC()

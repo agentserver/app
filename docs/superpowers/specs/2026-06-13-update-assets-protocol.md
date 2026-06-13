@@ -151,6 +151,8 @@ If `latest.json` was accidentally pointed to a bad version before users installe
 
 For version `0.1.2`:
 
+Update both `internal/appversion/version.go` and `packaging/windows/installer.iss` to the same version before building.
+
 ```bash
 version=0.1.2
 exe="packaging/windows/Output/agentserver-app-${version}-setup.exe"

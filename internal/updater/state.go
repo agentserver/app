@@ -16,7 +16,6 @@ const (
 	StatusLatest           Status = "latest"
 	StatusAvailable        Status = "available"
 	StatusDownloading      Status = "downloading"
-	StatusReady            Status = "ready"
 	StatusInstallerStarted Status = "installer_started"
 	StatusError            Status = "error"
 )

@@ -89,7 +89,7 @@ func RestorePendingRestarts(ctx context.Context, path string, restart func(conte
 		}
 		return errors.Join(errs...)
 	}
-	if err := os.Remove(path); err != nil {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)

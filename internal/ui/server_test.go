@@ -426,6 +426,48 @@ func TestServerConsoleUpdateInstallEndpointInstallsPersistedAvailableUpdate(t *t
 	}
 }
 
+func TestServerConsoleUpdateInstallEndpointInstallsCachedUpdateFromErrorState(t *testing.T) {
+	available := updater.AvailableUpdate{
+		Version: "1.2.4",
+		URL:     "https://assets.agent.cs.ac.cn/downloads/installer.exe",
+		SHA256:  strings.Repeat("a", 64),
+		Size:    123456,
+		Notes:   "bug fixes",
+	}
+	cc := &fakeConsoleController{
+		updateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusError,
+			Update:         &available,
+			LastError:      "temporary manifest outage",
+		},
+		checkUpdateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusAvailable,
+			Update:         &available,
+		},
+		installUpdateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusInstallerStarted,
+			Update:         &available,
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/console/update/install", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if !cc.checkUpdateCalled || !cc.installUpdateCalled {
+		t.Fatalf("checkUpdateCalled=%v installUpdateCalled=%v", cc.checkUpdateCalled, cc.installUpdateCalled)
+	}
+}
+
 func TestServerConsoleUpdateInstallEndpointConflictsWhenFreshCheckNoLongerMatches(t *testing.T) {
 	stale := updater.AvailableUpdate{
 		Version: "1.2.4",
@@ -458,6 +500,42 @@ func TestServerConsoleUpdateInstallEndpointConflictsWhenFreshCheckNoLongerMatche
 	}
 	if cc.updateStateCalls != 1 || !cc.checkUpdateCalled || cc.installUpdateCalled {
 		t.Fatalf("updateStateCalls=%d checkUpdateCalled=%v installUpdateCalled=%v", cc.updateStateCalls, cc.checkUpdateCalled, cc.installUpdateCalled)
+	}
+}
+
+func TestServerConsoleUpdateInstallEndpointConflictsWhenInstallAlreadyInProgress(t *testing.T) {
+	available := updater.AvailableUpdate{
+		Version: "1.2.4",
+		URL:     "https://assets.agent.cs.ac.cn/downloads/installer.exe",
+		SHA256:  strings.Repeat("a", 64),
+		Size:    123456,
+	}
+	cc := &fakeConsoleController{
+		updateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusAvailable,
+			Update:         &available,
+		},
+		checkUpdateState: updater.State{
+			CurrentVersion: "1.2.3",
+			Status:         updater.StatusAvailable,
+			Update:         &available,
+		},
+		installUpdateErr: console.ErrUpdateInstallInProgress,
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/console/update/install", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status=%d, want %d", resp.StatusCode, http.StatusConflict)
+	}
+	if !cc.installUpdateCalled {
+		t.Fatal("InstallUpdate was not called")
 	}
 }
 
@@ -1154,6 +1232,7 @@ type fakeConsoleController struct {
 	installUpdateCalled  bool
 	installedManifest    updater.Manifest
 	installUpdateState   updater.State
+	installUpdateErr     error
 }
 
 func (f *fakeConsoleController) State(context.Context) (console.State, error) {
@@ -1231,6 +1310,9 @@ func (f *fakeConsoleController) CheckUpdate(_ context.Context, automatic bool) (
 func (f *fakeConsoleController) InstallUpdate(_ context.Context, m updater.Manifest) (updater.State, error) {
 	f.installUpdateCalled = true
 	f.installedManifest = m
+	if f.installUpdateErr != nil {
+		return f.installUpdateState, f.installUpdateErr
+	}
 	return f.installUpdateState, nil
 }
 

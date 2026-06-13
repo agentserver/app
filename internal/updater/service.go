@@ -18,6 +18,8 @@ import (
 
 const DefaultManifestURL = "https://assets.agent.cs.ac.cn/agentserver-app/windows/latest.json"
 
+const manifestMaxBytes = 64 * 1024
+
 type Service struct {
 	CurrentVersion       string
 	ManifestURL          string
@@ -198,7 +200,7 @@ func (s Service) fetchManifest(ctx context.Context) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	resp, err := s.client().Do(req)
+	resp, err := s.manifestDownloadClient().Do(req)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -207,13 +209,17 @@ func (s Service) fetchManifest(ctx context.Context) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("fetch manifest: unexpected status %s", resp.Status)
 	}
 	var manifest Manifest
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, manifestMaxBytes)).Decode(&manifest); err != nil {
 		return Manifest{}, err
 	}
 	if err := manifest.Validate(); err != nil {
 		return Manifest{}, err
 	}
 	return manifest, nil
+}
+
+func (s Service) manifestDownloadClient() *http.Client {
+	return s.redirectPinnedAssetsClient()
 }
 
 func (s Service) downloadInstaller(ctx context.Context, m Manifest, w io.Writer) error {
@@ -241,6 +247,10 @@ func (s Service) downloadInstaller(ctx context.Context, m Manifest, w io.Writer)
 }
 
 func (s Service) installerDownloadClient() *http.Client {
+	return s.redirectPinnedAssetsClient()
+}
+
+func (s Service) redirectPinnedAssetsClient() *http.Client {
 	base := s.client()
 	client := *base
 	priorCheckRedirect := base.CheckRedirect
@@ -296,7 +306,7 @@ func installerCachePath(cacheDir string, m Manifest) (string, error) {
 	if name == "." || name == "/" || name == "" {
 		name = "agentserver-app-" + m.Version + "-setup.exe"
 	}
-	if !strings.EqualFold(filepath.Ext(name), ".exe") {
+	if !strings.HasSuffix(strings.ToLower(name), ".exe") {
 		name += ".exe"
 	}
 	name = filepath.Base(name)
@@ -354,6 +364,16 @@ func (s Service) saveError(now time.Time, err error) (State, error) {
 		LastCheckedAt:  now,
 		Status:         StatusError,
 		LastError:      err.Error(),
+	}
+	if prior, loadErr := s.loadState(); loadErr == nil {
+		if !prior.LastCheckedAt.IsZero() {
+			state.LastCheckedAt = prior.LastCheckedAt
+		}
+		if prior.Update != nil {
+			if cmp, cmpErr := CompareVersions(prior.Update.Version, s.CurrentVersion); cmpErr == nil && cmp > 0 {
+				state.Update = prior.Update
+			}
+		}
 	}
 	if saveErr := s.saveState(state); saveErr != nil {
 		return state, errors.Join(err, fmt.Errorf("save error state: %w", saveErr))

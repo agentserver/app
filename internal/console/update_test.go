@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -267,6 +269,83 @@ func TestControllerInstallUpdateRecordsEligibleSlavesImmediatelyBeforeInstallerS
 	}
 	if gotPointer := reflect.ValueOf(svc.StartInstaller).Pointer(); gotPointer != originalStartPointer {
 		t.Fatal("shared updater service StartInstaller callback was mutated")
+	}
+}
+
+func TestControllerInstallUpdateRejectsConcurrentInstall(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("installer bytes")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := w.Write(body); err != nil {
+			t.Fatalf("Write body: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	startEntered := make(chan struct{})
+	releaseStart := make(chan struct{})
+	var enteredOnce sync.Once
+	var startCalls atomic.Int32
+	c := NewController(Deps{
+		Updates: &updater.Service{
+			CurrentVersion: "1.0.0",
+			CacheDir:       filepath.Join(dir, "cache"),
+			State:          updater.NewStateStore(filepath.Join(dir, "updates.json")),
+			Client:         consoleAssetsHostClient(t, server),
+			StartInstaller: func(context.Context, string) error {
+				startCalls.Add(1)
+				enteredOnce.Do(func() { close(startEntered) })
+				<-releaseStart
+				return nil
+			},
+		},
+	})
+	manifest := validConsoleUpdateManifestForBody(body)
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := c.InstallUpdate(context.Background(), manifest)
+		firstDone <- err
+	}()
+
+	select {
+	case <-startEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first install did not reach StartInstaller")
+	}
+
+	secondDone := make(chan error, 1)
+	var secondState updater.State
+	go func() {
+		st, err := c.InstallUpdate(context.Background(), manifest)
+		secondState = st
+		secondDone <- err
+	}()
+
+	select {
+	case err := <-secondDone:
+		if !errors.Is(err, ErrUpdateInstallInProgress) {
+			t.Fatalf("second InstallUpdate err=%v, want %v", err, ErrUpdateInstallInProgress)
+		}
+		if secondState.Status != updater.StatusDownloading {
+			t.Fatalf("second state status=%q, want %q", secondState.Status, updater.StatusDownloading)
+		}
+	case <-time.After(100 * time.Millisecond):
+		close(releaseStart)
+		if err := <-firstDone; err != nil {
+			t.Fatalf("first InstallUpdate after release: %v", err)
+		}
+		if err := <-secondDone; err == nil {
+			t.Fatal("second InstallUpdate waited for first install and then succeeded")
+		}
+		t.Fatal("second InstallUpdate did not return while first install was in progress")
+	}
+
+	close(releaseStart)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first InstallUpdate: %v", err)
+	}
+	if got := startCalls.Load(); got != 1 {
+		t.Fatalf("StartInstaller calls=%d, want 1", got)
 	}
 }
 

@@ -70,6 +70,87 @@ func TestServiceCheckReportsAvailableUpdate(t *testing.T) {
 	}
 }
 
+func TestServiceCheckRejectsManifestRedirectToDisallowedHostBeforeRequestingTarget(t *testing.T) {
+	manifest := Manifest{
+		Version: "0.1.2",
+		URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-0.1.2-setup.exe",
+		SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Size:    123,
+	}
+	redirectedHostRequested := false
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://manifests.example.test/agentserver-app/windows/latest.json", http.StatusFound)
+	}))
+	t.Cleanup(server.Close)
+	client := assetsHostClient(t, server)
+	client.Transport = disallowedRedirectRecordingTransport{
+		base: client.Transport,
+		onDisallowed: func(req *http.Request) (*http.Response, error) {
+			redirectedHostRequested = true
+			var body strings.Builder
+			if err := json.NewEncoder(&body).Encode(manifest); err != nil {
+				t.Fatalf("Encode manifest: %v", err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body.String())),
+				Request:    req,
+			}, nil
+		},
+	}
+
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		ManifestURL:    assetsInstallerURL("/agentserver-app/windows/latest.json"),
+		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		Client:         client,
+	}.Check(context.Background(), false)
+	if err == nil {
+		t.Fatal("expected manifest redirect host rejection")
+	}
+	if got.Status != StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+	}
+	if redirectedHostRequested {
+		t.Fatal("manifest fetch requested disallowed redirect target")
+	}
+	if !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("error=%q, want allowlist rejection", err)
+	}
+}
+
+func TestServiceCheckRejectsOversizedManifestResponse(t *testing.T) {
+	manifest := Manifest{
+		Version: "0.1.2",
+		URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-0.1.2-setup.exe",
+		SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Size:    123,
+		Notes:   strings.Repeat("x", 70*1024),
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewEncoder(w).Encode(manifest); err != nil {
+			t.Fatalf("Encode manifest: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		ManifestURL:    server.URL,
+		State:          NewStateStore(filepath.Join(t.TempDir(), "state.json")),
+		Client:         assetsHostClient(t, server),
+	}.Check(context.Background(), false)
+	if err == nil {
+		t.Fatal("expected oversized manifest error")
+	}
+	if got.Status != StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+	}
+}
+
 func TestServiceCheckReturnsErrorStateOnCorruptPersistedState(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	if err := os.WriteFile(statePath, []byte("{not-json"), 0o644); err != nil {
@@ -349,6 +430,63 @@ func TestServiceAutomaticCheckKeepsNewerAvailableUpdateWhenRecentlyChecked(t *te
 	}
 	if saved.Update == nil || *saved.Update != *wantUpdate {
 		t.Fatalf("saved Update=%+v, want %+v", saved.Update, wantUpdate)
+	}
+}
+
+func TestServiceAutomaticCheckFailurePreservesCachedAvailableUpdate(t *testing.T) {
+	checkedAt := time.Date(2026, 6, 12, 13, 30, 0, 0, time.UTC)
+	now := checkedAt.Add(25 * time.Hour)
+	wantUpdate := &AvailableUpdate{
+		Version: "0.1.2",
+		URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-0.1.2-setup.exe",
+		SHA256:  strings.Repeat("c", 64),
+		Size:    123,
+		Notes:   "cached update",
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "temporary manifest outage", http.StatusBadGateway)
+	}))
+	t.Cleanup(server.Close)
+
+	store := NewStateStore(filepath.Join(t.TempDir(), "state.json"))
+	if err := store.Save(State{
+		CurrentVersion: "0.1.1",
+		LastCheckedAt:  checkedAt,
+		Status:         StatusAvailable,
+		Update:         wantUpdate,
+	}); err != nil {
+		t.Fatalf("Save prior state: %v", err)
+	}
+
+	got, err := Service{
+		CurrentVersion: "0.1.1",
+		ManifestURL:    server.URL,
+		State:          store,
+		Client:         assetsHostClient(t, server),
+		Now:            func() time.Time { return now },
+	}.Check(context.Background(), true)
+	if err == nil {
+		t.Fatal("expected automatic check error")
+	}
+	if got.Status != StatusError {
+		t.Fatalf("Status=%q, want %q", got.Status, StatusError)
+	}
+	if got.Update == nil || *got.Update != *wantUpdate {
+		t.Fatalf("Update=%+v, want cached %+v", got.Update, wantUpdate)
+	}
+	if !got.LastCheckedAt.Equal(checkedAt) {
+		t.Fatalf("LastCheckedAt=%s, want cached %s", got.LastCheckedAt, checkedAt)
+	}
+
+	saved, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load saved state: %v", err)
+	}
+	if saved.Update == nil || *saved.Update != *wantUpdate {
+		t.Fatalf("saved Update=%+v, want cached %+v", saved.Update, wantUpdate)
+	}
+	if !saved.LastCheckedAt.Equal(checkedAt) {
+		t.Fatalf("saved LastCheckedAt=%s, want cached %s", saved.LastCheckedAt, checkedAt)
 	}
 }
 
