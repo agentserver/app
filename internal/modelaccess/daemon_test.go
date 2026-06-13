@@ -242,6 +242,51 @@ func TestEnsureDaemonStartsAgentserverModelProxyDaemonWhenHealthMissing(t *testi
 	}
 }
 
+func TestEnsureDaemonRequiresExePath(t *testing.T) {
+	err := EnsureDaemon(context.Background(), EnsureDaemonOptions{
+		ProxyBaseURL: "http://127.0.0.1:1",
+		HealthCheck: func(context.Context, string) bool {
+			return false
+		},
+		StartProcess: func(*exec.Cmd) error {
+			t.Fatal("StartProcess should not be called without ExePath")
+			return nil
+		},
+	})
+	if err == nil || err.Error() != "agentserver executable path required" {
+		t.Fatalf("EnsureDaemon err=%v, want agentserver executable path required", err)
+	}
+}
+
+func TestEnsureDaemonBuildsDetachedCommandNotBoundToCallerContext(t *testing.T) {
+	parentCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calledCommandFactory := false
+	overrideDaemonCommand(t, func(exePath string, args ...string) *exec.Cmd {
+		calledCommandFactory = true
+		return exec.Command(exePath, args...)
+	})
+
+	healthy := false
+	err := EnsureDaemon(parentCtx, EnsureDaemonOptions{
+		ExePath:      "/opt/agentserver/agentserver",
+		ProxyBaseURL: "http://127.0.0.1:1",
+		HealthCheck: func(context.Context, string) bool {
+			return healthy
+		},
+		StartProcess: func(*exec.Cmd) error {
+			healthy = true
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnsureDaemon returned %v", err)
+	}
+	if !calledCommandFactory {
+		t.Fatal("daemon command factory was not called")
+	}
+}
+
 func TestEnsureDaemonReusesHealthyExistingProxy(t *testing.T) {
 	started := false
 	err := EnsureDaemon(context.Background(), EnsureDaemonOptions{
@@ -385,5 +430,14 @@ func overrideRunTokenRefresh(t *testing.T, fn func(context.Context, tokenrefresh
 	runTokenRefresh = fn
 	t.Cleanup(func() {
 		runTokenRefresh = original
+	})
+}
+
+func overrideDaemonCommand(t *testing.T, fn func(string, ...string) *exec.Cmd) {
+	t.Helper()
+	original := newDaemonCommand
+	newDaemonCommand = fn
+	t.Cleanup(func() {
+		newDaemonCommand = original
 	})
 }

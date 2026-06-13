@@ -25,6 +25,7 @@ const healthCheckTimeout = 500 * time.Millisecond
 
 var (
 	runTokenRefresh  = tokenrefresh.Run
+	newDaemonCommand = exec.Command
 	healthHTTPClient = &http.Client{
 		Timeout: healthCheckTimeout,
 	}
@@ -141,14 +142,20 @@ func EnsureDaemon(ctx context.Context, opts EnsureDaemonOptions) error {
 	if healthCheck(ctx, baseURL) {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, opts.ExePath, "model-proxy-daemon")
+	if opts.ExePath == "" {
+		return errors.New("agentserver executable path required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	cmd := newDaemonCommand(opts.ExePath, "model-proxy-daemon")
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	process.HideWindow(cmd)
 	startProcess := opts.StartProcess
 	if startProcess == nil {
-		startProcess = func(cmd *exec.Cmd) error { return cmd.Start() }
+		startProcess = startDetachedProcess
 	}
 	if err := startProcess(cmd); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "address already in use") {
@@ -169,6 +176,16 @@ func EnsureDaemon(ctx context.Context, opts EnsureDaemonOptions) error {
 		}
 	}
 	return ErrProxyUnavailable
+}
+
+func startDetachedProcess(cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if cmd.Process != nil {
+		return cmd.Process.Release()
+	}
+	return nil
 }
 
 func ProxyHealthy(ctx context.Context, baseURL string) bool {
