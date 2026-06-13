@@ -173,6 +173,41 @@ func TestRunDaemonStopsProxyWhenRefreshReturnsHardError(t *testing.T) {
 	t.Fatal("proxy was still healthy after refresh hard error")
 }
 
+func TestRunDaemonReturnsNilWhenDeadlineExpiresFromRefreshBranch(t *testing.T) {
+	dir := t.TempDir()
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access-from-secret"); err != nil {
+		t.Fatal(err)
+	}
+
+	overrideRunTokenRefresh(t, func(ctx context.Context, _ tokenrefresh.Options) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	for i := 0; i < 100; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+		time.Sleep(time.Millisecond)
+		err := RunDaemon(ctx, DaemonOptions{
+			Secrets:   sec,
+			OAuth:     oauth.AuthCodeConfig{ClientID: "client-x"},
+			ProxyAddr: freeTCPAddr(t),
+		})
+		cancel()
+		if err != nil {
+			t.Fatalf("RunDaemon err=%v on iteration %d, want nil", err, i)
+		}
+	}
+}
+
+func TestCleanDaemonShutdownRecognizesActiveContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer cancel()
+	<-ctx.Done()
+	if !cleanDaemonShutdown(ctx, context.DeadlineExceeded) {
+		t.Fatal("context deadline exceeded was not treated as clean shutdown")
+	}
+}
+
 func TestEnsureDaemonStartsAgentserverModelProxyDaemonWhenHealthMissing(t *testing.T) {
 	var started bool
 	var gotArgs []string

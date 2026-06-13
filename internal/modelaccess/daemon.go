@@ -103,7 +103,7 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 				return finish(result.err)
 			}
 			err := result.err
-			if err == nil || errors.Is(err, context.Canceled) {
+			if cleanDaemonShutdown(ctx, err) {
 				return finish(nil)
 			}
 			if errors.Is(err, tokenrefresh.ErrNoRefreshToken) {
@@ -195,6 +195,16 @@ func ProxyHealthy(ctx context.Context, baseURL string) bool {
 
 func DefaultLockPath(installRoot string) string {
 	return filepath.Join(installRoot, "token-refresher.lock")
+}
+
+func cleanDaemonShutdown(ctx context.Context, err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return true
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+		return true
+	}
+	return false
 }
 
 func healthURL(baseURL string) (string, error) {
