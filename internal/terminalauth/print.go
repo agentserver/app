@@ -3,6 +3,7 @@ package terminalauth
 import (
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
@@ -22,12 +23,12 @@ func PrintChallenge(w io.Writer, title string, ch oauth.DeviceCodeChallenge, qr 
 	if w == nil {
 		return
 	}
-	if strings.TrimSpace(title) != "" {
-		fmt.Fprintf(w, "\n%s\n", strings.TrimSpace(title))
-	}
 	url := ChallengeURL(ch)
 	if url == "" {
 		return
+	}
+	if strings.TrimSpace(title) != "" {
+		fmt.Fprintf(w, "\n%s\n", strings.TrimSpace(title))
 	}
 	fmt.Fprintf(w, "URL: %s\n", url)
 	if strings.TrimSpace(ch.UserCode) != "" {
@@ -47,6 +48,12 @@ func PrintURL(w io.Writer, title, rawURL, userCode string, qr QRWriter) {
 }
 
 func DefaultQR(w interface{ Write([]byte) (int, error) }, url string) {
+	if isNilWriter(w) || strings.TrimSpace(url) == "" {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
 	qrterminal.GenerateWithConfig(url, qrterminal.Config{
 		Level:     qrterminal.L,
 		Writer:    w,
@@ -54,4 +61,17 @@ func DefaultQR(w interface{ Write([]byte) (int, error) }, url string) {
 		WhiteChar: qrterminal.WHITE_WHITE,
 		QuietZone: 1,
 	})
+}
+
+func isNilWriter(w interface{ Write([]byte) (int, error) }) bool {
+	if w == nil {
+		return true
+	}
+	v := reflect.ValueOf(w)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }

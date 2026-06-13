@@ -18,6 +18,15 @@ func TestChallengeURLPrefersCompleteVerificationURI(t *testing.T) {
 	}
 }
 
+func TestChallengeURLFallsBackToVerificationURI(t *testing.T) {
+	ch := oauth.DeviceCodeChallenge{
+		VerificationURI: " https://example.test/verify ",
+	}
+	if got := ChallengeURL(ch); got != "https://example.test/verify" {
+		t.Fatalf("ChallengeURL=%q", got)
+	}
+}
+
 func TestPrintChallengeIncludesTitleURLCodeAndQR(t *testing.T) {
 	var buf bytes.Buffer
 	qrCalled := false
@@ -53,7 +62,52 @@ func TestPrintChallengeIncludesTitleURLCodeAndQR(t *testing.T) {
 func TestPrintChallengeSkipsEmptyURL(t *testing.T) {
 	var buf bytes.Buffer
 	PrintChallenge(&buf, "Agentserver 登录", oauth.DeviceCodeChallenge{}, nil)
-	if strings.Contains(buf.String(), "URL:") {
-		t.Fatalf("unexpected URL output:\n%s", buf.String())
+	if buf.String() != "" {
+		t.Fatalf("unexpected output:\n%s", buf.String())
 	}
+}
+
+func TestPrintURLTrimsURLAndCode(t *testing.T) {
+	var buf bytes.Buffer
+	PrintURL(&buf, "Agentserver 登录", " https://example.test/verify?user_code=ABCD ", " ABCD ", func(w interface{ Write([]byte) (int, error) }, url string) {
+		if url != "https://example.test/verify?user_code=ABCD" {
+			t.Fatalf("QR url=%q", url)
+		}
+	})
+
+	out := buf.String()
+	for _, want := range []string{
+		"URL: https://example.test/verify?user_code=ABCD",
+		"Code: ABCD",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, " ABCD ") {
+		t.Fatalf("output contains untrimmed code:\n%s", out)
+	}
+}
+
+func TestDefaultQRSkipsNilWriter(t *testing.T) {
+	assertNotPanics(t, func() {
+		DefaultQR(nil, "https://example.test")
+	})
+}
+
+func TestDefaultQRSkipsUnencodableInput(t *testing.T) {
+	var buf bytes.Buffer
+	assertNotPanics(t, func() {
+		DefaultQR(&buf, strings.Repeat("x", 10000))
+	})
+}
+
+func assertNotPanics(t *testing.T, fn func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("unexpected panic: %v", r)
+		}
+	}()
+	fn()
 }
