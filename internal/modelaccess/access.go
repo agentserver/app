@@ -64,9 +64,6 @@ func Ensure(ctx context.Context, opts EnsureOptions) (Result, error) {
 	if err := ensureProxyCredentials(ctx, opts); err != nil {
 		return Result{}, err
 	}
-	if err := codex.UpdateConfig(opts.CodexConfigPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
-		return Result{}, err
-	}
 	if err := opts.SetEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue); err != nil {
 		return Result{}, err
 	}
@@ -77,6 +74,9 @@ func Ensure(ctx context.Context, opts EnsureOptions) (Result, error) {
 		if err := opts.StartDaemon(ctx); err != nil {
 			return Result{}, err
 		}
+	}
+	if err := codex.UpdateConfig(opts.CodexConfigPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
+		return Result{}, err
 	}
 	return Result{Mode: ModeLocalProxy}, nil
 }

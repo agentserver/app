@@ -360,12 +360,97 @@ func TestEnsureRequiresSecrets(t *testing.T) {
 	}
 }
 
+func TestEnsureProxyModeDoesNotWriteProxyConfigWhenSetEnvFails(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "codex", "config.toml")
+	writeDirectConfig(t, configPath)
+	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
+	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	setEnvErr := errors.New("set env failed")
+
+	_, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: configPath,
+		Secrets:         sec,
+		Env:             func(string) string { return "" },
+		SetEnv: func(string, string) error {
+			return setEnvErr
+		},
+		PersistEnv: func(string, string) error {
+			t.Fatal("PersistEnv called after SetEnv failure")
+			return nil
+		},
+		StartDaemon: func(context.Context) error {
+			t.Fatal("StartDaemon called after SetEnv failure")
+			return nil
+		},
+	})
+	if !errors.Is(err, setEnvErr) {
+		t.Fatalf("Ensure() error = %v, want %v", err, setEnvErr)
+	}
+	assertConfigNotContains(t, configPath, `base_url = "`+modelproxy.DefaultBaseURL+`"`)
+}
+
+func TestEnsureProxyModeDoesNotWriteProxyConfigWhenPersistEnvFails(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "codex", "config.toml")
+	writeDirectConfig(t, configPath)
+	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
+	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	persistErr := errors.New("persist env failed")
+
+	_, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: configPath,
+		Secrets:         sec,
+		Env:             func(string) string { return "" },
+		SetEnv:          func(string, string) error { return nil },
+		PersistEnv: func(string, string) error {
+			return persistErr
+		},
+		StartDaemon: func(context.Context) error {
+			t.Fatal("StartDaemon called after PersistEnv failure")
+			return nil
+		},
+	})
+	if !errors.Is(err, persistErr) {
+		t.Fatalf("Ensure() error = %v, want %v", err, persistErr)
+	}
+	assertConfigNotContains(t, configPath, `base_url = "`+modelproxy.DefaultBaseURL+`"`)
+}
+
+func TestEnsureProxyModeDoesNotWriteProxyConfigWhenStartDaemonFails(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "codex", "config.toml")
+	writeDirectConfig(t, configPath)
+	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
+	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	daemonErr := errors.New("daemon failed")
+
+	_, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: configPath,
+		Secrets:         sec,
+		Env:             func(string) string { return "" },
+		SetEnv:          func(string, string) error { return nil },
+		PersistEnv:      func(string, string) error { return nil },
+		StartDaemon: func(context.Context) error {
+			return daemonErr
+		},
+	})
+	if !errors.Is(err, daemonErr) {
+		t.Fatalf("Ensure() error = %v, want %v", err, daemonErr)
+	}
+	assertConfigNotContains(t, configPath, `base_url = "`+modelproxy.DefaultBaseURL+`"`)
+}
+
 func TestProxySettingsWrittenInProxyMode(t *testing.T) {
 	tmp := t.TempDir()
 	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
 	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
 	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
 	var setEnvKey, setEnvValue, persistEnvKey, persistEnvValue string
+	var daemonStarted bool
 
 	_, err := Ensure(context.Background(), EnsureOptions{
 		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
@@ -379,10 +464,16 @@ func TestProxySettingsWrittenInProxyMode(t *testing.T) {
 			persistEnvKey, persistEnvValue = key, value
 			return nil
 		},
-		StartDaemon: func(context.Context) error { return nil },
+		StartDaemon: func(context.Context) error {
+			daemonStarted = true
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("Ensure() error = %v", err)
+	}
+	if !daemonStarted {
+		t.Fatal("StartDaemon was not called")
 	}
 	assertConfigContains(t, filepath.Join(tmp, "codex", "config.toml"),
 		`base_url = "`+modelproxy.DefaultBaseURL+`"`,
@@ -393,6 +484,13 @@ func TestProxySettingsWrittenInProxyMode(t *testing.T) {
 	}
 	if persistEnvKey != codex.LocalProxyAPIKeyEnv || persistEnvValue != codex.LocalProxyAPIKeyValue {
 		t.Fatalf("PersistEnv = (%q, %q), want (%q, %q)", persistEnvKey, persistEnvValue, codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	}
+}
+
+func writeDirectConfig(t *testing.T, path string) {
+	t.Helper()
+	if err := codex.UpdateConfig(path, codex.ModelserverSettings()); err != nil {
+		t.Fatalf("UpdateConfig() error = %v", err)
 	}
 }
 
@@ -429,5 +527,17 @@ func assertConfigContains(t *testing.T, path string, wants ...string) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func assertConfigNotContains(t *testing.T, path, unwanted string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+	text := string(b)
+	if strings.Contains(text, unwanted) {
+		t.Fatalf("config contains %q:\n%s", unwanted, text)
 	}
 }
