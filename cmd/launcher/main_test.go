@@ -207,12 +207,13 @@ func TestAutomaticUpdateCheckCancellationBeforeDelayPreventsManifestRequest(t *t
 	t.Cleanup(server.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	scheduleAutomaticUpdateCheck(ctx, &updater.Service{
+	done := scheduleAutomaticUpdateCheck(ctx, &updater.Service{
 		CurrentVersion: appversion.Version,
 		ManifestURL:    server.URL,
 		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
 	}, 25*time.Millisecond)
 	cancel()
+	waitAutomaticUpdateCheckStopped(t, done)
 
 	select {
 	case <-hit:
@@ -245,8 +246,7 @@ func TestAutomaticUpdateCheckRunsOnceAndOnlyChecksManifest(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "update-state.json")
 	store := updater.NewStateStore(statePath)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	scheduleAutomaticUpdateCheck(ctx, &updater.Service{
+	done := scheduleAutomaticUpdateCheck(ctx, &updater.Service{
 		CurrentVersion: appversion.Version,
 		ManifestURL:    server.URL,
 		State:          store,
@@ -255,6 +255,10 @@ func TestAutomaticUpdateCheckRunsOnceAndOnlyChecksManifest(t *testing.T) {
 			return nil
 		},
 	}, 10*time.Millisecond)
+	defer func() {
+		cancel()
+		waitAutomaticUpdateCheckStopped(t, done)
+	}()
 
 	select {
 	case <-manifestHit:
@@ -287,12 +291,15 @@ func TestAutomaticUpdateCheckLogsNonCanceledErrors(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	scheduleAutomaticUpdateCheck(ctx, &updater.Service{
+	done := scheduleAutomaticUpdateCheck(ctx, &updater.Service{
 		CurrentVersion: appversion.Version,
 		ManifestURL:    server.URL,
 		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
 	}, 10*time.Millisecond)
+	defer func() {
+		cancel()
+		waitAutomaticUpdateCheckStopped(t, done)
+	}()
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -313,8 +320,7 @@ func TestAutomaticUpdateCheckRetriesSoonAfterError(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
+	done := scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
 		CurrentVersion: appversion.Version,
 		ManifestURL:    server.URL,
 		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
@@ -333,6 +339,8 @@ func TestAutomaticUpdateCheckRetriesSoonAfterError(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("automatic update check did not retry soon after error")
 	}
+	cancel()
+	waitAutomaticUpdateCheckStopped(t, done)
 }
 
 func TestAutomaticUpdateCheckAppliesSuccessJitter(t *testing.T) {
@@ -352,8 +360,7 @@ func TestAutomaticUpdateCheckAppliesSuccessJitter(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
+	done := scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
 		CurrentVersion: appversion.Version,
 		ManifestURL:    server.URL,
 		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
@@ -372,6 +379,8 @@ func TestAutomaticUpdateCheckAppliesSuccessJitter(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("automatic update check did not use success jitter delay")
 	}
+	cancel()
+	waitAutomaticUpdateCheckStopped(t, done)
 }
 
 func TestAutomaticUpdateCheckTimesOutBlockingManifestRequest(t *testing.T) {
@@ -391,12 +400,15 @@ func TestAutomaticUpdateCheckTimesOutBlockingManifestRequest(t *testing.T) {
 
 	store := updater.NewStateStore(filepath.Join(t.TempDir(), "state.json"))
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	scheduleAutomaticUpdateCheckWithTiming(ctx, &updater.Service{
+	done := scheduleAutomaticUpdateCheckWithTiming(ctx, &updater.Service{
 		CurrentVersion: appversion.Version,
 		ManifestURL:    server.URL,
 		State:          store,
 	}, 1*time.Millisecond, time.Hour, 25*time.Millisecond)
+	defer func() {
+		cancel()
+		waitAutomaticUpdateCheckStopped(t, done)
+	}()
 
 	select {
 	case <-requestCanceled:
@@ -442,7 +454,7 @@ func TestAutomaticUpdateCheckStopsAfterContextCancel(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
+	done := scheduleAutomaticUpdateCheckWithRetry(ctx, &updater.Service{
 		CurrentVersion: appversion.Version,
 		ManifestURL:    server.URL,
 		State:          updater.NewStateStore(filepath.Join(t.TempDir(), "state.json")),
@@ -457,11 +469,21 @@ func TestAutomaticUpdateCheckStopsAfterContextCancel(t *testing.T) {
 		t.Fatal("timed out waiting for first automatic update check")
 	}
 	cancel()
+	waitAutomaticUpdateCheckStopped(t, done)
 
 	select {
 	case <-hits:
 		t.Fatal("manifest server was hit after automatic update context cancellation")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func waitAutomaticUpdateCheckStopped(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("automatic update check goroutine did not stop")
 	}
 }
 

@@ -350,17 +350,19 @@ func restorePendingSlaveRestarts(ctx context.Context, path, currentVersion strin
 	return slave.RestorePendingRestarts(ctx, path, restart)
 }
 
-func scheduleAutomaticUpdateCheck(ctx context.Context, svc *updater.Service, delay time.Duration) {
-	scheduleAutomaticUpdateCheckWithTiming(ctx, svc, delay, 24*time.Hour, 30*time.Second)
+func scheduleAutomaticUpdateCheck(ctx context.Context, svc *updater.Service, delay time.Duration) <-chan struct{} {
+	return scheduleAutomaticUpdateCheckWithTiming(ctx, svc, delay, 24*time.Hour, 30*time.Second)
 }
 
-func scheduleAutomaticUpdateCheckWithTiming(ctx context.Context, svc *updater.Service, delay, interval, timeout time.Duration) {
-	scheduleAutomaticUpdateCheckWithRetry(ctx, svc, delay, interval, time.Hour, timeout, jitterAutomaticUpdateInterval)
+func scheduleAutomaticUpdateCheckWithTiming(ctx context.Context, svc *updater.Service, delay, interval, timeout time.Duration) <-chan struct{} {
+	return scheduleAutomaticUpdateCheckWithRetry(ctx, svc, delay, interval, time.Hour, timeout, jitterAutomaticUpdateInterval)
 }
 
-func scheduleAutomaticUpdateCheckWithRetry(ctx context.Context, svc *updater.Service, delay, interval, retryInterval, timeout time.Duration, jitter func(time.Duration) time.Duration) {
+func scheduleAutomaticUpdateCheckWithRetry(ctx context.Context, svc *updater.Service, delay, interval, retryInterval, timeout time.Duration, jitter func(time.Duration) time.Duration) <-chan struct{} {
+	done := make(chan struct{})
 	if svc == nil {
-		return
+		close(done)
+		return done
 	}
 	if interval <= 0 {
 		interval = 24 * time.Hour
@@ -375,6 +377,7 @@ func scheduleAutomaticUpdateCheckWithRetry(ctx context.Context, svc *updater.Ser
 		jitter = func(d time.Duration) time.Duration { return d }
 	}
 	go func() {
+		defer close(done)
 		timer := time.NewTimer(delay)
 		defer timer.Stop()
 		for {
@@ -396,6 +399,7 @@ func scheduleAutomaticUpdateCheckWithRetry(ctx context.Context, svc *updater.Ser
 			timer.Reset(nextDelay)
 		}
 	}()
+	return done
 }
 
 func jitterAutomaticUpdateInterval(interval time.Duration) time.Duration {
