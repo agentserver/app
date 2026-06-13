@@ -3,6 +3,7 @@ package headless
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
@@ -47,9 +49,10 @@ func RunSlave(ctx context.Context, opts SlaveOptions) error {
 	if stdout == nil {
 		stdout = os.Stdout
 	}
+	output := newForegroundOutput(stdout)
 	runner := opts.Runner
 	if runner == nil {
-		runner = execSlaveRunner{stdout: stdout}
+		runner = execSlaveRunner{output: output}
 	}
 	computerName := strings.TrimSpace(opts.ComputerName)
 	if computerName == "" {
@@ -96,25 +99,39 @@ func RunSlave(ctx context.Context, opts SlaveOptions) error {
 		return err
 	}
 
+	seenAuthURLs := map[string]struct{}{}
 	return runner.Run(ctx, SlaveProcessRequest{
 		Exe:        opts.Package.SlaveAgent,
 		ConfigPath: sl.ConfigPath,
 		WorkDir:    filepath.Dir(sl.ConfigPath),
 		AuthURL: func(url string) {
-			terminalauth.PrintURL(stdout, "Agentserver 登录", url, "", opts.QR)
+			url = sanitizeForegroundAuthURL(url)
+			if url == "" {
+				return
+			}
+			output.WithLock(func(w io.Writer) {
+				if _, ok := seenAuthURLs[url]; ok {
+					return
+				}
+				seenAuthURLs[url] = struct{}{}
+				terminalauth.PrintURL(w, "Agentserver 登录", url, "", opts.QR)
+			})
 		},
 	})
 }
 
 type execSlaveRunner struct {
 	stdout io.Writer
+	output *foregroundOutput
 }
 
 var foregroundAuthURLPattern = regexp.MustCompile(`(?i)https?://\S*(?:device|user[_-]code|verification)\S*`)
+var foregroundHTTPURLPattern = regexp.MustCompile(`(?i)https?://\S+`)
 
 func (r execSlaveRunner) Run(ctx context.Context, req SlaveProcessRequest) error {
-	cmd := exec.CommandContext(ctx, req.Exe, req.ConfigPath)
+	cmd := exec.Command(req.Exe, req.ConfigPath)
 	cmd.Dir = req.WorkDir
+	configureSlaveProcess(cmd)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -128,23 +145,35 @@ func (r execSlaveRunner) Run(ctx context.Context, req SlaveProcessRequest) error
 		return fmt.Errorf("start slave-agent: %w", err)
 	}
 
-	writer := r.stdout
-	if writer == nil {
-		writer = os.Stdout
-	}
-	writer = &foregroundLockedWriter{w: writer}
+	output := r.foregroundOutput()
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		copyForegroundSlaveOutput(stdout, writer, req.AuthURL)
+		copyForegroundSlaveOutput(stdout, output, req.AuthURL)
 	}()
 	go func() {
 		defer wg.Done()
-		copyForegroundSlaveOutput(stderr, writer, req.AuthURL)
+		copyForegroundSlaveOutput(stderr, output, req.AuthURL)
 	}()
 
-	err = cmd.Wait()
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		terminateSlaveProcess(cmd)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			killSlaveProcess(cmd)
+			<-done
+		}
+		wg.Wait()
+		return ctx.Err()
+	}
 	wg.Wait()
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -155,28 +184,85 @@ func (r execSlaveRunner) Run(ctx context.Context, req SlaveProcessRequest) error
 	return nil
 }
 
-func copyForegroundSlaveOutput(r io.Reader, w io.Writer, authURL func(string)) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 1<<16), 1<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
-		_, _ = fmt.Fprintln(w, line)
-		if authURL != nil && foregroundAuthURLPattern.MatchString(line) {
-			authURL(foregroundAuthURLPattern.FindString(line))
-		}
+func (r execSlaveRunner) foregroundOutput() *foregroundOutput {
+	if r.output != nil {
+		return r.output
 	}
-	if err := scanner.Err(); err != nil {
-		_, _ = fmt.Fprintf(w, "slave log scan error: %v\n", err)
+	writer := r.stdout
+	if writer == nil {
+		writer = os.Stdout
+	}
+	return newForegroundOutput(writer)
+}
+
+const maxForegroundAuthDetectionBytes = 1 << 20
+
+func copyForegroundSlaveOutput(r io.Reader, w io.Writer, authURL func(string)) {
+	reader := bufio.NewReaderSize(r, 64*1024)
+	line := make([]byte, 0, 4096)
+	flushLine := func() {
+		if authURL != nil {
+			if match := foregroundAuthURLPattern.Find(line); len(match) > 0 {
+				authURL(string(match))
+			}
+		}
+		line = line[:0]
+	}
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > 0 {
+			_, _ = w.Write(fragment)
+			remaining := maxForegroundAuthDetectionBytes - len(line)
+			if remaining > 0 {
+				if len(fragment) > remaining {
+					line = append(line, fragment[:remaining]...)
+				} else {
+					line = append(line, fragment...)
+				}
+			}
+		}
+		switch {
+		case err == nil:
+			flushLine()
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			if len(line) > 0 {
+				flushLine()
+			}
+			return
+		default:
+			_, _ = fmt.Fprintf(w, "slave log read error: %v\n", err)
+			return
+		}
 	}
 }
 
-type foregroundLockedWriter struct {
+func sanitizeForegroundAuthURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	return foregroundHTTPURLPattern.FindString(raw)
+}
+
+type foregroundOutput struct {
 	mu sync.Mutex
 	w  io.Writer
 }
 
-func (w *foregroundLockedWriter) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.w.Write(p)
+func newForegroundOutput(w io.Writer) *foregroundOutput {
+	return &foregroundOutput{w: w}
+}
+
+func (o *foregroundOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.w.Write(p)
+}
+
+func (o *foregroundOutput) WithLock(fn func(io.Writer)) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	fn(o.w)
 }

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +132,39 @@ func TestRunSlaveReusesExistingEntryWithoutPrompt(t *testing.T) {
 	}
 }
 
+func TestRunSlavePrintsDuplicateAuthURLOnce(t *testing.T) {
+	temp := t.TempDir()
+	repo := filepath.Join(temp, "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	authURL := "https://agent.cs.ac.cn/device?user_code=ABCD"
+	runner := &fakeSlaveProcessRunner{authURLs: []string{authURL, authURL}}
+	var out bytes.Buffer
+
+	err := RunSlave(context.Background(), SlaveOptions{
+		Paths:        testSlavePaths(temp),
+		Package:      Package{SlaveAgent: filepath.Join(temp, "pkg", "slave-agent")},
+		WorkDir:      repo,
+		ComputerName: "host",
+		NamePrompt:   func(string) (string, error) { return "worker", nil },
+		Runner:       runner,
+		Stdout:       &out,
+		QR:           markerQR("fake QR marker"),
+	})
+	if err != nil {
+		t.Fatalf("RunSlave: %v", err)
+	}
+
+	gotOutput := out.String()
+	if got := strings.Count(gotOutput, authURL); got != 1 {
+		t.Fatalf("auth URL printed %d times, want 1:\n%s", got, gotOutput)
+	}
+	if got := strings.Count(gotOutput, "fake QR marker"); got != 1 {
+		t.Fatalf("QR marker printed %d times, want 1:\n%s", got, gotOutput)
+	}
+}
+
 func TestRunSlaveStopsChildOnContextCancel(t *testing.T) {
 	temp := t.TempDir()
 	repo := filepath.Join(temp, "repo")
@@ -177,8 +212,93 @@ func TestRunSlaveStopsChildOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestExecSlaveRunnerForwardsOutputAuthURLAndCancels(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test requires /bin/sh")
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not found")
+	}
+	temp := t.TempDir()
+	ready := filepath.Join(temp, "ready")
+	authURL := "https://agent.cs.ac.cn/device?user_code=ABCD"
+	script := filepath.Join(temp, "slave-agent.sh")
+	if err := os.WriteFile(script, []byte(fmt.Sprintf(`#!/bin/sh
+echo stdout-line
+echo stderr-line >&2
+echo %s
+echo %s
+touch %s
+sleep 30
+`, authURL, authURL, ready)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var out bytes.Buffer
+	var authURLs []string
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- execSlaveRunner{stdout: &out}.Run(ctx, SlaveProcessRequest{
+			Exe:        sh,
+			ConfigPath: script,
+			WorkDir:    temp,
+			AuthURL: func(url string) {
+				authURLs = append(authURLs, url)
+			},
+		})
+	}()
+
+	waitForFile(t, ready, time.Second)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run error=%v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not stop after context cancellation")
+	}
+
+	gotOutput := out.String()
+	if !strings.Contains(gotOutput, "stdout-line") {
+		t.Fatalf("output missing stdout:\n%s", gotOutput)
+	}
+	if !strings.Contains(gotOutput, "stderr-line") {
+		t.Fatalf("output missing stderr:\n%s", gotOutput)
+	}
+	if len(authURLs) == 0 {
+		t.Fatalf("auth callback not observed; output:\n%s", gotOutput)
+	}
+}
+
+func TestCopyForegroundSlaveOutputDrainsLongLinesAndDetectsLaterAuthURL(t *testing.T) {
+	authURL := "https://agent.cs.ac.cn/device?user_code=ABCD"
+	input := strings.Repeat("x", 1<<20+1) + "\n" + authURL + "\n"
+	var out bytes.Buffer
+	var authURLs []string
+
+	copyForegroundSlaveOutput(strings.NewReader(input), &out, func(url string) {
+		authURLs = append(authURLs, url)
+	})
+
+	gotOutput := out.String()
+	if !strings.Contains(gotOutput, strings.Repeat("x", 128)) {
+		t.Fatalf("output missing long line content")
+	}
+	if !strings.Contains(gotOutput, authURL) {
+		t.Fatalf("output missing auth URL after long line")
+	}
+	if len(authURLs) != 1 || authURLs[0] != authURL {
+		t.Fatalf("authURLs=%v, want [%q]", authURLs, authURL)
+	}
+}
+
 type fakeSlaveProcessRunner struct {
 	authURL       string
+	authURLs      []string
 	waitForCancel bool
 	request       SlaveProcessRequest
 	stopped       bool
@@ -192,6 +312,9 @@ func (f *fakeSlaveProcessRunner) Run(ctx context.Context, req SlaveProcessReques
 	}
 	if f.authURL != "" {
 		req.AuthURL(f.authURL)
+	}
+	for _, authURL := range f.authURLs {
+		req.AuthURL(authURL)
 	}
 	if f.waitForCancel {
 		<-ctx.Done()
@@ -220,4 +343,20 @@ type ioDiscard struct{}
 
 func (ioDiscard) Write(p []byte) (int, error) {
 	return len(p), nil
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
