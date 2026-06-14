@@ -25,6 +25,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
+	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
@@ -1245,6 +1246,38 @@ func TestEnsureFrontendCodexDesktopSkipsVSCode(t *testing.T) {
 	}
 }
 
+func TestEnsureFrontendOpenCodeDesktop(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeOpenCodeDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	r := &realOrchestrator{d: Deps{
+		State: store,
+		OpenCodeDesktopEnsure: func(ctx context.Context) (opencodedesktop.Detected, error) {
+			called = true
+			return opencodedesktop.Detected{Installed: true, Path: `C:\OpenCode\OpenCode.exe`, Version: "1.2.3"}, nil
+		},
+	}}
+	if err := r.EnsureFrontend(context.Background(), nil); err != nil {
+		t.Fatalf("EnsureFrontend: %v", err)
+	}
+	if !called {
+		t.Fatal("OpenCode ensure was not called")
+	}
+	s, _ := store.Load()
+	if !s.Onboarding.HasCompleted("opencode_desktop_installed") {
+		t.Fatalf("opencode_desktop_installed not marked")
+	}
+	if !s.OpenCodeDesktop.Installed || s.OpenCodeDesktop.Path == "" || s.OpenCodeDesktop.Version != "1.2.3" {
+		t.Fatalf("OpenCodeDesktop state not recorded: %+v", s.OpenCodeDesktop)
+	}
+}
+
 func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("OPENAI_API_KEY", "old-openai-token")
@@ -1290,6 +1323,46 @@ func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
 	s, _ := store.Load()
 	if !s.Onboarding.HasCompleted("codex_desktop_configured") {
 		t.Fatalf("codex_desktop_configured not marked")
+	}
+}
+
+func TestConfigureOpenCodeDesktopWritesOpenCodeConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(codex.LocalProxyAPIKeyEnv, "")
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeOpenCodeDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := &realOrchestrator{d: Deps{
+		State:              store,
+		CodexConfigPath:    filepath.Join(dir, ".codex", "config.toml"),
+		OpenCodeConfigPath: filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+	}}
+	if err := r.ConfigureFrontend(context.Background()); err != nil {
+		t.Fatalf("ConfigureFrontend: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, ".config", "opencode", "opencode.jsonc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"model": "modelserver/gpt-5.5"`,
+		`"baseURL": "` + modelproxy.DefaultBaseURL + `"`,
+		`"apiKey": "{env:` + codex.LocalProxyAPIKeyEnv + `}"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("opencode config missing %q:\n%s", want, b)
+		}
+	}
+	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != codex.LegacyLocalProxyAPIKeyValue {
+		t.Fatalf("%s=%q, want stable local key", codex.LocalProxyAPIKeyEnv, got)
+	}
+	s, _ := store.Load()
+	if !s.Onboarding.HasCompleted("opencode_desktop_configured") {
+		t.Fatalf("opencode_desktop_configured not marked")
 	}
 }
 

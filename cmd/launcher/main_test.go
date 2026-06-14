@@ -24,6 +24,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
+	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -997,6 +998,34 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 	}
 }
 
+func TestLaunchCompletedFrontendOpenCodeDesktopWritesConfigAndLaunches(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		CodexConfigFile:    filepath.Join(dir, ".codex", "config.toml"),
+		OpenCodeConfigFile: filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+	}
+	s := &state.State{FrontendMode: state.FrontendModeOpenCodeDesktop}
+	s.OpenCodeDesktop.Installed = true
+	s.OpenCodeDesktop.Path = `C:\OpenCode\OpenCode.exe`
+	launched := false
+	err := launchCompletedFrontend(context.Background(), s, p, nil, "", "", "", nil, func(ctx context.Context, opts opencodedesktop.LaunchOptions) error {
+		launched = true
+		if opts.Detected.Path != `C:\OpenCode\OpenCode.exe` {
+			t.Fatalf("OpenCode path = %q", opts.Detected.Path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("launchCompletedFrontend: %v", err)
+	}
+	if !launched {
+		t.Fatal("OpenCode was not launched")
+	}
+	if _, err := os.Stat(p.OpenCodeConfigFile); err != nil {
+		t.Fatalf("opencode config not written: %v", err)
+	}
+}
+
 func TestLaunchCompletedFrontendCodexDesktopRegistersLoomDriverMCP(t *testing.T) {
 	dir := t.TempDir()
 	installDir := filepath.Join(dir, "install")
@@ -1036,7 +1065,7 @@ func TestLaunchCompletedFrontendCodexDesktopRegistersLoomDriverMCP(t *testing.T)
 
 	if err := launchCompletedFrontend(context.Background(), st, p, sec, installDir, "", "", func(string) error {
 		return nil
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("launchCompletedFrontend: %v", err)
 	}
 
@@ -1230,7 +1259,7 @@ func TestLaunchCompletedFrontendMinimalVSCodeConfiguresLoomDriver(t *testing.T) 
 		CodexExePath:      filepath.Join(dir, "bin", "codex.exe"),
 	}
 
-	err := launchCompletedFrontend(context.Background(), st, p, sec, installDir, "", "", nil)
+	err := launchCompletedFrontend(context.Background(), st, p, sec, installDir, "", "", nil, nil)
 	if err == nil {
 		t.Fatal("expected missing VS Code executable error")
 	}

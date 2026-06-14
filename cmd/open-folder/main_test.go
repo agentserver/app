@@ -12,6 +12,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
+	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
@@ -118,6 +119,46 @@ func TestOpenFolderCodexDesktopWritesUILocaleBeforeLaunch(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("openFolderCodexDesktop: %v", err)
+	}
+}
+
+func TestOpenFolderOpenCodeDesktopWritesConfigAndUsesFolderWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		CodexConfigFile:    filepath.Join(dir, ".codex", "config.toml"),
+		OpenCodeConfigFile: filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+	}
+	var gotFolder string
+	err := openFolderOpenCodeDesktop(context.Background(), p, `C:\Project Folder`, opencodedesktop.Detected{
+		Installed: true,
+		Path:      `C:\OpenCode\OpenCode.exe`,
+	}, "", func(ctx context.Context, opts opencodedesktop.LaunchOptions) error {
+		gotFolder = opts.Folder
+		if opts.Detected.Path != `C:\OpenCode\OpenCode.exe` {
+			t.Fatalf("OpenCode path = %q", opts.Detected.Path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("openFolderOpenCodeDesktop: %v", err)
+	}
+	if gotFolder != `C:\Project Folder` {
+		t.Fatalf("Folder = %q", gotFolder)
+	}
+	if _, err := os.Stat(p.OpenCodeConfigFile); err != nil {
+		t.Fatalf("opencode config not written: %v", err)
+	}
+	b, readErr := os.ReadFile(p.CodexConfigFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, want := range []string{
+		`base_url = "` + modelproxy.DefaultBaseURL + `"`,
+		`experimental_bearer_token = "` + codex.LegacyLocalProxyAPIKeyValue + `"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %q in:\n%s", want, b)
+		}
 	}
 }
 

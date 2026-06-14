@@ -21,6 +21,8 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
+	"github.com/agentserver/agentserver-pkg/internal/opencode"
+	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/shortcut"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -51,8 +53,11 @@ type Deps struct {
 	// Minimal VS Code mode uses CodexAbsPath when this is empty.
 	CodexDesktopCodexPath string
 
-	CodexDesktopEnsure func(context.Context) (codexdesktop.Detected, error)
-	CodexDesktopOpen   func(string) error
+	CodexDesktopEnsure    func(context.Context) (codexdesktop.Detected, error)
+	CodexDesktopOpen      func(string) error
+	OpenCodeConfigPath    string
+	OpenCodeDesktopEnsure func(context.Context) (opencodedesktop.Detected, error)
+	OpenCodeDesktopLaunch func(context.Context, opencodedesktop.LaunchOptions) error
 
 	// OpenBrowser is invoked by the orchestrator after starting the PKCE
 	// listener. Optional in tests.
@@ -315,6 +320,9 @@ func (r *realOrchestrator) EnsureFrontend(ctx context.Context, ch chan<- Progres
 	if mode == state.FrontendModeMinimalVSCode {
 		return r.EnsureVSCode(ctx, ch)
 	}
+	if mode == state.FrontendModeOpenCodeDesktop {
+		return r.EnsureOpenCodeDesktop(ctx, ch)
+	}
 	return r.EnsureCodexDesktop(ctx, ch)
 }
 
@@ -326,7 +334,37 @@ func (r *realOrchestrator) ConfigureFrontend(ctx context.Context) error {
 	if mode == state.FrontendModeMinimalVSCode {
 		return r.ConfigureVSCode(ctx)
 	}
+	if mode == state.FrontendModeOpenCodeDesktop {
+		return r.ConfigureOpenCodeDesktop(ctx)
+	}
 	return r.ConfigureCodexDesktop(ctx)
+}
+
+func (r *realOrchestrator) EnsureOpenCodeDesktop(ctx context.Context, ch chan<- ProgressEvent) error {
+	ensure := r.d.OpenCodeDesktopEnsure
+	if ensure == nil {
+		ensure = func(ctx context.Context) (opencodedesktop.Detected, error) {
+			return opencodedesktop.EnsureInstalled(ctx, opencodedesktop.Options{})
+		}
+	}
+	if ch != nil {
+		ch <- ProgressEvent{Stage: "checking", Msg: "正在检查 OpenCode Desktop..."}
+	}
+	det, err := ensure(ctx)
+	if err != nil {
+		return err
+	}
+	if ch != nil {
+		ch <- ProgressEvent{Stage: "verified", Msg: "已检测到 OpenCode Desktop"}
+	}
+	return r.d.State.Update(func(s *state.State) error {
+		s.OpenCodeDesktop.Installed = true
+		s.OpenCodeDesktop.Path = det.Path
+		s.OpenCodeDesktop.Version = det.Version
+		s.OpenCodeDesktop.InstalledByUs = true
+		s.Onboarding.AddCompleted("opencode_desktop_installed")
+		return nil
+	})
 }
 
 func (r *realOrchestrator) EnsureCodexDesktop(ctx context.Context, ch chan<- ProgressEvent) error {
@@ -527,6 +565,27 @@ func (r *realOrchestrator) ConfigureCodexDesktop(ctx context.Context) error {
 	})
 }
 
+func (r *realOrchestrator) ConfigureOpenCodeDesktop(ctx context.Context) error {
+	if err := r.configureSharedCodex(ctx); err != nil {
+		return err
+	}
+	configPath := r.d.OpenCodeConfigPath
+	if configPath == "" {
+		return fmt.Errorf("ConfigureOpenCodeDesktop: OpenCodeConfigPath required")
+	}
+	if err := opencode.UpdateConfig(configPath, opencode.Settings{
+		BaseURL:   modelproxy.DefaultBaseURL,
+		APIKeyEnv: codex.LocalProxyAPIKeyEnv,
+		Model:     "gpt-5.5",
+	}); err != nil {
+		return err
+	}
+	return r.d.State.Update(func(s *state.State) error {
+		s.Onboarding.AddCompleted("opencode_desktop_configured")
+		return nil
+	})
+}
+
 func (r *realOrchestrator) configureCodexDesktopLocale() error {
 	globalPath := r.d.CodexDesktopGlobalStatePath
 	computerUsePath := r.d.CodexDesktopComputerUseConfigPath
@@ -708,6 +767,39 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 		return err
 	}
 	mode := state.NormalizeFrontendMode(s.FrontendMode)
+	if mode == state.FrontendModeOpenCodeDesktop {
+		if r.d.OpenCodeConfigPath != "" {
+			if err := opencode.UpdateConfig(r.d.OpenCodeConfigPath, opencode.Settings{
+				BaseURL:   modelproxy.DefaultBaseURL,
+				APIKeyEnv: codex.LocalProxyAPIKeyEnv,
+				Model:     "gpt-5.5",
+			}); err != nil {
+				return err
+			}
+		}
+		_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+		_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+		if r.d.TokenRefresherExePath != "" {
+			_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
+		}
+		launch := r.d.OpenCodeDesktopLaunch
+		if launch == nil {
+			launch = func(ctx context.Context, opts opencodedesktop.LaunchOptions) error {
+				return opencodedesktop.Launch(ctx, opts)
+			}
+		}
+		if err := launch(ctx, opencodedesktop.LaunchOptions{Detected: opencodedesktop.Detected{
+			Installed: s.OpenCodeDesktop.Installed,
+			Path:      s.OpenCodeDesktop.Path,
+			Version:   s.OpenCodeDesktop.Version,
+		}}); err != nil {
+			return fmt.Errorf("launch OpenCode Desktop: %w", err)
+		}
+		if r.d.Shutdown != nil {
+			r.d.Shutdown()
+		}
+		return nil
+	}
 	if mode == state.FrontendModeCodexDesktop {
 		if err := r.configureCodexDesktopLocale(); err != nil {
 			return err

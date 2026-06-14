@@ -36,6 +36,8 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
+	"github.com/agentserver/agentserver-pkg/internal/opencode"
+	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/process"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -250,6 +252,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 				in.InstallDir,
 				joinExe(in.InstallDir, "token-refresher.exe"),
 				joinExe(in.InstallDir, "agentserver-app.vsix"),
+				nil,
 				nil)
 		},
 		Quit: func() {
@@ -581,6 +584,7 @@ func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestra
 		MSOAuth:                           in.MSOAuth,
 		ASOAuth:                           asOAuth,
 		CodexConfigPath:                   in.Paths.CodexConfigFile,
+		OpenCodeConfigPath:                in.Paths.OpenCodeConfigFile,
 		CodexDesktopGlobalStatePath:       in.Paths.CodexDesktopGlobalStateFile,
 		CodexDesktopComputerUseConfigPath: in.Paths.CodexDesktopComputerUseConfigFile,
 		CodexAbsPath:                      in.Paths.CodexExePath,
@@ -700,6 +704,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		ASOAuth:                           asOAuth,
 		OpenBrowser:                       func(url string) { _ = browser.Open(url) },
 		CodexConfigPath:                   p.CodexConfigFile,
+		OpenCodeConfigPath:                p.OpenCodeConfigFile,
 		CodexDesktopGlobalStatePath:       p.CodexDesktopGlobalStateFile,
 		CodexDesktopComputerUseConfigPath: p.CodexDesktopComputerUseConfigFile,
 		VSCodeUserDataDir:                 p.VSCodeUserDataDir,
@@ -774,8 +779,9 @@ func startCompletedConsole(ctx context.Context, launcherExe string) error {
 	return cmd.Start()
 }
 
-func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, embeddedVSIXPath string, codexOpen codexdesktop.Opener) error {
-	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeMinimalVSCode {
+func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, embeddedVSIXPath string, codexOpen codexdesktop.Opener, opencodeLaunch func(context.Context, opencodedesktop.LaunchOptions) error) error {
+	mode := state.NormalizeFrontendMode(s.FrontendMode)
+	if mode == state.FrontendModeMinimalVSCode {
 		if s.VSCode.Path == "" {
 			return fmt.Errorf("VS Code path unknown; rerun onboarding")
 		}
@@ -784,7 +790,45 @@ func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths,
 		}
 		return launchCompletedInstall(ctx, s.VSCode.Path, p, sec, tokenRefresherExe, embeddedVSIXPath)
 	}
+	if mode == state.FrontendModeOpenCodeDesktop {
+		return launchCompletedOpenCodeDesktop(ctx, s, p, sec, installDir, tokenRefresherExe, opencodeLaunch)
+	}
 	return launchCompletedCodexDesktop(ctx, s, p, sec, installDir, tokenRefresherExe, codexOpen)
+}
+
+func launchCompletedOpenCodeDesktop(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, launcher func(context.Context, opencodedesktop.LaunchOptions) error) error {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, codex.LegacyLocalProxyAPIKeyValue)); err != nil {
+		return err
+	}
+	if p.OpenCodeConfigFile != "" {
+		if err := opencode.UpdateConfig(p.OpenCodeConfigFile, opencode.Settings{
+			BaseURL:   modelproxy.DefaultBaseURL,
+			APIKeyEnv: codex.LocalProxyAPIKeyEnv,
+			Model:     "gpt-5.5",
+		}); err != nil {
+			return err
+		}
+	}
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	if err := configureCompletedLoomDriver(p, s, sec, installDir); err != nil {
+		return err
+	}
+	if tokenRefresherExe != "" {
+		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
+	}
+	if launcher == nil {
+		launcher = func(ctx context.Context, opts opencodedesktop.LaunchOptions) error {
+			return opencodedesktop.Launch(ctx, opts)
+		}
+	}
+	return launcher(ctx, opencodedesktop.LaunchOptions{
+		Detected: opencodedesktop.Detected{
+			Installed: s.OpenCodeDesktop.Installed,
+			Path:      s.OpenCodeDesktop.Path,
+			Version:   s.OpenCodeDesktop.Version,
+		},
+	})
 }
 
 func launchCompletedCodexDesktop(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, opener codexdesktop.Opener) error {
