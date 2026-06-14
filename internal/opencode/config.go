@@ -14,16 +14,24 @@ import (
 )
 
 const (
-	defaultProvider  = "modelserver"
-	defaultModel     = "gpt-5.5"
-	defaultBaseURL   = "http://127.0.0.1:53452/v1"
-	defaultAPIKey    = "agentserver-local-proxy"
-	defaultAPIKeyEnv = "AGENTSERVER_CODEX_LOCAL_API_KEY"
-	configSchema     = "https://opencode.ai/config.json"
+	defaultProvider          = "modelserver"
+	compatibleProvider       = "modelserver-compatible"
+	defaultModel             = "gpt-5.5"
+	defaultBaseURL           = "http://127.0.0.1:53452/v1"
+	defaultAPIKey            = "agentserver-local-proxy"
+	defaultAPIKeyEnv         = "AGENTSERVER_CODEX_LOCAL_API_KEY"
+	configSchema             = "https://opencode.ai/config.json"
+	openAINPM                = "@ai-sdk/openai"
+	openAICompatibleNPM      = "@ai-sdk/openai-compatible"
+	compatibleProviderName   = "modelserver-compatible"
+	defaultProviderModelName = "modelserver"
 )
 
-var supportedModels = []string{
+var responsesModels = []string{
 	"gpt-5.5",
+}
+
+var compatibleModels = []string{
 	"glm-5.1",
 	"deepseek-v4-pro",
 }
@@ -80,32 +88,67 @@ func applySettings(root map[string]any, s Settings) {
 	if stringSetting(root, "$schema") == "" {
 		root["$schema"] = configSchema
 	}
-	root["model"] = defaultProvider + "/" + settings.Model
+	root["model"] = providerForModel(settings.Model) + "/" + settings.Model
 	providers, _ := root["provider"].(map[string]any)
 	if providers == nil {
 		providers = map[string]any{}
 	}
 	providers[defaultProvider] = map[string]any{
-		"npm":  "@ai-sdk/openai",
-		"name": defaultProvider,
+		"npm":  openAINPM,
+		"name": defaultProviderModelName,
 		"options": map[string]any{
 			"baseURL": settings.BaseURL,
 			"apiKey":  settings.apiKeyValue(),
 		},
-		"models": modelEntries(settings.Model),
+		"models": modelEntries(responsesModels, settings.Model),
+	}
+	providers[compatibleProvider] = map[string]any{
+		"npm":  openAICompatibleNPM,
+		"name": compatibleProviderName,
+		"options": map[string]any{
+			"baseURL": settings.BaseURL,
+			"apiKey":  settings.apiKeyValue(),
+		},
+		"models": modelEntries(compatibleModels, settings.Model),
 	}
 	root["provider"] = providers
 }
 
-func modelEntries(selectedModel string) map[string]any {
+func modelEntries(modelsList []string, selectedModel string) map[string]any {
 	models := map[string]any{}
-	for _, model := range supportedModels {
+	for _, model := range modelsList {
 		models[model] = map[string]any{"name": model}
 	}
-	if _, ok := models[selectedModel]; !ok {
+	if providerForModel(selectedModel) == providerForModels(modelsList) {
+		if _, ok := models[selectedModel]; ok {
+			return models
+		}
 		models[selectedModel] = map[string]any{"name": selectedModel}
 	}
 	return models
+}
+
+func providerForModel(model string) string {
+	if containsModel(compatibleModels, model) {
+		return compatibleProvider
+	}
+	return defaultProvider
+}
+
+func providerForModels(modelsList []string) string {
+	if len(modelsList) > 0 && containsModel(compatibleModels, modelsList[0]) {
+		return compatibleProvider
+	}
+	return defaultProvider
+}
+
+func containsModel(models []string, model string) bool {
+	for _, candidate := range models {
+		if candidate == model {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeSettings(s Settings) Settings {

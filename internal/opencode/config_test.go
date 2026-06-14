@@ -28,7 +28,7 @@ func TestUpdateConfigCreatesModelserverProxyProvider(t *testing.T) {
 		t.Fatalf("npm = %v", provider["npm"])
 	}
 	models := provider["models"].(map[string]any)
-	for _, model := range []string{"gpt-5.5", "glm-5.1", "deepseek-v4-pro"} {
+	for _, model := range []string{"gpt-5.5"} {
 		entry, ok := models[model].(map[string]any)
 		if !ok {
 			t.Fatalf("model %q missing from %#v", model, models)
@@ -37,12 +37,39 @@ func TestUpdateConfigCreatesModelserverProxyProvider(t *testing.T) {
 			t.Fatalf("model %q name = %v", model, entry["name"])
 		}
 	}
+	for _, model := range []string{"glm-5.1", "deepseek-v4-pro"} {
+		if _, ok := models[model]; ok {
+			t.Fatalf("responses provider should not expose chat-completions model %q: %#v", model, models)
+		}
+	}
 	options := provider["options"].(map[string]any)
 	if options["baseURL"] != "http://127.0.0.1:53452/v1" {
 		t.Fatalf("baseURL = %v", options["baseURL"])
 	}
 	if options["apiKey"] != "local-proxy-token" {
 		t.Fatalf("apiKey = %v", options["apiKey"])
+	}
+
+	compatible := got["provider"].(map[string]any)["modelserver-compatible"].(map[string]any)
+	if compatible["npm"] != "@ai-sdk/openai-compatible" {
+		t.Fatalf("compatible npm = %v", compatible["npm"])
+	}
+	compatibleOptions := compatible["options"].(map[string]any)
+	if compatibleOptions["baseURL"] != "http://127.0.0.1:53452/v1" {
+		t.Fatalf("compatible baseURL = %v", compatibleOptions["baseURL"])
+	}
+	if compatibleOptions["apiKey"] != "local-proxy-token" {
+		t.Fatalf("compatible apiKey = %v", compatibleOptions["apiKey"])
+	}
+	compatibleModels := compatible["models"].(map[string]any)
+	for _, model := range []string{"glm-5.1", "deepseek-v4-pro"} {
+		entry, ok := compatibleModels[model].(map[string]any)
+		if !ok {
+			t.Fatalf("compatible model %q missing from %#v", model, compatibleModels)
+		}
+		if entry["name"] != model {
+			t.Fatalf("compatible model %q name = %v", model, entry["name"])
+		}
 	}
 }
 
