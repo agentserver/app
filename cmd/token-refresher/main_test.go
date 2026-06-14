@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -46,6 +45,7 @@ func TestRunWithDepsServesLocalModelProxy(t *testing.T) {
 		errCh <- runWithDeps(ctx, runDeps{
 			Secrets:              sec,
 			OAuth:                oauth.AuthCodeConfig{ClientID: "client-x"},
+			LocalProxyToken:      "random-local-token",
 			ProxyAddr:            addr,
 			ProxyUpstreamBaseURL: upstream.URL + "/v1",
 			Refresh: func(context.Context, oauth.AuthCodeConfig, string) (oauth.Token, error) {
@@ -63,7 +63,7 @@ func TestRunWithDepsServesLocalModelProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+codex.LocalProxyAPIKeyValue)
+	req.Header.Set("Authorization", "Bearer random-local-token")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("proxy request: %v", err)

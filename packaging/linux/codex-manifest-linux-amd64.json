@@ -15,7 +15,8 @@
     "shasum": "d272f0fa7bd1daf091c419fa22411362cc6b418e",
     "urls": [
       "https://registry.npmmirror.com/@openai/codex/-/codex-0.139.0-linux-x64.tgz",
-      "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.139.0-linux-x64.tgz"
+      "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.139.0-linux-x64.tgz",
+      "https://registry.npmjs.org/@openai/codex/-/codex-0.139.0-linux-x64.tgz"
     ]
   }
 }

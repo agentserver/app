@@ -3,6 +3,7 @@ package headless
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -66,6 +67,69 @@ func TestResolveCodexPrefersPathCodex(t *testing.T) {
 	}
 	if got.Source != "path" {
 		t.Fatalf("Source=%q, want path", got.Source)
+	}
+}
+
+func TestResolveCodexFallsBackToManagedRuntimeWhenPathCodexIsOlderThanManifest(t *testing.T) {
+	skipUnsupportedCodexRuntime(t)
+
+	ctx := context.Background()
+	temp := t.TempDir()
+	pathCodex := filepath.Join(temp, "path", exeName("codex"))
+	pkg := PackagePaths(filepath.Join(temp, "pkg", exeName("agentserver")))
+	if err := os.MkdirAll(pkg.PackageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath, err := pkg.codexManifestPath(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, []byte(`{
+  "package": "@openai/codex",
+  "platform": "linux-x64",
+  "pinned_version": "0.139.0-linux-x64",
+  "strip_prefix": "vendor/x/",
+  "codex_exe": "bin/codex",
+  "required_files": ["bin/codex"],
+  "pinned": {
+    "integrity": "sha512-test",
+    "shasum": "test",
+    "urls": ["https://registry.npmjs.org/@openai/codex/-/codex-0.139.0-linux-x64.tgz"]
+  }
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	managedCodex := filepath.Join(temp, "managed", exeName("codex"))
+	ensureCalled := false
+
+	got, err := ResolveCodex(ctx, CodexResolveOptions{
+		Paths: paths.Paths{
+			CodexExePath: filepath.Join(temp, "bin-root", "bin", exeName("codex")),
+			CacheDir:     filepath.Join(temp, "cache"),
+		},
+		Package: pkg,
+		LookPath: func(name string) (string, error) {
+			if name != "codex" {
+				t.Fatalf("LookPath name=%q, want codex", name)
+			}
+			return pathCodex, nil
+		},
+		CodexVersion: func(context.Context, string) (string, error) {
+			return "codex 0.138.0", nil
+		},
+		EnsureRuntime: func(context.Context, string, string, string) (string, error) {
+			ensureCalled = true
+			return managedCodex, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ensureCalled {
+		t.Fatal("EnsureRuntime was not called for old PATH codex")
+	}
+	if got.Path != managedCodex || got.Source != "managed" {
+		t.Fatalf("runtime=%+v, want managed %q", got, managedCodex)
 	}
 }
 
@@ -389,6 +453,15 @@ func TestLinuxCodexManifestsLoad(t *testing.T) {
 			}
 			if m.StripPrefix != tt.stripPrefix {
 				t.Fatalf("StripPrefix=%q, want %q", m.StripPrefix, tt.stripPrefix)
+			}
+			foundCanonical := false
+			for _, u := range m.Pinned.URLs {
+				if strings.Contains(u, "registry.npmjs.org/@openai/codex/") {
+					foundCanonical = true
+				}
+			}
+			if !foundCanonical {
+				t.Fatalf("%s missing canonical npm fallback URL: %+v", tt.name, m.Pinned.URLs)
 			}
 		})
 	}

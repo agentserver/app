@@ -29,7 +29,7 @@ func PrepareVSCode(ctx context.Context, in Input) error {
 	if err := vscode.EnsureTerminalOnlyPanelState(in.Paths.VSCodeUserDataDir); err != nil {
 		return fmt.Errorf("prepare VS Code panel state: %w", err)
 	}
-	if err := codex.UpdateConfig(in.Paths.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
+	if err := codex.UpdateConfig(in.Paths.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, codex.LegacyLocalProxyAPIKeyValue)); err != nil {
 		return err
 	}
 	if in.EmbeddedVSIXPath == "" {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -75,6 +76,14 @@ func (c *Client) RegisterAgent(ctx context.Context, oauthToken, name, typ string
 		return AgentRegistration{}, err
 	}
 	return out, nil
+}
+
+func (c *Client) DeleteAgent(ctx context.Context, proxyToken, sandboxID string) error {
+	sandboxID = strings.TrimSpace(sandboxID)
+	if sandboxID == "" {
+		return fmt.Errorf("delete agent: sandbox id required")
+	}
+	return c.do(ctx, http.MethodDelete, "/api/agent/sandboxes/"+url.PathEscape(sandboxID), proxyToken, nil, nil)
 }
 
 func (c *Client) CreateWorkspaceAPIKey(ctx context.Context, token, workspaceID, name string) (WorkspaceAPIKey, error) {

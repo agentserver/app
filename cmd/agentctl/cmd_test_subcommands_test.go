@@ -53,7 +53,7 @@ func TestOpenTestFolderCodexDesktopUsesDeepLinkAndWritesConfig(t *testing.T) {
 	if !strings.Contains(string(b), `base_url = "`+modelproxy.DefaultBaseURL+`"`) {
 		t.Fatalf("config missing local proxy base_url:\n%s", b)
 	}
-	if !strings.Contains(string(b), `experimental_bearer_token = "`+codex.LocalProxyAPIKeyValue+`"`) {
+	if !strings.Contains(string(b), `experimental_bearer_token = "`+codex.LegacyLocalProxyAPIKeyValue+`"`) {
 		t.Fatalf("config missing local proxy bearer token:\n%s", b)
 	}
 }

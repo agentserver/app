@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/terminalauth"
 )
 
@@ -224,6 +225,56 @@ func TestRunSlaveReusesExistingEntryWithoutPrompt(t *testing.T) {
 	}
 	if promptCalls != 1 {
 		t.Fatalf("promptCalls after second run=%d, want 1", promptCalls)
+	}
+}
+
+func TestRunSlaveDoesNotStartWhenExistingSlavePIDIsLive(t *testing.T) {
+	temp := t.TempDir()
+	repo := filepath.Join(temp, "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := testSlavePaths(temp)
+	machine, err := slave.NewMachineStore(p.MachineFile).Ensure("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := slave.NewRegistry(p.SlavesFile, p.SlavesDir)
+	existing, created, err := reg.EnsureForFolder(machine, slave.CreateInput{Folder: repo, Name: "worker"})
+	if err != nil {
+		t.Fatalf("EnsureForFolder: %v", err)
+	}
+	if !created {
+		t.Fatal("expected setup to create slave")
+	}
+	if _, err := reg.Update(existing.ID, func(sl *slave.Slave) error {
+		sl.Status = slave.StatusRunning
+		sl.PID = os.Getpid()
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	runnerCalled := false
+	err = RunSlave(context.Background(), SlaveOptions{
+		Paths:        p,
+		Package:      Package{SlaveAgent: filepath.Join(temp, "pkg", "slave-agent")},
+		WorkDir:      repo,
+		ComputerName: "host",
+		NamePrompt: func(string) (string, error) {
+			t.Fatal("NamePrompt called for existing folder")
+			return "", nil
+		},
+		Runner: &fakeSlaveProcessRunner{onRun: func() {
+			runnerCalled = true
+		}},
+		Stdout: ioDiscard{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("RunSlave error=%v, want already running", err)
+	}
+	if runnerCalled {
+		t.Fatal("runner was called for existing live slave")
 	}
 }
 

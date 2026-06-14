@@ -8,8 +8,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/agentserver/agentserver-pkg/internal/headless"
 	"github.com/agentserver/agentserver-pkg/internal/modelaccess"
@@ -18,6 +20,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/terminalauth"
+	"golang.org/x/term"
 )
 
 type app struct {
@@ -32,9 +35,15 @@ type app struct {
 }
 
 func main() {
-	if err := newApp().run(context.Background(), os.Args[1:]); err != nil {
+	ctx, stop := commandContext(context.Background())
+	defer stop()
+	if err := newApp().run(ctx, os.Args[1:]); err != nil {
 		log.Fatalf("agentserver: %v", err)
 	}
+}
+
+func commandContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 }
 
 func newApp() app {
@@ -54,12 +63,19 @@ func newApp() app {
 	}
 	pkg := headless.PackagePaths(exe)
 	sec := secrets.New(p.SecretsFile)
+	proxyTokenPath := modelaccess.DefaultLocalProxyTokenPath(p.InstallRoot)
+	proxyLogPath := filepath.Join(p.InstallRoot, "logs", "model-proxy-daemon.log")
 	cachedCodex := ""
 	ensureModelAccess := func(out io.Writer) func(context.Context) error {
 		return func(ctx context.Context) error {
+			proxyToken, err := modelaccess.EnsureLocalProxyToken(proxyTokenPath)
+			if err != nil {
+				return err
+			}
 			if _, err := modelaccess.Ensure(ctx, modelaccess.EnsureOptions{
 				CodexConfigPath: p.CodexConfigFile,
 				Secrets:         sec,
+				LocalProxyToken: proxyToken,
 				PrintChallenge: func(title string, ch oauth.DeviceCodeChallenge) {
 					terminalauth.PrintChallenge(out, title, ch, terminalauth.DefaultQR)
 				},
@@ -67,6 +83,7 @@ func newApp() app {
 					return modelaccess.EnsureDaemon(ctx, modelaccess.EnsureDaemonOptions{
 						ExePath:      pkg.AgentserverExe,
 						ProxyBaseURL: "http://127.0.0.1:53452",
+						LogPath:      proxyLogPath,
 					})
 				},
 			}); err != nil {
@@ -91,7 +108,10 @@ func newApp() app {
 			return nil
 		},
 		runSlave: func(ctx context.Context) error {
-			wd, _ := os.Getwd()
+			wd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("get current workdir: %w", err)
+			}
 			return headless.RunSlave(ctx, headless.SlaveOptions{
 				Paths:      p,
 				Package:    pkg,
@@ -121,7 +141,10 @@ func newApp() app {
 			})
 		},
 		serveDriverMCP: func(ctx context.Context) error {
-			wd, _ := os.Getwd()
+			wd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("get current workdir: %w", err)
+			}
 			return headless.ServeDriverMCP(ctx, headless.DriverMCPOptions{
 				Paths:   p,
 				Package: pkg,
@@ -130,12 +153,33 @@ func newApp() app {
 			})
 		},
 		runDaemon: func(ctx context.Context) error {
+			proxyToken, err := modelaccess.EnsureLocalProxyToken(proxyTokenPath)
+			if err != nil {
+				return err
+			}
 			return modelaccess.RunDaemon(ctx, modelaccess.DaemonOptions{
-				Secrets:  sec,
-				OAuth:    modelserver.OAuthConfig(),
-				LockPath: filepath.Join(p.InstallRoot, "token-refresher.lock"),
+				Secrets:         sec,
+				OAuth:           modelserver.OAuthConfig(),
+				LocalProxyToken: proxyToken,
+				LockPath:        filepath.Join(p.InstallRoot, "token-refresher.lock"),
+				Logf:            daemonLogf(proxyLogPath),
 			})
 		},
+	}
+}
+
+func daemonLogf(path string) func(string, ...any) {
+	return func(format string, args ...any) {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return
+		}
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		logger := log.New(f, "", log.LstdFlags)
+		logger.Printf(format, args...)
 	}
 }
 
@@ -181,7 +225,16 @@ func (a app) run(ctx context.Context, args []string) error {
 }
 
 func promptName(defaultName string) (string, error) {
-	return promptNameWithIO(os.Stdin, os.Stdout, defaultName)
+	return promptNameWithTerminal(os.Stdin, os.Stdout, defaultName, func() bool {
+		return term.IsTerminal(int(os.Stdin.Fd()))
+	})
+}
+
+func promptNameWithTerminal(r io.Reader, w io.Writer, defaultName string, isTerminal func() bool) (string, error) {
+	if isTerminal == nil || !isTerminal() {
+		return defaultName, nil
+	}
+	return promptNameWithIO(r, w, defaultName)
 }
 
 func promptNameWithIO(r io.Reader, w io.Writer, defaultName string) (string, error) {

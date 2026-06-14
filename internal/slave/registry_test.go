@@ -64,6 +64,24 @@ func TestRegistryCreatesSlaveWithCustomImmutableName(t *testing.T) {
 	}
 }
 
+func TestRegistryAllowsLinuxLegalNameCharacters(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	reg := NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves"))
+	m := Machine{MachineID: "machine-1", ComputerName: "61414-PC"}
+
+	got, err := reg.Create(m, CreateInput{Folder: folder, Name: "gpu:job*?"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got.Name != "gpu:job*?" {
+		t.Fatalf("Name=%q", got.Name)
+	}
+}
+
 func TestRegistryRejectsInvalidCreateInput(t *testing.T) {
 	dir := t.TempDir()
 	reg := NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves"))
@@ -427,6 +445,80 @@ func TestRegistryConcurrentEnsureForFolderCreatesOneSlave(t *testing.T) {
 	}
 }
 
+func TestRegistryConcurrentEnsureForFolderAcrossInstancesCreatesOneSlave(t *testing.T) {
+	prevProcs := runtime.GOMAXPROCS(0)
+	if prevProcs < 8 {
+		runtime.GOMAXPROCS(8)
+		t.Cleanup(func() {
+			runtime.GOMAXPROCS(prevProcs)
+		})
+	}
+
+	const attempts = 20
+	const workers = 64
+
+	for attempt := 0; attempt < attempts; attempt++ {
+		dir := t.TempDir()
+		folder := filepath.Join(dir, "repo")
+		if err := mkdir(folder); err != nil {
+			t.Fatal(err)
+		}
+		registryPath := filepath.Join(dir, "slaves.json")
+		slavesDir := filepath.Join(dir, "slaves")
+		m := Machine{MachineID: "machine-1", ComputerName: "host"}
+		start := make(chan struct{})
+		results := make([]Slave, workers)
+		created := make([]bool, workers)
+		errs := make([]error, workers)
+
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for i := 0; i < workers; i++ {
+			i := i
+			go func() {
+				defer wg.Done()
+				<-start
+				reg := NewRegistry(registryPath, slavesDir)
+				results[i], created[i], errs[i] = reg.EnsureForFolder(m, CreateInput{Folder: folder})
+			}()
+		}
+
+		close(start)
+		wg.Wait()
+
+		var id string
+		createCount := 0
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("attempt %d worker %d EnsureForFolder: %v", attempt, i, err)
+			}
+			if results[i].ID == "" {
+				t.Fatalf("attempt %d worker %d empty ID: %+v", attempt, i, results[i])
+			}
+			if id == "" {
+				id = results[i].ID
+			}
+			if results[i].ID != id {
+				t.Fatalf("attempt %d worker %d ID=%q want %q", attempt, i, results[i].ID, id)
+			}
+			if created[i] {
+				createCount++
+			}
+		}
+		if createCount != 1 {
+			t.Fatalf("attempt %d created count=%d want 1", attempt, createCount)
+		}
+
+		all, err := NewRegistry(registryPath, slavesDir).List()
+		if err != nil {
+			t.Fatalf("attempt %d List: %v", attempt, err)
+		}
+		if len(all) != 1 {
+			t.Fatalf("attempt %d registry has %d slaves, want 1: %+v", attempt, len(all), all)
+		}
+	}
+}
+
 func TestRegistryConcurrentCreatesPreserveAllSlaves(t *testing.T) {
 	prevProcs := runtime.GOMAXPROCS(0)
 	if prevProcs < 8 {
@@ -507,6 +599,64 @@ func TestRegistryConcurrentCreatesPreserveAllSlaves(t *testing.T) {
 	}
 }
 
+func TestRegistryConcurrentCreatesAcrossInstancesPreserveAllSlaves(t *testing.T) {
+	prevProcs := runtime.GOMAXPROCS(0)
+	if prevProcs < 8 {
+		runtime.GOMAXPROCS(8)
+		t.Cleanup(func() {
+			runtime.GOMAXPROCS(prevProcs)
+		})
+	}
+
+	const attempts = 20
+	const workers = 64
+
+	for attempt := 0; attempt < attempts; attempt++ {
+		dir := t.TempDir()
+		registryPath := filepath.Join(dir, "slaves.json")
+		slavesDir := filepath.Join(dir, "slaves")
+		m := Machine{MachineID: "machine-1", ComputerName: "61414-PC"}
+		start := make(chan struct{})
+		errs := make([]error, workers)
+
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for i := 0; i < workers; i++ {
+			i := i
+			go func() {
+				defer wg.Done()
+				folder := filepath.Join(dir, fmt.Sprintf("repo-%02d", i))
+				if err := mkdir(folder); err != nil {
+					errs[i] = err
+					return
+				}
+				<-start
+				reg := NewRegistry(registryPath, slavesDir)
+				_, errs[i] = reg.Create(m, CreateInput{
+					Folder: folder,
+					Name:   fmt.Sprintf("worker-%02d", i),
+				})
+			}()
+		}
+
+		close(start)
+		wg.Wait()
+
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("attempt %d worker %d Create: %v", attempt, i, err)
+			}
+		}
+		got, err := NewRegistry(registryPath, slavesDir).List()
+		if err != nil {
+			t.Fatalf("attempt %d List: %v", attempt, err)
+		}
+		if len(got) != workers {
+			t.Fatalf("attempt %d saved %d slaves, want %d: %+v", attempt, len(got), workers, got)
+		}
+	}
+}
+
 func TestRegistrySaveNarrowsExistingRegistryFileMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("windows does not preserve POSIX file mode bits")
@@ -540,6 +690,35 @@ func TestRegistrySaveNarrowsExistingRegistryFileMode(t *testing.T) {
 	}
 }
 
+func TestRegistrySaveCreatesPrivateStateDirs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows does not preserve POSIX file mode bits")
+	}
+
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	if err := mkdir(folder); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(dir, "state")
+	slavesDir := filepath.Join(stateDir, "slaves")
+	reg := NewRegistry(filepath.Join(stateDir, "slaves.json"), slavesDir)
+	m := Machine{MachineID: "machine-1", ComputerName: "61414-PC"}
+
+	if _, err := reg.Create(m, CreateInput{Folder: folder}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	for _, path := range []string{stateDir, slavesDir} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Fatalf("%s mode=%#o, want 0700", path, got)
+		}
+	}
+}
+
 func TestRegistryRejectsInvalidPathCharactersInName(t *testing.T) {
 	dir := t.TempDir()
 	folder := filepath.Join(dir, "repo")
@@ -551,13 +730,6 @@ func TestRegistryRejectsInvalidPathCharactersInName(t *testing.T) {
 	for _, name := range []string{
 		`bad\name`,
 		"bad/name",
-		"bad:name",
-		"bad*name",
-		"bad?name",
-		`bad"name`,
-		"bad<name",
-		"bad>name",
-		"bad|name",
 	} {
 		t.Run(name, func(t *testing.T) {
 			reg := NewRegistry(filepath.Join(dir, name+".json"), filepath.Join(dir, "slaves", name))

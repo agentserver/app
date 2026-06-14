@@ -49,7 +49,7 @@ cross-linux:
 	@mkdir -p $(DIST)/linux/amd64 $(DIST)/linux/arm64
 	@for arch in amd64 arm64; do \
 		echo "==> cross-building agentserver (linux/$$arch)"; \
-		GOOS=linux GOARCH=$$arch \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch \
 		  $(GO) build $(GOFLAGS) -ldflags="$(LDFLAGS)" \
 		  -o $(DIST)/linux/$$arch/agentserver ./cmd/agentserver ; \
 	done

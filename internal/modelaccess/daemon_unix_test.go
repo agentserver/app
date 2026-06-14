@@ -6,14 +6,17 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
 func TestEnsureDaemonDetachesProxyDaemonOnUnix(t *testing.T) {
 	healthy := false
+	logPath := filepath.Join(t.TempDir(), "logs", "model-proxy-daemon.log")
 	err := EnsureDaemon(context.Background(), EnsureDaemonOptions{
 		ExePath:      "/opt/agentserver/agentserver",
 		ProxyBaseURL: "http://127.0.0.1:1",
+		LogPath:      logPath,
 		HealthCheck: func(context.Context, string) bool {
 			return healthy
 		},
@@ -22,8 +25,8 @@ func TestEnsureDaemonDetachesProxyDaemonOnUnix(t *testing.T) {
 				t.Fatalf("SysProcAttr=%#v, want Setsid", cmd.SysProcAttr)
 			}
 			assertDevNullFile(t, "Stdin", cmd.Stdin)
-			assertDevNullFile(t, "Stdout", cmd.Stdout)
-			assertDevNullFile(t, "Stderr", cmd.Stderr)
+			assertNamedFile(t, "Stdout", cmd.Stdout, logPath)
+			assertNamedFile(t, "Stderr", cmd.Stderr, logPath)
 			healthy = true
 			return nil
 		},
@@ -35,11 +38,16 @@ func TestEnsureDaemonDetachesProxyDaemonOnUnix(t *testing.T) {
 
 func assertDevNullFile(t *testing.T, name string, got any) {
 	t.Helper()
+	assertNamedFile(t, name, got, os.DevNull)
+}
+
+func assertNamedFile(t *testing.T, name string, got any, want string) {
+	t.Helper()
 	f, ok := got.(*os.File)
 	if !ok {
 		t.Fatalf("%s=%T, want *os.File", name, got)
 	}
-	if f.Name() != os.DevNull {
-		t.Fatalf("%s file=%q, want %q", name, f.Name(), os.DevNull)
+	if f.Name() != want {
+		t.Fatalf("%s file=%q, want %q", name, f.Name(), want)
 	}
 }

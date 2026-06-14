@@ -105,6 +105,9 @@ func RunSlave(ctx context.Context, opts SlaveOptions) error {
 	if err != nil {
 		return err
 	}
+	if sl.PID > 0 && slave.ProcessExists(sl.PID) {
+		return fmt.Errorf("slave already running for %s (pid %d)", sl.Folder, sl.PID)
+	}
 	if err := slave.WriteConfig(sl, machine, slave.ConfigInput{CodexBin: opts.CodexBin}); err != nil {
 		return err
 	}

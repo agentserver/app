@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -41,6 +40,7 @@ func TestRunDaemonServesLocalModelProxyAndKeepsServingWithoutRefreshToken(t *tes
 		errCh <- RunDaemon(ctx, DaemonOptions{
 			Secrets:              sec,
 			OAuth:                oauth.AuthCodeConfig{ClientID: "client-x"},
+			LocalProxyToken:      "random-local-token",
 			ProxyAddr:            addr,
 			ProxyUpstreamBaseURL: upstream.URL + "/v1",
 			LockPath:             lockPath,
@@ -60,7 +60,7 @@ func TestRunDaemonServesLocalModelProxyAndKeepsServingWithoutRefreshToken(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+codex.LocalProxyAPIKeyValue)
+	req.Header.Set("Authorization", "Bearer random-local-token")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("proxy request: %v", err)
@@ -118,9 +118,10 @@ func TestRunDaemonStopsRefreshWhenProxyStartupFails(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	err = RunDaemon(ctx, DaemonOptions{
-		Secrets:   sec,
-		OAuth:     oauth.AuthCodeConfig{ClientID: "client-x"},
-		ProxyAddr: ln.Addr().String(),
+		Secrets:         sec,
+		OAuth:           oauth.AuthCodeConfig{ClientID: "client-x"},
+		LocalProxyToken: "random-local-token",
+		ProxyAddr:       ln.Addr().String(),
 	})
 	if err == nil {
 		t.Fatal("RunDaemon returned nil, want proxy startup error")
@@ -161,9 +162,10 @@ func TestRunDaemonStopsProxyWhenRefreshReturnsHardError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	err := RunDaemon(ctx, DaemonOptions{
-		Secrets:   sec,
-		OAuth:     oauth.AuthCodeConfig{ClientID: "client-x"},
-		ProxyAddr: addr,
+		Secrets:         sec,
+		OAuth:           oauth.AuthCodeConfig{ClientID: "client-x"},
+		LocalProxyToken: "random-local-token",
+		ProxyAddr:       addr,
 	})
 	if !errors.Is(err, refreshErr) {
 		t.Fatalf("RunDaemon err=%v, want %v", err, refreshErr)
@@ -194,9 +196,10 @@ func TestRunDaemonReturnsNilWhenDeadlineExpiresFromRefreshBranch(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 		time.Sleep(time.Millisecond)
 		err := RunDaemon(ctx, DaemonOptions{
-			Secrets:   sec,
-			OAuth:     oauth.AuthCodeConfig{ClientID: "client-x"},
-			ProxyAddr: freeTCPAddr(t),
+			Secrets:         sec,
+			OAuth:           oauth.AuthCodeConfig{ClientID: "client-x"},
+			LocalProxyToken: "random-local-token",
+			ProxyAddr:       freeTCPAddr(t),
 		})
 		cancel()
 		if err != nil {
@@ -314,7 +317,25 @@ func TestEnsureDaemonReusesHealthyExistingProxy(t *testing.T) {
 	}
 }
 
-func TestEnsureDaemonReportsProxyUnavailableWhenPortOccupied(t *testing.T) {
+func TestEnsureDaemonRechecksHealthWhenPortOccupied(t *testing.T) {
+	healthChecks := 0
+	err := EnsureDaemon(context.Background(), EnsureDaemonOptions{
+		ExePath:      "/opt/agentserver/agentserver",
+		ProxyBaseURL: "http://127.0.0.1:1",
+		HealthCheck: func(context.Context, string) bool {
+			healthChecks++
+			return healthChecks > 1
+		},
+		StartProcess: func(*exec.Cmd) error {
+			return errors.New("listen tcp 127.0.0.1:53452: bind: address already in use")
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnsureDaemon err=%v, want nil after health recheck", err)
+	}
+}
+
+func TestEnsureDaemonReportsProxyUnavailableWhenPortOccupiedAndStillUnhealthy(t *testing.T) {
 	err := EnsureDaemon(context.Background(), EnsureDaemonOptions{
 		ExePath:      "/opt/agentserver/agentserver",
 		ProxyBaseURL: "http://127.0.0.1:1",

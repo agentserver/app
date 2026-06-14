@@ -112,6 +112,10 @@ func NewRegistry(path, slavesDir string) *Registry {
 	return &Registry{path: path, slavesDir: slavesDir}
 }
 
+func (r *Registry) lockPath() string {
+	return r.path + ".lock"
+}
+
 func (r *Registry) storageDir(id string) (string, error) {
 	if r == nil {
 		return "", fmt.Errorf("slave registry required")
@@ -144,6 +148,12 @@ func (r *Registry) List() ([]Slave, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	lock, err := acquireRegistryFileLock(r.lockPath())
+	if err != nil {
+		return nil, err
+	}
+	defer lock.close()
+
 	all, err := r.loadLocked()
 	if err != nil {
 		return nil, err
@@ -154,6 +164,12 @@ func (r *Registry) List() ([]Slave, error) {
 func (r *Registry) Get(id string) (Slave, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	lock, err := acquireRegistryFileLock(r.lockPath())
+	if err != nil {
+		return Slave{}, err
+	}
+	defer lock.close()
 
 	all, err := r.loadLocked()
 	if err != nil {
@@ -188,6 +204,12 @@ func (r *Registry) Create(machine Machine, in CreateInput) (Slave, error) {
 	displayName := machine.ComputerName + "-" + name
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	lock, err := acquireRegistryFileLock(r.lockPath())
+	if err != nil {
+		return Slave{}, err
+	}
+	defer lock.close()
 
 	all, err := r.loadLocked()
 	if err != nil {
@@ -238,25 +260,21 @@ func (r *Registry) EnsureForFolder(machine Machine, in CreateInput) (Slave, bool
 	}
 	displayName := machine.ComputerName + "-" + name
 
-	all, err := r.List()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	lock, err := acquireRegistryFileLock(r.lockPath())
 	if err != nil {
 		return Slave{}, false, err
 	}
-	for _, existing := range all {
-		if storedFolderKey(existing.Folder) == folder {
-			return existing, false, nil
-		}
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	defer lock.close()
 
 	latest, err := r.loadLocked()
 	if err != nil {
 		return Slave{}, false, err
 	}
 	for _, existing := range latest {
-		if filepath.Clean(existing.Folder) == folder {
+		if storedFolderKey(existing.Folder) == folder {
 			return existing, false, nil
 		}
 	}
@@ -275,6 +293,12 @@ func (r *Registry) EnsureForFolder(machine Machine, in CreateInput) (Slave, bool
 func (r *Registry) Update(id string, fn func(*Slave) error) (Slave, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	lock, err := acquireRegistryFileLock(r.lockPath())
+	if err != nil {
+		return Slave{}, err
+	}
+	defer lock.close()
 
 	all, err := r.loadLocked()
 	if err != nil {
@@ -299,6 +323,12 @@ func (r *Registry) Update(id string, fn func(*Slave) error) (Slave, error) {
 func (r *Registry) Delete(id string) (Slave, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	lock, err := acquireRegistryFileLock(r.lockPath())
+	if err != nil {
+		return Slave{}, err
+	}
+	defer lock.close()
 
 	all, err := r.loadLocked()
 	if err != nil {
@@ -349,8 +379,8 @@ func validateSlaveName(name string) error {
 	if len([]rune(name)) > 20 {
 		return fmt.Errorf("slave name must be at most 20 characters")
 	}
-	if strings.ContainsAny(name, `\\/:*?"<>|`) {
-		return fmt.Errorf("slave name contains invalid path characters")
+	if strings.ContainsAny(name, `\/`) || strings.ContainsRune(name, 0) {
+		return fmt.Errorf("slave name contains path separators")
 	}
 	return nil
 }
@@ -371,10 +401,10 @@ func (r *Registry) loadLocked() ([]Slave, error) {
 }
 
 func (r *Registry) saveLocked(all []Slave) error {
-	if err := osMkdirAll(filepath.Dir(r.path), 0o755); err != nil {
+	if err := osMkdirAll(filepath.Dir(r.path), 0o700); err != nil {
 		return fmt.Errorf("mkdir slave registry dir: %w", err)
 	}
-	if err := osMkdirAll(r.slavesDir, 0o755); err != nil {
+	if err := osMkdirAll(r.slavesDir, 0o700); err != nil {
 		return fmt.Errorf("mkdir slaves dir: %w", err)
 	}
 	b, err := json.MarshalIndent(all, "", "  ")

@@ -402,11 +402,11 @@ func (r *realOrchestrator) EnsureVSCode(ctx context.Context, ch chan<- ProgressE
 
 func (r *realOrchestrator) configureSharedCodex(ctx context.Context) error {
 	_ = ctx
-	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
+	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, codex.LegacyLocalProxyAPIKeyValue)); err != nil {
 		return err
 	}
-	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
-	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
 	if r.d.TokenRefresherExePath != "" {
 		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 	}
@@ -728,7 +728,7 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 		return fmt.Errorf("VS Code path unknown; was vscode_install completed?")
 	}
 	cmd := exec.Command(s.VSCode.Path, vscode.LaunchArgs(r.d.VSCodeUserDataDir, r.d.VSCodeExtDir)...)
-	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
 	if r.d.TokenRefresherExePath != "" {
 		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 	}

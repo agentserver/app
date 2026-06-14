@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 )
+
+const maxDeviceResponseBytes = 1 << 20
+
+var deviceHTTPClient = &http.Client{Timeout: 60 * time.Second}
 
 // RequestDeviceCode POSTs to AuthURL and returns the challenge.
 func RequestDeviceCode(ctx context.Context, cfg Config) (DeviceCodeChallenge, error) {
@@ -25,7 +30,7 @@ func RequestDeviceCode(ctx context.Context, cfg Config) (DeviceCodeChallenge, er
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := deviceHTTPClient.Do(req)
 	if err != nil {
 		return DeviceCodeChallenge{}, fmt.Errorf("device auth: %w", err)
 	}
@@ -34,7 +39,7 @@ func RequestDeviceCode(ctx context.Context, cfg Config) (DeviceCodeChallenge, er
 		return DeviceCodeChallenge{}, fmt.Errorf("device auth: status %d", resp.StatusCode)
 	}
 	var ch DeviceCodeChallenge
-	if err := json.NewDecoder(resp.Body).Decode(&ch); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxDeviceResponseBytes)).Decode(&ch); err != nil {
 		return DeviceCodeChallenge{}, fmt.Errorf("decode device auth: %w", err)
 	}
 	ch.RetrievedAt = time.Now()
@@ -111,21 +116,21 @@ func tokenOnce(ctx context.Context, cfg Config, deviceCode string) (Token, strin
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := deviceHTTPClient.Do(req)
 	if err != nil {
 		return Token{}, "", fmt.Errorf("token poll: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
 		var tok Token
-		if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+		if err := json.NewDecoder(io.LimitReader(resp.Body, maxDeviceResponseBytes)).Decode(&tok); err != nil {
 			return Token{}, "", err
 		}
 		return tok, "", nil
 	}
 	// 400 with JSON {error: "..."} is normal device-flow signalling
 	var te tokenErr
-	if err := json.NewDecoder(resp.Body).Decode(&te); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxDeviceResponseBytes)).Decode(&te); err != nil {
 		return Token{}, "", fmt.Errorf("token poll: status %d", resp.StatusCode)
 	}
 	if te.Code == "" {

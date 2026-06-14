@@ -89,9 +89,10 @@ func TestEnsureDirectAPIKeyModeDoesNotRequireSecrets(t *testing.T) {
 	)
 }
 
-func TestEnsureOpenAIAPIKeyWithoutMatchingDirectConfigUsesProxy(t *testing.T) {
+func TestEnsureOpenAIAPIKeyWithoutMatchingDirectConfigRepairsToDirect(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "codex", "config.toml")
+	writeProxyConfig(t, configPath, "old-proxy-token")
 	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
 	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
 	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
@@ -120,17 +121,17 @@ func TestEnsureOpenAIAPIKeyWithoutMatchingDirectConfigUsesProxy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ensure() error = %v", err)
 	}
-	if result.Mode != ModeLocalProxy {
-		t.Fatalf("Mode = %q, want %q", result.Mode, ModeLocalProxy)
+	if result.Mode != ModeDirectAPIKey {
+		t.Fatalf("Mode = %q, want %q", result.Mode, ModeDirectAPIKey)
 	}
-	if !daemonStarted {
-		t.Fatal("StartDaemon was not called")
+	if daemonStarted {
+		t.Fatal("StartDaemon was called in direct API key mode")
 	}
 	assertConfigContains(t, configPath,
-		`base_url = "`+modelproxy.DefaultBaseURL+`"`,
-		`experimental_bearer_token = "`+codex.LocalProxyAPIKeyValue+`"`,
+		`base_url = "https://code.ai.cs.ac.cn/v1"`,
+		`env_key = "OPENAI_API_KEY"`,
 	)
-	assertConfigNotContains(t, configPath, `env_key = "OPENAI_API_KEY"`)
+	assertConfigNotContains(t, configPath, `experimental_bearer_token`)
 }
 
 func TestEnsureProxyModeRunsDeviceLoginWhenRefreshMissing(t *testing.T) {
@@ -150,6 +151,7 @@ func TestEnsureProxyModeRunsDeviceLoginWhenRefreshMissing(t *testing.T) {
 		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
 			requestedDeviceCode = true
 			return challenge, nil
@@ -199,6 +201,7 @@ func TestEnsureProxyModeUsesExistingRefreshTokenWithoutPrompt(t *testing.T) {
 		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
 			t.Fatal("RequestDeviceCode called")
 			return oauth.DeviceCodeChallenge{}, nil
@@ -226,6 +229,44 @@ func TestEnsureProxyModeUsesExistingRefreshTokenWithoutPrompt(t *testing.T) {
 	assertSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
 }
 
+func TestEnsureProxyModeKeepsExistingAccessTokenWhenExpiryMissing(t *testing.T) {
+	tmp := t.TempDir()
+	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
+	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	var daemonStarted bool
+
+	result, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
+		Secrets:         sec,
+		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
+		Refresh: func(context.Context, oauth.AuthCodeConfig, string) (oauth.Token, error) {
+			t.Fatal("Refresh called despite existing access token with missing expiry")
+			return oauth.Token{}, nil
+		},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			t.Fatal("RequestDeviceCode called despite existing access token")
+			return oauth.DeviceCodeChallenge{}, nil
+		},
+		StartDaemon: func(context.Context) error {
+			daemonStarted = true
+			return nil
+		},
+		Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if result.Mode != ModeLocalProxy {
+		t.Fatalf("Mode = %q, want %q", result.Mode, ModeLocalProxy)
+	}
+	if !daemonStarted {
+		t.Fatal("StartDaemon was not called")
+	}
+	assertSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
+}
+
 func TestEnsureProxyModeRefreshesExpiredAccessTokenBeforeReturning(t *testing.T) {
 	tmp := t.TempDir()
 	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
@@ -238,6 +279,7 @@ func TestEnsureProxyModeRefreshesExpiredAccessTokenBeforeReturning(t *testing.T)
 		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		Refresh: func(_ context.Context, _ oauth.AuthCodeConfig, refreshToken string) (oauth.Token, error) {
 			refreshed = true
 			if refreshToken != "existing-refresh" {
@@ -279,6 +321,7 @@ func TestEnsureProxyModeRunsDeviceLoginWhenExpiredAccessRefreshNeedsReauth(t *te
 		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		Refresh: func(_ context.Context, _ oauth.AuthCodeConfig, refreshToken string) (oauth.Token, error) {
 			refreshed = true
 			return oauth.Token{}, fmt.Errorf("refresh failed: %w", oauth.ErrInvalidGrant)
@@ -316,6 +359,7 @@ func TestEnsureProxyModeRefreshesWhenAccessTokenMissing(t *testing.T) {
 		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		Refresh: func(_ context.Context, _ oauth.AuthCodeConfig, refreshToken string) (oauth.Token, error) {
 			refreshed = true
 			if refreshToken != "existing-refresh" {
@@ -359,6 +403,7 @@ func TestEnsureProxyModeRunsDeviceLoginWhenRefreshNeedsReauth(t *testing.T) {
 		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		Refresh: func(_ context.Context, _ oauth.AuthCodeConfig, refreshToken string) (oauth.Token, error) {
 			refreshed = true
 			if refreshToken != "existing-refresh" {
@@ -408,6 +453,7 @@ func TestEnsureProxyModePropagatesRefreshErrorWithoutPrompt(t *testing.T) {
 		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		Refresh: func(_ context.Context, _ oauth.AuthCodeConfig, refreshToken string) (oauth.Token, error) {
 			refreshed = true
 			if refreshToken != "existing-refresh" {
@@ -452,6 +498,7 @@ func TestEnsureRerunsLoginWhenReauthFlagSet(t *testing.T) {
 		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
 			requestedDeviceCode = true
 			return oauth.DeviceCodeChallenge{DeviceCode: "device", UserCode: "code", ExpiresIn: 600}, nil
@@ -489,6 +536,24 @@ func TestEnsureRequiresSecrets(t *testing.T) {
 	}
 }
 
+func TestEnsureProxyModeRequiresLocalProxyToken(t *testing.T) {
+	tmp := t.TempDir()
+	sec := secrets.New(filepath.Join(tmp, "secrets.json"))
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenKey, "existing-access")
+	mustSetSecret(t, sec, tokenrefresh.RefreshTokenKey, "existing-refresh")
+	mustSetSecret(t, sec, tokenrefresh.AccessTokenExpiresAtKey, fixedNow().Add(time.Hour).Format(time.RFC3339))
+
+	_, err := Ensure(context.Background(), EnsureOptions{
+		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
+		Secrets:         sec,
+		Env:             func(string) string { return "" },
+		Now:             fixedNow,
+	})
+	if err == nil || !strings.Contains(err.Error(), "local proxy token") {
+		t.Fatalf("Ensure() error = %v, want local proxy token error", err)
+	}
+}
+
 func TestEnsureProxyModeIgnoresSetEnvFailure(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "codex", "config.toml")
@@ -504,6 +569,7 @@ func TestEnsureProxyModeIgnoresSetEnvFailure(t *testing.T) {
 		CodexConfigPath: configPath,
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		SetEnv: func(string, string) error {
 			return setEnvErr
 		},
@@ -544,6 +610,7 @@ func TestEnsureProxyModeIgnoresPersistEnvFailure(t *testing.T) {
 		CodexConfigPath: configPath,
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		SetEnv:          func(string, string) error { return nil },
 		PersistEnv: func(string, string) error {
 			return persistErr
@@ -580,6 +647,7 @@ func TestEnsureProxyModeDoesNotWriteProxyConfigWhenStartDaemonFails(t *testing.T
 		CodexConfigPath: configPath,
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		SetEnv:          func(string, string) error { return nil },
 		PersistEnv:      func(string, string) error { return nil },
 		StartDaemon: func(context.Context) error {
@@ -606,6 +674,7 @@ func TestProxySettingsWrittenInProxyMode(t *testing.T) {
 		CodexConfigPath: filepath.Join(tmp, "codex", "config.toml"),
 		Secrets:         sec,
 		Env:             func(string) string { return "" },
+		LocalProxyToken: "random-local-token",
 		SetEnv: func(key, value string) error {
 			setEnvCalled = true
 			return nil
@@ -628,7 +697,7 @@ func TestProxySettingsWrittenInProxyMode(t *testing.T) {
 	}
 	assertConfigContains(t, filepath.Join(tmp, "codex", "config.toml"),
 		`base_url = "`+modelproxy.DefaultBaseURL+`"`,
-		`experimental_bearer_token = "`+codex.LocalProxyAPIKeyValue+`"`,
+		`experimental_bearer_token = "random-local-token"`,
 	)
 	assertConfigNotContains(t, filepath.Join(tmp, "codex", "config.toml"), `env_key = "`)
 	if setEnvCalled {
@@ -642,6 +711,13 @@ func TestProxySettingsWrittenInProxyMode(t *testing.T) {
 func writeDirectConfig(t *testing.T, path string) {
 	t.Helper()
 	if err := codex.UpdateConfig(path, codex.ModelserverSettings()); err != nil {
+		t.Fatalf("UpdateConfig() error = %v", err)
+	}
+}
+
+func writeProxyConfig(t *testing.T, path, token string) {
+	t.Helper()
+	if err := codex.UpdateConfig(path, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, token)); err != nil {
 		t.Fatalf("UpdateConfig() error = %v", err)
 	}
 }

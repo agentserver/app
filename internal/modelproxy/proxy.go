@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 )
@@ -24,24 +23,47 @@ const (
 	DefaultUpstreamBaseURL = "https://code.ai.cs.ac.cn/v1"
 
 	HealthPath = "/agentserver/model-proxy/health"
+
+	MaxRequestBodyBytes = 32 << 20
+
+	maxHeaderBytes    = 64 << 10
+	readHeaderTimeout = 10 * time.Second
+	idleTimeout       = 60 * time.Second
 )
 
+var hopByHopHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"TE",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
+
 type Options struct {
-	Secrets         secrets.Store
-	UpstreamBaseURL string
-	Transport       http.RoundTripper
+	Secrets          secrets.Store
+	UpstreamBaseURL  string
+	LocalBearerToken string
+	Transport        http.RoundTripper
 }
 
 type ServerOptions struct {
-	Addr            string
-	Secrets         secrets.Store
-	UpstreamBaseURL string
-	Transport       http.RoundTripper
+	Addr             string
+	Secrets          secrets.Store
+	UpstreamBaseURL  string
+	LocalBearerToken string
+	Transport        http.RoundTripper
 }
 
 func NewHandler(opts Options) (http.Handler, error) {
 	if opts.Secrets == nil {
 		return nil, errors.New("modelproxy: secrets store required")
+	}
+	localBearerToken := strings.TrimSpace(opts.LocalBearerToken)
+	if localBearerToken == "" {
+		return nil, errors.New("modelproxy: local bearer token required")
 	}
 	upstreamRaw := opts.UpstreamBaseURL
 	if upstreamRaw == "" {
@@ -71,8 +93,12 @@ func NewHandler(opts Options) (http.Handler, error) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if !validLocalBearer(r.Header.Get("Authorization")) {
+		if !validLocalBearer(r.Header.Get("Authorization"), localBearerToken) {
 			http.Error(w, "local model proxy authorization required", http.StatusUnauthorized)
+			return
+		}
+		if r.ContentLength > MaxRequestBodyBytes {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		token, err := opts.Secrets.Get(tokenrefresh.AccessTokenKey)
@@ -82,17 +108,32 @@ func NewHandler(opts Options) (http.Handler, error) {
 		}
 		r2 := r.Clone(r.Context())
 		r2.Header = r.Header.Clone()
+		stripHopByHopHeaders(r2.Header)
 		r2.Header.Set("Authorization", "Bearer "+token)
+		r2.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
 		proxy.ServeHTTP(w, r2)
 	}), nil
 }
 
-func validLocalBearer(auth string) bool {
+func stripHopByHopHeaders(h http.Header) {
+	for _, value := range h.Values("Connection") {
+		for _, name := range strings.Split(value, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				h.Del(name)
+			}
+		}
+	}
+	for _, name := range hopByHopHeaders {
+		h.Del(name)
+	}
+}
+
+func validLocalBearer(auth, token string) bool {
 	parts := strings.Fields(auth)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(codex.LocalProxyAPIKeyValue)) == 1
+	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(token)) == 1
 }
 
 func ListenAndServe(ctx context.Context, opts ServerOptions) error {
@@ -104,9 +145,10 @@ func ListenAndServe(ctx context.Context, opts ServerOptions) error {
 		addr = DefaultListenAddr
 	}
 	handler, err := NewHandler(Options{
-		Secrets:         opts.Secrets,
-		UpstreamBaseURL: opts.UpstreamBaseURL,
-		Transport:       opts.Transport,
+		Secrets:          opts.Secrets,
+		UpstreamBaseURL:  opts.UpstreamBaseURL,
+		LocalBearerToken: opts.LocalBearerToken,
+		Transport:        opts.Transport,
 	})
 	if err != nil {
 		return err
@@ -115,7 +157,12 @@ func ListenAndServe(ctx context.Context, opts ServerOptions) error {
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: handler}
+	srv := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

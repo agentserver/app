@@ -31,6 +31,7 @@ type Result struct {
 type EnsureOptions struct {
 	CodexConfigPath string
 	Secrets         secrets.Store
+	LocalProxyToken string
 
 	DeviceConfig   oauth.Config
 	AuthCodeConfig oauth.AuthCodeConfig
@@ -54,20 +55,17 @@ func Ensure(ctx context.Context, opts EnsureOptions) (Result, error) {
 	opts = defaultEnsureOptions(opts)
 
 	if opts.Env(tokenrefresh.OpenAIAPIKeyEnv) != "" {
-		directConfig, err := codex.HasModelserverDirectConfig(opts.CodexConfigPath)
-		if err != nil {
+		if err := codex.UpdateConfig(opts.CodexConfigPath, codex.ModelserverSettings()); err != nil {
 			return Result{}, err
 		}
-		if directConfig {
-			if err := codex.UpdateConfig(opts.CodexConfigPath, codex.ModelserverSettings()); err != nil {
-				return Result{}, err
-			}
-			return Result{Mode: ModeDirectAPIKey}, nil
-		}
+		return Result{Mode: ModeDirectAPIKey}, nil
 	}
 
 	if opts.Secrets == nil {
 		return Result{}, tokenrefresh.ErrNoSecrets
+	}
+	if opts.LocalProxyToken == "" {
+		return Result{}, errors.New("modelaccess: local proxy token required")
 	}
 	if err := ensureProxyCredentials(ctx, opts); err != nil {
 		return Result{}, err
@@ -77,7 +75,7 @@ func Ensure(ctx context.Context, opts EnsureOptions) (Result, error) {
 			return Result{}, err
 		}
 	}
-	if err := codex.UpdateConfig(opts.CodexConfigPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
+	if err := codex.UpdateConfig(opts.CodexConfigPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, opts.LocalProxyToken)); err != nil {
 		return Result{}, err
 	}
 	return Result{Mode: ModeLocalProxy}, nil
@@ -121,7 +119,7 @@ func ensureProxyCredentials(ctx context.Context, opts EnsureOptions) error {
 		}
 		return err
 	}
-	if accessTokenFresh(opts.Secrets, opts.Now()) {
+	if !accessTokenNeedsRefresh(opts.Secrets, opts.Now()) {
 		return nil
 	}
 	err = refreshOnce(ctx, opts)
@@ -131,7 +129,7 @@ func ensureProxyCredentials(ctx context.Context, opts EnsureOptions) error {
 	return err
 }
 
-func accessTokenFresh(sec secrets.Store, now time.Time) bool {
+func accessTokenNeedsRefresh(sec secrets.Store, now time.Time) bool {
 	raw, err := sec.Get(tokenrefresh.AccessTokenExpiresAtKey)
 	if err != nil || raw == "" {
 		return false
@@ -140,7 +138,7 @@ func accessTokenFresh(sec secrets.Store, now time.Time) bool {
 	if err != nil {
 		return false
 	}
-	return expiresAt.After(now.Add(proxyRefreshBefore))
+	return !expiresAt.After(now.Add(proxyRefreshBefore))
 }
 
 func refreshOnce(ctx context.Context, opts EnsureOptions) error {

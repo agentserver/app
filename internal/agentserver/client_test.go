@@ -116,6 +116,23 @@ func TestRegisterAgentUsesOAuthToken(t *testing.T) {
 	}
 }
 
+func TestDeleteAgentUsesSandboxProxyToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/agent/sandboxes/sb-1" {
+			t.Fatalf("got %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer sandbox-proxy-token" {
+			t.Fatalf("Authorization=%q", r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	if err := New(srv.URL).DeleteAgent(context.Background(), "sandbox-proxy-token", "sb-1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNewClientUsesBoundedHTTPTimeout(t *testing.T) {
 	got := New("https://agent.cs.ac.cn").http.Timeout
 	if got != 60*time.Second {

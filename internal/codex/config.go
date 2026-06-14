@@ -50,15 +50,17 @@ func ModelserverSettings() Settings {
 }
 
 const (
-	LocalProxyAPIKeyEnv   = "AGENTSERVER_CODEX_LOCAL_API_KEY"
-	LocalProxyAPIKeyValue = "agentserver-local-proxy"
+	LocalProxyAPIKeyEnv = "AGENTSERVER_CODEX_LOCAL_API_KEY"
+	// LegacyLocalProxyAPIKeyValue is retained for the Windows desktop launcher
+	// path. Linux headless model proxy access must use a per-user random token.
+	LegacyLocalProxyAPIKeyValue = "agentserver-local-proxy"
 )
 
-func ModelserverProxySettings(baseURL string) Settings {
+func ModelserverProxySettings(baseURL, bearerToken string) Settings {
 	s := ModelserverSettings()
 	s.BaseURL = baseURL
 	s.EnvKey = ""
-	s.ExperimentalBearerToken = LocalProxyAPIKeyValue
+	s.ExperimentalBearerToken = strings.TrimSpace(bearerToken)
 	return s
 }
 
@@ -87,7 +89,9 @@ func UpdateConfig(path string, s Settings) error {
 		if _, err := toml.Decode(string(b), &root); err != nil {
 			return fmt.Errorf("parse existing config.toml: %w", err)
 		}
-		_ = writeConfigBackup(path, b)
+		if err := writeConfigBackup(path, b); err != nil {
+			return fmt.Errorf("backup config.toml: %w", err)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read config.toml: %w", err)
 	}
@@ -110,16 +114,22 @@ func UpdateConfig(path string, s Settings) error {
 	if providers == nil {
 		providers = map[string]any{}
 	}
-	provider := map[string]any{
-		"name":     s.Provider,
-		"base_url": s.BaseURL,
-		"wire_api": s.WireAPI,
+	provider, _ := providers[s.Provider].(map[string]any)
+	if provider == nil {
+		provider = map[string]any{}
 	}
+	provider["name"] = s.Provider
+	provider["base_url"] = s.BaseURL
+	provider["wire_api"] = s.WireAPI
 	if s.EnvKey != "" {
 		provider["env_key"] = s.EnvKey
+	} else {
+		delete(provider, "env_key")
 	}
 	if s.ExperimentalBearerToken != "" {
 		provider["experimental_bearer_token"] = s.ExperimentalBearerToken
+	} else {
+		delete(provider, "experimental_bearer_token")
 	}
 	providers[s.Provider] = provider
 	root["model_providers"] = providers
@@ -128,7 +138,7 @@ func UpdateConfig(path string, s Settings) error {
 	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
 		return fmt.Errorf("marshal config.toml: %w", err)
 	}
-	return os.WriteFile(path, buf.Bytes(), 0o644)
+	return writeConfigFile(path, buf.Bytes())
 }
 
 func HasModelserverDirectConfig(path string) (bool, error) {
@@ -187,7 +197,9 @@ func UpdateMCPServer(path, name string, server MCPServer) error {
 		if _, err := toml.Decode(string(b), &root); err != nil {
 			return fmt.Errorf("parse existing config.toml: %w", err)
 		}
-		_ = writeConfigBackup(path, b)
+		if err := writeConfigBackup(path, b); err != nil {
+			return fmt.Errorf("backup config.toml: %w", err)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read config.toml: %w", err)
 	}
@@ -196,24 +208,36 @@ func UpdateMCPServer(path, name string, server MCPServer) error {
 	if servers == nil {
 		servers = map[string]any{}
 	}
-	entry := map[string]any{
-		"command": server.Command,
-		"args":    append([]string(nil), server.Args...),
+	entry, _ := servers[name].(map[string]any)
+	if entry == nil {
+		entry = map[string]any{}
 	}
+	entry["command"] = server.Command
+	entry["args"] = append([]string(nil), server.Args...)
 	if server.StartupTimeoutSec > 0 {
 		entry["startup_timeout_sec"] = server.StartupTimeoutSec
+	} else {
+		delete(entry, "startup_timeout_sec")
 	}
 	if server.ToolTimeoutSec > 0 {
 		entry["tool_timeout_sec"] = server.ToolTimeoutSec
+	} else {
+		delete(entry, "tool_timeout_sec")
 	}
 	if server.Enabled != nil {
 		entry["enabled"] = *server.Enabled
+	} else {
+		delete(entry, "enabled")
 	}
 	if len(server.Env) > 0 {
 		entry["env"] = server.Env
+	} else {
+		delete(entry, "env")
 	}
 	if server.Cwd != "" {
 		entry["cwd"] = server.Cwd
+	} else {
+		delete(entry, "cwd")
 	}
 	servers[name] = entry
 	root["mcp_servers"] = servers
@@ -222,7 +246,7 @@ func UpdateMCPServer(path, name string, server MCPServer) error {
 	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
 		return fmt.Errorf("marshal config.toml: %w", err)
 	}
-	return os.WriteFile(path, buf.Bytes(), 0o644)
+	return writeConfigFile(path, buf.Bytes())
 }
 
 func RemoveMCPServer(path, name string) error {
@@ -247,7 +271,9 @@ func RemoveMCPServer(path, name string) error {
 	if _, ok := servers[name]; !ok {
 		return nil
 	}
-	_ = writeConfigBackup(path, b)
+	if err := writeConfigBackup(path, b); err != nil {
+		return fmt.Errorf("backup config.toml: %w", err)
+	}
 	delete(servers, name)
 	if len(servers) == 0 {
 		delete(root, "mcp_servers")
@@ -258,7 +284,7 @@ func RemoveMCPServer(path, name string) error {
 	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
 		return fmt.Errorf("marshal config.toml: %w", err)
 	}
-	return os.WriteFile(path, buf.Bytes(), 0o644)
+	return writeConfigFile(path, buf.Bytes())
 }
 
 func defaultString(v, fallback string) string {
@@ -268,12 +294,50 @@ func defaultString(v, fallback string) string {
 	return fallback
 }
 
-func writeConfigBackup(path string, body []byte) error {
+var writeConfigBackup = writeConfigBackupFile
+
+func writeConfigBackupFile(path string, body []byte) error {
 	backup := fmt.Sprintf("%s.bak.%d", path, time.Now().UnixNano())
-	if err := os.WriteFile(backup, body, 0o644); err != nil {
+	if err := writeConfigFile(backup, body); err != nil {
 		return err
 	}
 	return pruneConfigBackups(path)
+}
+
+func writeConfigFile(path string, body []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	tmpPath = ""
+	return os.Chmod(path, 0o600)
 }
 
 func pruneConfigBackups(path string) error {

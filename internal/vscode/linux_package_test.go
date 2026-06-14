@@ -69,6 +69,42 @@ func TestPackageLinuxConsumesCrossLinuxBuildOutputs(t *testing.T) {
 	}
 }
 
+func TestPackageLinuxCreatesReproducibleArchives(t *testing.T) {
+	body, err := os.ReadFile("../../scripts/package-linux.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`--sort=name`,
+		`--owner=0`,
+		`--group=0`,
+		`--numeric-owner`,
+		`--mtime=@0`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("package-linux.sh missing reproducible tar option %q", want)
+		}
+	}
+}
+
+func TestPackageLinuxSupportsDryRun(t *testing.T) {
+	body, err := os.ReadFile("../../scripts/package-linux.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`DRY_RUN="${DRY_RUN:-0}"`,
+		`if [[ "$DRY_RUN" == "1" ]]`,
+		`dry-run`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("package-linux.sh missing dry-run support %q", want)
+		}
+	}
+}
+
 func TestPackageLinuxPreflightsBinariesBeforeDownloads(t *testing.T) {
 	body, err := os.ReadFile("../../scripts/package-linux.sh")
 	if err != nil {
@@ -91,6 +127,17 @@ func TestPackageLinuxPreflightsBinariesBeforeDownloads(t *testing.T) {
 	}
 }
 
+func TestLinuxPackageCommonRetriesAllCurlErrors(t *testing.T) {
+	body, err := os.ReadFile("../../scripts/linux-package-common.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, `--retry-all-errors`) {
+		t.Fatalf("linux-package-common.sh should retry transient curl failures:\n%s", text)
+	}
+}
+
 func TestMakefileExposesLinuxTargets(t *testing.T) {
 	body, err := os.ReadFile("../../Makefile")
 	if err != nil {
@@ -107,5 +154,16 @@ func TestMakefileExposesLinuxTargets(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Makefile missing %q", want)
 		}
+	}
+}
+
+func TestMakefileDisablesCGOForCrossLinux(t *testing.T) {
+	body, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if !strings.Contains(text, `CGO_ENABLED=0 GOOS=linux GOARCH=$$arch`) {
+		t.Fatalf("Makefile cross-linux should disable CGO:\n%s", text)
 	}
 }

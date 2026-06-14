@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 
 	"github.com/agentserver/agentserver-pkg/internal/codexruntime"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
@@ -28,6 +30,7 @@ type CodexResolveOptions struct {
 	Paths         paths.Paths
 	Package       Package
 	LookPath      func(string) (string, error)
+	CodexVersion  func(context.Context, string) (string, error)
 	EnsureRuntime func(context.Context, string, string, string) (string, error)
 }
 
@@ -77,7 +80,9 @@ func ResolveCodex(ctx context.Context, opts CodexResolveOptions) (CodexRuntime, 
 		lookPath = exec.LookPath
 	}
 	if codexPath, err := lookPath("codex"); err == nil {
-		return CodexRuntime{Path: codexPath, Source: "path"}, nil
+		if pathCodexSatisfiesManifest(ctx, codexPath, opts) {
+			return CodexRuntime{Path: codexPath, Source: "path"}, nil
+		}
 	}
 	if err := validateManagedCodexOptions(opts); err != nil {
 		return CodexRuntime{}, err
@@ -110,6 +115,78 @@ func ResolveCodex(ctx context.Context, opts CodexResolveOptions) (CodexRuntime, 
 		return CodexRuntime{}, err
 	}
 	return CodexRuntime{Path: codexPath, Source: "managed"}, nil
+}
+
+func pathCodexSatisfiesManifest(ctx context.Context, codexPath string, opts CodexResolveOptions) bool {
+	manifestPath, err := opts.Package.codexManifestPath(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return true
+	}
+	manifest, err := codexruntime.LoadManifest(manifestPath)
+	if err != nil {
+		return true
+	}
+	want, ok := parseVersionTriple(manifest.PinnedVersion)
+	if !ok {
+		return true
+	}
+	version := opts.CodexVersion
+	if version == nil {
+		version = codexVersion
+	}
+	out, err := version(ctx, codexPath)
+	if err != nil {
+		return false
+	}
+	got, ok := parseVersionTriple(out)
+	if !ok {
+		return false
+	}
+	return compareVersionTriple(got, want) >= 0
+}
+
+func codexVersion(ctx context.Context, codexPath string) (string, error) {
+	out, err := exec.CommandContext(ctx, codexPath, "--version").CombinedOutput()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+var versionTriplePattern = regexp.MustCompile(`\d+\.\d+\.\d+`)
+var versionTripleDotPattern = regexp.MustCompile(`\.`)
+
+func parseVersionTriple(s string) ([3]int, bool) {
+	var zero [3]int
+	match := versionTriplePattern.FindString(s)
+	if match == "" {
+		return zero, false
+	}
+	parts := versionTripleDotPattern.Split(match, 3)
+	if len(parts) != 3 {
+		return zero, false
+	}
+	var out [3]int
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return zero, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+func compareVersionTriple(a, b [3]int) int {
+	for i := 0; i < 3; i++ {
+		switch {
+		case a[i] < b[i]:
+			return -1
+		case a[i] > b[i]:
+			return 1
+		}
+	}
+	return 0
 }
 
 func validateManagedCodexOptions(opts CodexResolveOptions) error {

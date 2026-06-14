@@ -199,6 +199,52 @@ func TestServeDriverMCPRemovesSessionConfigAfterExit(t *testing.T) {
 	}
 }
 
+func TestServeDriverMCPSweepsStaleSessionConfigsBeforeStart(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	pkg := testDriverPackage(temp)
+	sec := secrets.New(p.SecretsFile)
+	if err := sec.Set("agentserver_ws_api_key", "proxy-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sec.Set("agentserver_tunnel_token", "tunnel-token"); err != nil {
+		t.Fatal(err)
+	}
+	writeDriverState(t, p, state.AgentserverState{
+		BaseURL:     "https://agent.test",
+		SandboxID:   "sb-1",
+		ShortID:     "abc123",
+		WorkspaceID: "ws-1",
+	})
+	sessionDir := filepath.Join(p.InstallRoot, "driver-mcp")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(sessionDir, "driver-999999.yaml")
+	if err := os.WriteFile(stale, []byte("proxy_token: stale\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ServeDriverMCP(context.Background(), DriverMCPOptions{
+		Paths:   p,
+		Package: pkg,
+		Secrets: sec,
+		WorkDir: temp,
+		Exec: func(_ context.Context, _ string, args []string) error {
+			if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("stale session config stat=%v, want not exist", err)
+			}
+			if _, err := os.Stat(args[2]); err != nil {
+				t.Fatalf("current session config missing: %v", err)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ServeDriverMCP: %v", err)
+	}
+}
+
 func TestSwitchWorkspaceForcesDeviceLogin(t *testing.T) {
 	t.Run("empty state", func(t *testing.T) {
 		temp := t.TempDir()
@@ -268,6 +314,74 @@ func TestSwitchWorkspaceForcesDeviceLogin(t *testing.T) {
 			t.Fatalf("RequestDeviceCode calls=%d, want forced login", calls)
 		}
 	})
+}
+
+func TestSwitchWorkspaceDeletesPreviousSandboxAfterSuccessfulRegister(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	sec := secrets.New(p.SecretsFile)
+	if err := sec.Set("agentserver_ws_api_key", "proxy-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sec.Set("agentserver_tunnel_token", "tunnel-old"); err != nil {
+		t.Fatal(err)
+	}
+	writeDriverState(t, p, state.AgentserverState{
+		BaseURL:     "https://agent.old",
+		SandboxID:   "sb-old",
+		ShortID:     "old123",
+		WorkspaceID: "ws-old",
+	})
+	fakeAS := fakeRegisteredDriverAS()
+
+	err := SwitchWorkspace(context.Background(), DriverOptions{
+		Paths:        p,
+		Package:      testDriverPackage(temp),
+		Secrets:      sec,
+		ComputerName: "host",
+		AS:           fakeAS,
+		ASOAuth:      oauth.Config{Endpoint: "https://agent.test"},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			return driverChallenge(), nil
+		},
+		PollToken: driverPollToken,
+		Stdout:    ioDiscard{},
+		QR:        driverMarkerQR("fake QR"),
+	})
+	if err != nil {
+		t.Fatalf("SwitchWorkspace: %v", err)
+	}
+	if fakeAS.deletedToken != "proxy-old" || fakeAS.deletedSandboxID != "sb-old" {
+		t.Fatalf("deleted token=%q sandbox=%q, want old registration", fakeAS.deletedToken, fakeAS.deletedSandboxID)
+	}
+}
+
+func TestInstallDriverRollsBackRegisteredAgentWhenSecretWriteFails(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	sec := &failingSetSecrets{err: errors.New("secret store unavailable")}
+	fakeAS := fakeRegisteredDriverAS()
+
+	err := InstallDriver(context.Background(), DriverOptions{
+		Paths:        p,
+		Package:      testDriverPackage(temp),
+		Secrets:      sec,
+		ComputerName: "host",
+		AS:           fakeAS,
+		ASOAuth:      oauth.Config{Endpoint: "https://agent.test"},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			return driverChallenge(), nil
+		},
+		PollToken: driverPollToken,
+		Stdout:    ioDiscard{},
+		QR:        driverMarkerQR("fake QR"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "secret store unavailable") {
+		t.Fatalf("InstallDriver error=%v, want secret store unavailable", err)
+	}
+	if fakeAS.deletedToken != "proxy-new" || fakeAS.deletedSandboxID != "sb-new" {
+		t.Fatalf("deleted token=%q sandbox=%q, want new registration rollback", fakeAS.deletedToken, fakeAS.deletedSandboxID)
+	}
 }
 
 func TestInstallDriverSkipsDeviceFlowWhenAlreadyRegistered(t *testing.T) {
@@ -464,6 +578,46 @@ func TestInstallDriverRepairsMissingWorkspaceIDWithoutDeviceFlow(t *testing.T) {
 	}
 	if st.Agentserver.WorkspaceID != "ws-1" || st.Agentserver.WorkspaceName != "Workspace One" {
 		t.Fatalf("workspace state=%+v", st.Agentserver)
+	}
+}
+
+func TestInstallDriverWarnsWhenRepairWhoamiFails(t *testing.T) {
+	temp := t.TempDir()
+	p := testDriverPaths(temp)
+	sec := secrets.New(p.SecretsFile)
+	if err := sec.Set("agentserver_ws_api_key", "proxy-token"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sec.Set("agentserver_tunnel_token", "tunnel-token"); err != nil {
+		t.Fatal(err)
+	}
+	writeDriverState(t, p, state.AgentserverState{
+		BaseURL:     "https://agent.test",
+		SandboxID:   "sb-1",
+		ShortID:     "abc123",
+		WorkspaceID: "ws-old",
+	})
+	fakeAS := &fakeDriverAgentserver{whoamiErr: errors.New("GET /api/agent/whoami: status 401")}
+	var out bytes.Buffer
+
+	err := InstallDriver(context.Background(), DriverOptions{
+		Paths:   p,
+		Package: testDriverPackage(temp),
+		Secrets: sec,
+		AS:      fakeAS,
+		ASOAuth: oauth.Config{Endpoint: "https://agent.test"},
+		RequestDeviceCode: func(context.Context, oauth.Config) (oauth.DeviceCodeChallenge, error) {
+			t.Fatal("RequestDeviceCode called for existing registration")
+			return oauth.DeviceCodeChallenge{}, nil
+		},
+		PollToken: driverPollToken,
+		Stdout:    &out,
+	})
+	if err != nil {
+		t.Fatalf("InstallDriver: %v", err)
+	}
+	if !strings.Contains(out.String(), "warning:") || !strings.Contains(out.String(), "status 401") {
+		t.Fatalf("warning output missing whoami failure:\n%s", out.String())
 	}
 }
 
@@ -713,12 +867,14 @@ func TestInstallDriverUsesSandboxIDWhenRegistrationOmitsShortID(t *testing.T) {
 }
 
 type fakeDriverAgentserver struct {
-	reg          agentserver.AgentRegistration
-	whoami       agentserver.Identity
-	whoamiErr    error
-	whoamiToken  string
-	registerName string
-	registerType string
+	reg              agentserver.AgentRegistration
+	whoami           agentserver.Identity
+	whoamiErr        error
+	whoamiToken      string
+	registerName     string
+	registerType     string
+	deletedToken     string
+	deletedSandboxID string
 }
 
 func (f *fakeDriverAgentserver) RegisterAgent(_ context.Context, _ string, name, typ string) (agentserver.AgentRegistration, error) {
@@ -733,6 +889,12 @@ func (f *fakeDriverAgentserver) Whoami(_ context.Context, token string) (agentse
 		return agentserver.Identity{}, f.whoamiErr
 	}
 	return f.whoami, nil
+}
+
+func (f *fakeDriverAgentserver) DeleteAgent(_ context.Context, token, sandboxID string) error {
+	f.deletedToken = token
+	f.deletedSandboxID = sandboxID
+	return nil
 }
 
 func fakeRegisteredDriverAS() *fakeDriverAgentserver {
@@ -838,6 +1000,22 @@ func (s *writeableBrokenReadSecrets) Set(key, value string) error {
 
 func (s *writeableBrokenReadSecrets) Delete(key string) error {
 	delete(s.values, key)
+	return nil
+}
+
+type failingSetSecrets struct {
+	err error
+}
+
+func (s *failingSetSecrets) Get(string) (string, error) {
+	return "", secrets.ErrNotFound
+}
+
+func (s *failingSetSecrets) Set(string, string) error {
+	return s.err
+}
+
+func (s *failingSetSecrets) Delete(string) error {
 	return nil
 }
 

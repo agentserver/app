@@ -30,17 +30,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	proxyToken, err := modelaccess.EnsureLocalProxyToken(modelaccess.DefaultLocalProxyTokenPath(p.InstallRoot))
+	if err != nil {
+		return err
+	}
 	return runWithDeps(context.Background(), runDeps{
-		Secrets:  secrets.New(p.SecretsFile),
-		OAuth:    modelserver.OAuthConfig(),
-		LockPath: filepath.Join(p.InstallRoot, "token-refresher.lock"),
-		Logf:     log.Printf,
+		Secrets:         secrets.New(p.SecretsFile),
+		OAuth:           modelserver.OAuthConfig(),
+		LocalProxyToken: proxyToken,
+		LockPath:        filepath.Join(p.InstallRoot, "token-refresher.lock"),
+		Logf:            log.Printf,
 	})
 }
 
 type runDeps struct {
 	Secrets              secrets.Store
 	OAuth                oauth.AuthCodeConfig
+	LocalProxyToken      string
 	ProxyAddr            string
 	ProxyUpstreamBaseURL string
 	LockPath             string
@@ -58,6 +64,7 @@ func runWithDeps(ctx context.Context, deps runDeps) error {
 	return modelaccess.RunDaemon(ctx, modelaccess.DaemonOptions{
 		Secrets:              deps.Secrets,
 		OAuth:                deps.OAuth,
+		LocalProxyToken:      deps.LocalProxyToken,
 		ProxyAddr:            deps.ProxyAddr,
 		ProxyUpstreamBaseURL: deps.ProxyUpstreamBaseURL,
 		LockPath:             deps.LockPath,

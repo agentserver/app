@@ -126,7 +126,7 @@ func runTestConfigure() {
 		die(err)
 	}
 	fmt.Printf("wrote codex config: %s\n", p.CodexConfigFile)
-	fmt.Printf("setx %s=%s (HKCU\\Environment)\n", codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	fmt.Printf("setx %s=%s (HKCU\\Environment)\n", codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
 
 	// .vsix sits next to the running agentctl.exe
 	exeDir, _ := os.Executable()
@@ -254,13 +254,13 @@ func openTestFolder(ctx context.Context, s *state.State, p paths.Paths, folder s
 }
 
 func configureTestCodex(p paths.Paths) error {
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, codex.LegacyLocalProxyAPIKeyValue)); err != nil {
 		return err
 	}
-	if err := env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue); err != nil {
+	if err := env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue); err != nil {
 		return err
 	}
-	return os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	return os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
 }
 
 func startTestVSCode(codeExe string, args []string) (int, error) {

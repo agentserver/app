@@ -6,9 +6,11 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 )
 
+const DefaultEndpoint = "https://agent.cs.ac.cn"
+
 func OAuthConfig(endpoint string) oauth.Config {
 	if strings.TrimSpace(endpoint) == "" {
-		endpoint = "https://agent.cs.ac.cn"
+		endpoint = DefaultEndpoint
 	}
 	return oauth.Config{
 		Endpoint:  strings.TrimRight(strings.TrimSpace(endpoint), "/"),

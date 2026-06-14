@@ -39,7 +39,7 @@ download_loom_asset() {
   rm -f "$cache" "$cache.part"
   echo "Fetching loom $asset ..."
   echo "  URL: $url"
-  if ! curl --fail --location --retry 2 --retry-delay 2 --output "$cache.part" "$url"; then
+  if ! curl --fail --location --retry 2 --retry-all-errors --retry-delay 2 --output "$cache.part" "$url"; then
     rm -f "$cache.part"
     echo "ERROR: failed to download loom $asset" >&2
     exit 2

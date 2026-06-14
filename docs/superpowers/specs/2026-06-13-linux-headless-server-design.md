@@ -75,11 +75,13 @@ check has two modes, in this order:
    [model_providers.modelserver]
    name = "modelserver"
    base_url = "http://127.0.0.1:53452/v1"
-   env_key = "AGENTSERVER_CODEX_LOCAL_API_KEY"
+   experimental_bearer_token = "<contents of ~/.agentserver-app/proxy-token>"
    wire_api = "responses"
    ```
 
-In proxy mode, the local proxy injects the latest access token from the secrets
+In proxy mode, `~/.agentserver-app/proxy-token` is a per-user random bearer token
+written with mode `0600`. The local proxy rejects non-health requests unless
+that bearer is present, then injects the latest access token from the secrets
 store for every request to `https://code.ai.cs.ac.cn/v1`. The refresher uses the
 stored refresh token and marks reauth-required on `invalid_grant` or missing
 refresh token. The next user-facing command reruns code device login.

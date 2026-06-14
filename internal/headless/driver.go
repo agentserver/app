@@ -8,6 +8,7 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
@@ -16,18 +17,20 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/terminalauth"
 )
 
 const (
-	defaultAgentserverEndpoint = "https://agent.cs.ac.cn"
+	defaultAgentserverEndpoint = agentserver.DefaultEndpoint
 	driverProxySecretKey       = "agentserver_ws_api_key"
 	driverTunnelSecretKey      = "agentserver_tunnel_token"
 )
 
 type AgentRegistrar interface {
 	RegisterAgent(context.Context, string, string, string) (agentserver.AgentRegistration, error)
+	DeleteAgent(context.Context, string, string) error
 	Whoami(context.Context, string) (agentserver.Identity, error)
 }
 
@@ -80,7 +83,11 @@ func ServeDriverMCP(ctx context.Context, opts DriverMCPOptions) error {
 	if err != nil {
 		return err
 	}
-	sessionConfig := filepath.Join(opts.Paths.InstallRoot, "driver-mcp", fmt.Sprintf("driver-%d.yaml", os.Getpid()))
+	sessionDir := filepath.Join(opts.Paths.InstallRoot, "driver-mcp")
+	if err := sweepStaleDriverMCPConfigs(sessionDir, os.Getpid()); err != nil {
+		return err
+	}
+	sessionConfig := filepath.Join(sessionDir, fmt.Sprintf("driver-%d.yaml", os.Getpid()))
 	if err := writeDriverConfig(sessionConfig, st, proxyToken, tunnelToken, workDir); err != nil {
 		return err
 	}
@@ -94,6 +101,24 @@ func ServeDriverMCP(ctx context.Context, opts DriverMCPOptions) error {
 	return run(ctx, opts.Package.DriverAgent, []string{"serve-mcp", "--config", sessionConfig})
 }
 
+func sweepStaleDriverMCPConfigs(dir string, currentPID int) error {
+	matches, err := filepath.Glob(filepath.Join(dir, "driver-*.yaml"))
+	if err != nil {
+		return err
+	}
+	for _, match := range matches {
+		pidText := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(match), "driver-"), ".yaml")
+		pid, err := strconv.Atoi(pidText)
+		if err == nil && pid > 0 && pid != currentPID && slave.ProcessExists(pid) {
+			continue
+		}
+		if err := os.Remove(match); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 func ensureDriver(ctx context.Context, opts DriverOptions, forceLogin bool) error {
 	if opts.Secrets == nil {
 		return errors.New("install driver: secrets store required")
@@ -101,10 +126,16 @@ func ensureDriver(ctx context.Context, opts DriverOptions, forceLogin bool) erro
 	opts = defaultDriverOptions(opts)
 
 	if forceLogin {
-		if err := registerDriver(ctx, opts); err != nil {
+		previous := currentRegisteredDriverAgent(opts.Paths, opts.Secrets)
+		registered, err := registerDriver(ctx, opts)
+		if err != nil {
 			return err
 		}
-		return refreshDriverFiles(opts.Paths, opts.Package, opts.Secrets)
+		if err := refreshDriverFiles(opts.Paths, opts.Package, opts.Secrets); err != nil {
+			return err
+		}
+		deleteDriverAgentBestEffort(ctx, opts, previous, registered)
+		return nil
 	}
 
 	registered, err := driverRegistered(opts.Paths, opts.Secrets)
@@ -112,7 +143,7 @@ func ensureDriver(ctx context.Context, opts DriverOptions, forceLogin bool) erro
 		return err
 	}
 	if !registered {
-		if err := registerDriver(ctx, opts); err != nil {
+		if _, err := registerDriver(ctx, opts); err != nil {
 			return err
 		}
 	} else if err := repairRegisteredDriverState(ctx, opts); err != nil {
@@ -166,43 +197,53 @@ func defaultASBaseURL(cfg oauth.Config) string {
 	return defaultAgentserverEndpoint
 }
 
-func registerDriver(ctx context.Context, opts DriverOptions) error {
+type registeredDriverAgent struct {
+	proxyToken string
+	sandboxID  string
+}
+
+func registerDriver(ctx context.Context, opts DriverOptions) (registeredDriverAgent, error) {
 	computerName := strings.TrimSpace(opts.ComputerName)
 	if computerName == "" {
 		hostname, err := os.Hostname()
 		if err != nil {
-			return fmt.Errorf("hostname: %w", err)
+			return registeredDriverAgent{}, fmt.Errorf("hostname: %w", err)
 		}
 		computerName = hostname
 	}
 	ch, err := opts.RequestDeviceCode(ctx, opts.ASOAuth)
 	if err != nil {
-		return fmt.Errorf("request agentserver device code: %w", err)
+		return registeredDriverAgent{}, fmt.Errorf("request agentserver device code: %w", err)
 	}
 	terminalauth.PrintChallenge(opts.Stdout, "Agentserver 登录", ch, opts.QR)
 	tok, err := opts.PollToken(ctx, opts.ASOAuth, ch)
 	if err != nil {
-		return fmt.Errorf("poll agentserver token: %w", err)
+		return registeredDriverAgent{}, fmt.Errorf("poll agentserver token: %w", err)
 	}
 	reg, err := opts.AS.RegisterAgent(ctx, tok.AccessToken, computerName+"-星池指挥官", "custom")
 	if err != nil {
-		return fmt.Errorf("register agentserver agent: %w", err)
+		return registeredDriverAgent{}, fmt.Errorf("register agentserver agent: %w", err)
 	}
 	if reg.ProxyToken == "" || reg.TunnelToken == "" || reg.SandboxID == "" {
-		return errors.New("register agentserver agent: incomplete registration")
+		return registeredDriverAgent{}, errors.New("register agentserver agent: incomplete registration")
+	}
+	registered := registeredDriverAgent{proxyToken: reg.ProxyToken, sandboxID: reg.SandboxID}
+	rollback := func(err error) (registeredDriverAgent, error) {
+		deleteDriverAgentBestEffort(ctx, opts, registered, registeredDriverAgent{})
+		return registeredDriverAgent{}, err
 	}
 
 	workspace := resolveDriverWorkspace(ctx, opts.AS, reg, tok.AccessToken)
 	if workspace.ID == "" {
-		return errors.New("resolve agentserver workspace: empty workspace id")
+		return rollback(errors.New("resolve agentserver workspace: empty workspace id"))
 	}
 	if err := opts.Secrets.Set(driverProxySecretKey, reg.ProxyToken); err != nil {
-		return err
+		return rollback(err)
 	}
 	if err := opts.Secrets.Set(driverTunnelSecretKey, reg.TunnelToken); err != nil {
-		return err
+		return rollback(err)
 	}
-	return state.NewStore(opts.Paths.StateFile).Update(func(s *state.State) error {
+	if err := state.NewStore(opts.Paths.StateFile).Update(func(s *state.State) error {
 		s.Agentserver.BaseURL = defaultASBaseURL(opts.ASOAuth)
 		s.Agentserver.SandboxID = reg.SandboxID
 		s.Agentserver.ShortID = defaultString(reg.ShortID, reg.SandboxID)
@@ -210,7 +251,10 @@ func registerDriver(ctx context.Context, opts DriverOptions) error {
 		s.Agentserver.WorkspaceName = workspace.Name
 		s.Agentserver.WorkspaceAPIKeySuffix = lastN(reg.ProxyToken, 4)
 		return nil
-	})
+	}); err != nil {
+		return rollback(err)
+	}
+	return registered, nil
 }
 
 func resolveDriverWorkspace(ctx context.Context, as AgentRegistrar, reg agentserver.AgentRegistration, accessToken string) agentserver.Workspace {
@@ -234,6 +278,8 @@ func repairRegisteredDriverState(ctx context.Context, opts DriverOptions) error 
 	if opts.AS != nil {
 		if identity, err := opts.AS.Whoami(ctx, proxyToken); err == nil {
 			workspace = identity.Workspace
+		} else if opts.Stdout != nil {
+			_, _ = fmt.Fprintf(opts.Stdout, "warning: could not refresh agentserver driver workspace: %v\n", err)
 		}
 	}
 	return state.NewStore(opts.Paths.StateFile).Update(func(s *state.State) error {
@@ -267,6 +313,34 @@ func driverRegistered(p paths.Paths, sec secrets.Store) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func currentRegisteredDriverAgent(p paths.Paths, sec secrets.Store) registeredDriverAgent {
+	st, err := state.NewStore(p.StateFile).Load()
+	if err != nil {
+		return registeredDriverAgent{}
+	}
+	sandboxID := strings.TrimSpace(st.Agentserver.SandboxID)
+	if sandboxID == "" {
+		return registeredDriverAgent{}
+	}
+	proxyToken, err := sec.Get(driverProxySecretKey)
+	if err != nil || strings.TrimSpace(proxyToken) == "" {
+		return registeredDriverAgent{}
+	}
+	return registeredDriverAgent{proxyToken: proxyToken, sandboxID: sandboxID}
+}
+
+func deleteDriverAgentBestEffort(ctx context.Context, opts DriverOptions, old, replacement registeredDriverAgent) {
+	if old.sandboxID == "" || old.proxyToken == "" || opts.AS == nil {
+		return
+	}
+	if replacement.sandboxID != "" && old.sandboxID == replacement.sandboxID {
+		return
+	}
+	if err := opts.AS.DeleteAgent(ctx, old.proxyToken, old.sandboxID); err != nil && opts.Stdout != nil {
+		_, _ = fmt.Fprintf(opts.Stdout, "warning: could not delete previous agentserver sandbox %s: %v\n", old.sandboxID, err)
+	}
 }
 
 func secretPresent(sec secrets.Store, key string) (bool, error) {

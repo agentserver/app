@@ -33,6 +33,7 @@ var (
 type DaemonOptions struct {
 	Secrets              secrets.Store
 	OAuth                oauth.AuthCodeConfig
+	LocalProxyToken      string
 	ProxyAddr            string
 	ProxyUpstreamBaseURL string
 	LockPath             string
@@ -76,9 +77,10 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 	go func() {
 		defer wg.Done()
 		resultCh <- daemonResult{name: "proxy", err: modelproxy.ListenAndServe(ctx, modelproxy.ServerOptions{
-			Addr:            opts.ProxyAddr,
-			Secrets:         opts.Secrets,
-			UpstreamBaseURL: opts.ProxyUpstreamBaseURL,
+			Addr:             opts.ProxyAddr,
+			Secrets:          opts.Secrets,
+			UpstreamBaseURL:  opts.ProxyUpstreamBaseURL,
+			LocalBearerToken: opts.LocalProxyToken,
 		})}
 	}()
 
@@ -122,6 +124,7 @@ func RunDaemon(ctx context.Context, opts DaemonOptions) error {
 type EnsureDaemonOptions struct {
 	ExePath      string
 	ProxyBaseURL string
+	LogPath      string
 	HealthCheck  func(context.Context, string) bool
 	StartProcess func(*exec.Cmd) error
 }
@@ -148,7 +151,7 @@ func EnsureDaemon(ctx context.Context, opts EnsureDaemonOptions) error {
 		return err
 	}
 	cmd := newDaemonCommand(opts.ExePath, "model-proxy-daemon")
-	cleanup, err := configureDaemonProcess(cmd)
+	cleanup, err := configureDaemonProcess(cmd, opts.LogPath)
 	if err != nil {
 		return err
 	}
@@ -159,6 +162,9 @@ func EnsureDaemon(ctx context.Context, opts EnsureDaemonOptions) error {
 	}
 	if err := startProcess(cmd); err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "address already in use") {
+			if healthCheck(ctx, baseURL) {
+				return nil
+			}
 			return errors.Join(ErrProxyUnavailable, err)
 		}
 		return err

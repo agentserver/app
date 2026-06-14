@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -44,8 +45,8 @@ func TestUpdateConfig_Empty(t *testing.T) {
 	}
 }
 
-func TestModelserverProxySettingsUsesStableLocalCredential(t *testing.T) {
-	got := ModelserverProxySettings("http://127.0.0.1:53452/v1")
+func TestModelserverProxySettingsUsesConfiguredLocalCredential(t *testing.T) {
+	got := ModelserverProxySettings("http://127.0.0.1:53452/v1", "random-local-token")
 	if got.Provider != "modelserver" {
 		t.Fatalf("Provider = %q, want modelserver", got.Provider)
 	}
@@ -69,8 +70,11 @@ func TestModelserverProxySettingsUsesStableLocalCredential(t *testing.T) {
 	if strings.Contains(s, "env_key") {
 		t.Fatalf("proxy config should not require an environment variable:\n%s", s)
 	}
-	if !strings.Contains(s, `experimental_bearer_token = "`+LocalProxyAPIKeyValue+`"`) {
+	if !strings.Contains(s, `experimental_bearer_token = "random-local-token"`) {
 		t.Fatalf("proxy config missing stable bearer token:\n%s", s)
+	}
+	if strings.Contains(s, "agentserver-local-proxy") {
+		t.Fatalf("proxy config contains compiled default token:\n%s", s)
 	}
 }
 
@@ -86,7 +90,7 @@ func TestHasModelserverDirectConfigRequiresExactDirectProvider(t *testing.T) {
 		`[model_providers.modelserver]`,
 		`name = "modelserver"`,
 		`base_url = "http://127.0.0.1:53452/v1"`,
-		`experimental_bearer_token = "agentserver-local-proxy"`,
+		`experimental_bearer_token = "random-local-token"`,
 		`wire_api = "responses"`,
 		``,
 	}, "\n"))
@@ -146,6 +150,73 @@ base_url = "https://old/v1"
 	matches, _ := filepath.Glob(path + ".bak.*")
 	if len(matches) == 0 {
 		t.Errorf("expected backup")
+	}
+}
+
+func TestUpdateConfigPreservesUnknownModelProviderFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeCodexTestFile(t, path, strings.Join([]string{
+		`model_provider = "modelserver"`,
+		``,
+		`[model_providers.modelserver]`,
+		`name = "old-name"`,
+		`base_url = "https://old/v1"`,
+		`env_key = "OLD_KEY"`,
+		`wire_api = "chat"`,
+		`custom_header = "keep"`,
+		``,
+	}, "\n"))
+
+	if err := UpdateConfig(path, ModelserverSettings()); err != nil {
+		t.Fatal(err)
+	}
+
+	b, _ := os.ReadFile(path)
+	s := string(b)
+	for _, want := range []string{
+		`base_url = "https://code.ai.cs.ac.cn/v1"`,
+		`env_key = "OPENAI_API_KEY"`,
+		`wire_api = "responses"`,
+		`custom_header = "keep"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in:\n%s", want, s)
+		}
+	}
+}
+
+func TestUpdateConfigReturnsBackupError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeCodexTestFile(t, path, `model_provider = "old"`+"\n")
+	wantErr := errors.New("backup failed")
+	prev := writeConfigBackup
+	writeConfigBackup = func(string, []byte) error {
+		return wantErr
+	}
+	t.Cleanup(func() {
+		writeConfigBackup = prev
+	})
+
+	err := UpdateConfig(path, ModelserverSettings())
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("UpdateConfig error=%v, want %v", err, wantErr)
+	}
+}
+
+func TestUpdateConfigWritesPrivateFileMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := UpdateConfig(path, ModelserverSettings()); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("mode=%#o, want 0600", got)
 	}
 }
 
@@ -215,6 +286,37 @@ func TestUpdateMCPServerAddsDriverAndKeepsModelConfig(t *testing.T) {
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in:\n%s", want, s)
+		}
+	}
+}
+
+func TestUpdateMCPServerPreservesUnknownFieldsInNamedServer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeCodexTestFile(t, path, strings.Join([]string{
+		`[mcp_servers.driver]`,
+		`command = "old"`,
+		`args = ["old"]`,
+		`custom_tools = ["keep"]`,
+		``,
+	}, "\n"))
+
+	if err := UpdateMCPServer(path, "driver", MCPServer{
+		Command: "agentserver",
+		Args:    []string{"serve-driver-mcp"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b, _ := os.ReadFile(path)
+	s := string(b)
+	for _, want := range []string{
+		`command = "agentserver"`,
+		`args = ["serve-driver-mcp"]`,
+		`custom_tools = ["keep"]`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in:\n%s", want, s)
 		}
 	}
 }

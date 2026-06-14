@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunCommandEnsuresAccessForUserCommands(t *testing.T) {
@@ -170,6 +173,79 @@ func TestRunCommandRejectsUnknownCommand(t *testing.T) {
 	}
 	if access != 0 {
 		t.Fatalf("ensureAccess calls=%d, want 0", access)
+	}
+}
+
+func TestCommandContextCancelsOnInterrupt(t *testing.T) {
+	ctx, stop := commandContext(context.Background())
+	defer stop()
+
+	p, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Signal(os.Interrupt); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("context was not canceled after interrupt")
+	}
+}
+
+func TestPromptNameSkipsPromptWhenInputIsNotTerminal(t *testing.T) {
+	var out bytes.Buffer
+	got, err := promptNameWithTerminal(strings.NewReader("custom\n"), &out, "default", func() bool {
+		return false
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "default" {
+		t.Fatalf("name=%q, want default", got)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("prompt output=%q, want empty", out.String())
+	}
+}
+
+func TestPromptNameReadsTerminalInput(t *testing.T) {
+	var out bytes.Buffer
+	got, err := promptNameWithTerminal(strings.NewReader("custom\n"), &out, "default", func() bool {
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "custom" {
+		t.Fatalf("name=%q, want custom", got)
+	}
+	if !strings.Contains(out.String(), "Slave name [default]: ") {
+		t.Fatalf("prompt output=%q", out.String())
+	}
+}
+
+func TestDaemonLogfAppendsToPrivateLogFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logs", "model-proxy-daemon.log")
+	logf := daemonLogf(path)
+
+	logf("refresh failed: %s", "boom")
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "refresh failed: boom") {
+		t.Fatalf("log body=%q", body)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("log mode=%#o, want 0600", got)
 	}
 }
 
