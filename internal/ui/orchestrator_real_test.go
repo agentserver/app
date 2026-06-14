@@ -1278,6 +1278,36 @@ func TestEnsureFrontendOpenCodeDesktop(t *testing.T) {
 	}
 }
 
+func TestEnsureOpenCodeDesktopUsesBundledInstallerPath(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeOpenCodeDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	installerPath := filepath.Join(dir, "opencode-desktop-installer.exe")
+	var gotPath string
+	old := ensureOpenCodeDesktopInstalled
+	ensureOpenCodeDesktopInstalled = func(ctx context.Context, opts opencodedesktop.Options) (opencodedesktop.Detected, error) {
+		gotPath = opts.LocalInstallerPath
+		return opencodedesktop.Detected{Installed: true, Path: `C:\OpenCode\OpenCode.exe`, Version: "1.2.3"}, nil
+	}
+	t.Cleanup(func() { ensureOpenCodeDesktopInstalled = old })
+
+	r := NewRealOrchestrator(Deps{
+		State:                        store,
+		OpenCodeDesktopInstallerPath: installerPath,
+	}).(*realOrchestrator)
+	if err := r.EnsureFrontend(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != installerPath {
+		t.Fatalf("LocalInstallerPath = %q, want %q", gotPath, installerPath)
+	}
+}
+
 func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("OPENAI_API_KEY", "old-openai-token")

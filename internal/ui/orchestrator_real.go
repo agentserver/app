@@ -56,8 +56,10 @@ type Deps struct {
 	CodexDesktopEnsure    func(context.Context) (codexdesktop.Detected, error)
 	CodexDesktopOpen      func(string) error
 	OpenCodeConfigPath    string
-	OpenCodeDesktopEnsure func(context.Context) (opencodedesktop.Detected, error)
-	OpenCodeDesktopLaunch func(context.Context, opencodedesktop.LaunchOptions) error
+
+	OpenCodeDesktopInstallerPath string
+	OpenCodeDesktopEnsure        func(context.Context) (opencodedesktop.Detected, error)
+	OpenCodeDesktopLaunch        func(context.Context, opencodedesktop.LaunchOptions) error
 
 	// OpenBrowser is invoked by the orchestrator after starting the PKCE
 	// listener. Optional in tests.
@@ -91,6 +93,8 @@ type realOrchestrator struct {
 	msToken     oauth.Token
 	asToken     oauth.Token
 }
+
+var ensureOpenCodeDesktopInstalled = opencodedesktop.EnsureInstalled
 
 func NewRealOrchestrator(d Deps) Orchestrator {
 	return &realOrchestrator{d: d}
@@ -344,7 +348,9 @@ func (r *realOrchestrator) EnsureOpenCodeDesktop(ctx context.Context, ch chan<- 
 	ensure := r.d.OpenCodeDesktopEnsure
 	if ensure == nil {
 		ensure = func(ctx context.Context) (opencodedesktop.Detected, error) {
-			return opencodedesktop.EnsureInstalled(ctx, opencodedesktop.Options{})
+			return ensureOpenCodeDesktopInstalled(ctx, opencodedesktop.Options{
+				LocalInstallerPath: r.d.OpenCodeDesktopInstallerPath,
+			})
 		}
 	}
 	if ch != nil {
