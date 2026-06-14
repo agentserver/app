@@ -872,6 +872,33 @@ func TestControllerStateIncludesFrontendAndRefreshTime(t *testing.T) {
 	}
 }
 
+func TestControllerStateUsesOpenCodeDesktopFrontendName(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeOpenCodeDesktop
+		s.Onboarding.Status = state.StatusComplete
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := NewController(Deps{
+		State:   store,
+		Secrets: newTestSecrets(),
+	})
+
+	got, err := c.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FrontendMode != string(state.FrontendModeOpenCodeDesktop) {
+		t.Fatalf("FrontendMode=%q", got.FrontendMode)
+	}
+	if got.FrontendName != "OpenCode Desktop" {
+		t.Fatalf("FrontendName=%q", got.FrontendName)
+	}
+}
+
 func TestControllerActionsInvokeCallbacks(t *testing.T) {
 	dir := t.TempDir()
 	store := state.NewStore(filepath.Join(dir, "state.json"))

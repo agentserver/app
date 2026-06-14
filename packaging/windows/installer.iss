@@ -35,7 +35,9 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "minimalvscode"; Description: "极简风界面（安装简化 VS Code）"; GroupDescription: "界面模式"; Flags: unchecked
+Name: "codexdesktop"; Description: "Codex Desktop 智能助手"; GroupDescription: "界面模式"; Flags: exclusive
+Name: "opencodedesktop"; Description: "OpenCode Desktop 智能助手"; GroupDescription: "界面模式"; Flags: exclusive unchecked
+Name: "minimalvscode"; Description: "极简风界面（安装简化 VS Code）"; GroupDescription: "界面模式"; Flags: exclusive unchecked
 
 [Files]
 ; Cross-built Windows binaries
@@ -71,6 +73,7 @@ Source: "install-driver-support.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-vscode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "ensure-opencode-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "write-install-mode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "machine.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "codex-manifest.json"; DestDir: "{app}"; Flags: ignoreversion
@@ -92,7 +95,17 @@ var
 
 function ShouldInstallCodexDesktop(): Boolean;
 begin
-  Result := not WizardIsTaskSelected('minimalvscode');
+  Result := WizardIsTaskSelected('codexdesktop');
+end;
+
+function ShouldInstallOpenCodeDesktop(): Boolean;
+begin
+  Result := WizardIsTaskSelected('opencodedesktop');
+end;
+
+function ShouldInstallMinimalVSCode(): Boolean;
+begin
+  Result := WizardIsTaskSelected('minimalvscode');
 end;
 
 function GetMachinePath(): String;
@@ -385,6 +398,13 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+  if (CurPageID = wpSelectTasks) and
+     (not WizardIsTaskSelected('codexdesktop')) and
+     (not WizardIsTaskSelected('opencodedesktop')) and
+     (not WizardIsTaskSelected('minimalvscode')) then begin
+    MsgBox('请选择一种界面模式。', mbError, MB_OK);
+    Result := False;
+  end;
   if (CurPageID = ComputerNamePage.ID) and (Trim(ComputerNamePage.Values[0]) = '') then begin
     MsgBox('电脑名称不能为空。', mbError, MB_OK);
     Result := False;
@@ -421,16 +441,23 @@ begin
     '-InstallDir ' + PowerShellQuote(ExpandConstant('{app}')), 20);
 
   ModePath := ExpandConstant('{app}\install-mode.json');
-  if ShouldInstallCodexDesktop then begin
+  if ShouldInstallOpenCodeDesktop then begin
+    RunEstimatedPowerShellStep('opencode-mode', '正在准备 OpenCode Desktop 模式...', 'write-install-mode.ps1',
+      '-Mode ' + PowerShellQuote('opencode_desktop') + ' -Path ' + PowerShellQuote(ModePath), 10);
+    RunEstimatedPowerShellStep('opencode-install', '正在下载并安装 OpenCode Desktop（请勿关闭）...', 'ensure-opencode-desktop.ps1',
+      '', 900);
+  end else if ShouldInstallCodexDesktop then begin
     RunEstimatedPowerShellStep('codex-mode', '正在准备 Codex Desktop 模式...', 'write-install-mode.ps1',
       '-Mode ' + PowerShellQuote('codex_desktop') + ' -Path ' + PowerShellQuote(ModePath), 10);
     RunEstimatedPowerShellStep('codex-install', '正在安装 Codex Desktop（请在弹出的安装器中完成安装，请勿关闭）...', 'ensure-codex-desktop.ps1',
       '', 900);
-  end else begin
+  end else if ShouldInstallMinimalVSCode then begin
     RunEstimatedPowerShellStep('vscode-mode', '正在准备极简风模式...', 'write-install-mode.ps1',
       '-Mode ' + PowerShellQuote('minimal_vscode') + ' -Path ' + PowerShellQuote(ModePath), 10);
     RunEstimatedPowerShellStep('vscode-install', '正在安装极简 VS Code（可能需要几分钟，请勿关闭）...', 'ensure-vscode.ps1',
       '', 300);
+  end else begin
+    RaiseException('请选择一种界面模式。');
   end;
 end;
 

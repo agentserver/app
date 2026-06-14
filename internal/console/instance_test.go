@@ -44,6 +44,20 @@ func TestDiscoverInstanceUsesHealthyPortFile(t *testing.T) {
 	}
 }
 
+func TestWriteInstanceInfoUsesUserOnlyFilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "console-port.json")
+	if err := WriteInstanceInfo(path, InstanceInfo{Port: 12345, PID: os.Getpid()}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("console port file mode = %#o, want 0600", got)
+	}
+}
+
 func TestDiscoverInstanceRejectsPortFileWithoutToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"state":"ok"}`))
@@ -227,7 +241,7 @@ func TestWriteInstanceInfoPublishesValidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := info.Mode().Perm(); got != 0o644 {
+	if got := info.Mode().Perm(); got != 0o600 {
 		t.Fatalf("mode=%#o", got)
 	}
 	assertOnlyPathInDir(t, dir, "console-port.json")

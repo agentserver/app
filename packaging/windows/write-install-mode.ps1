@@ -1,6 +1,6 @@
 ﻿param(
     [Parameter(Mandatory=$true)]
-    [ValidateSet('codex_desktop', 'minimal_vscode')]
+    [ValidateSet('codex_desktop', 'opencode_desktop', 'minimal_vscode')]
     [string]$Mode,
 
     [string]$Path = (Join-Path $PSScriptRoot 'install-mode.json')

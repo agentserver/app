@@ -24,6 +24,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
+	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -32,30 +33,21 @@ import (
 )
 
 func TestLauncherOptionsDefaultOpensPageAndFrontend(t *testing.T) {
-	got, err := parseLauncherOptions([]string{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := parseLauncherOptions([]string{})
 	if got.Background || !got.OpenPage || !got.OpenFrontend {
 		t.Fatalf("options=%+v", got)
 	}
 }
 
 func TestLauncherOptionsBackgroundDoesNotOpenPageOrFrontend(t *testing.T) {
-	got, err := parseLauncherOptions([]string{"--background"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := parseLauncherOptions([]string{"--background"})
 	if !got.Background || got.OpenPage || got.OpenFrontend {
 		t.Fatalf("options=%+v", got)
 	}
 }
 
 func TestLauncherOptionsIgnoresUnknownFlag(t *testing.T) {
-	got, err := parseLauncherOptions([]string{"--backgrond"})
-	if err != nil {
-		t.Fatalf("unknown flags should not abort GUI launcher: %v", err)
-	}
+	got := parseLauncherOptions([]string{"--backgrond"})
 	if got.Background || !got.OpenPage || !got.OpenFrontend {
 		t.Fatalf("options=%+v, want default foreground behavior", got)
 	}
@@ -665,6 +657,7 @@ func freeTCPPort(t *testing.T) int {
 
 func TestTrayStateFromConsoleFormatsQuotaRows(t *testing.T) {
 	got := trayStateFromConsole(console.State{
+		FrontendName: "OpenCode Desktop",
 		Quotas: []console.QuotaWindow{
 			{Window: "5h", Percentage: 58.2, RemainingPercentage: 41.8},
 			{Window: "7d", Percentage: 22.4, RemainingPercentage: 77.6},
@@ -681,6 +674,9 @@ func TestTrayStateFromConsoleFormatsQuotaRows(t *testing.T) {
 	if got.Tooltip != wantTooltip {
 		t.Fatalf("Tooltip=%q, want %q", got.Tooltip, wantTooltip)
 	}
+	if got.OpenFrontendLabel != "启动 OpenCode Desktop" {
+		t.Fatalf("OpenFrontendLabel=%q", got.OpenFrontendLabel)
+	}
 }
 
 func TestTrayStateFromConsoleDefaultsWhenQuotaUnavailable(t *testing.T) {
@@ -695,6 +691,9 @@ func TestTrayStateFromConsoleDefaultsWhenQuotaUnavailable(t *testing.T) {
 	wantTooltip := "星池指挥官\n5小时额度：暂不可用\n7天额度：暂不可用"
 	if got.Tooltip != wantTooltip {
 		t.Fatalf("Tooltip=%q, want %q", got.Tooltip, wantTooltip)
+	}
+	if got.OpenFrontendLabel != "启动 Codex Desktop" {
+		t.Fatalf("OpenFrontendLabel=%q", got.OpenFrontendLabel)
 	}
 }
 
@@ -997,6 +996,64 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 	}
 }
 
+func TestLaunchCompletedFrontendOpenCodeDesktopWritesConfigAndLaunches(t *testing.T) {
+	dir := t.TempDir()
+	proxyToken := "launcher-local-proxy-token"
+	p := paths.Paths{
+		InstallRoot:        filepath.Join(dir, ".agentserver-app"),
+		CodexConfigFile:    filepath.Join(dir, ".codex", "config.toml"),
+		OpenCodeConfigFile: filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+	}
+	if err := os.MkdirAll(p.InstallRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p.InstallRoot, "proxy-token"), []byte(proxyToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &state.State{FrontendMode: state.FrontendModeOpenCodeDesktop}
+	s.OpenCodeDesktop.Installed = true
+	s.OpenCodeDesktop.Path = `C:\OpenCode\OpenCode.exe`
+	launched := false
+	err := launchCompletedFrontend(context.Background(), s, p, nil, "", "", "", nil, func(ctx context.Context, opts opencodedesktop.LaunchOptions) error {
+		launched = true
+		if opts.Detected.Path != `C:\OpenCode\OpenCode.exe` {
+			t.Fatalf("OpenCode path = %q", opts.Detected.Path)
+		}
+		if opts.Config.Path != p.OpenCodeConfigFile {
+			t.Fatalf("OpenCode config path = %q, want %q", opts.Config.Path, p.OpenCodeConfigFile)
+		}
+		if opts.Config.APIKeyEnv != "AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY" {
+			t.Fatalf("OpenCode API key env = %q", opts.Config.APIKeyEnv)
+		}
+		if opts.Config.APIKey != proxyToken {
+			t.Fatalf("OpenCode API key = %q, want proxy token", opts.Config.APIKey)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("launchCompletedFrontend: %v", err)
+	}
+	if !launched {
+		t.Fatal("OpenCode was not launched")
+	}
+	if _, err := os.Stat(p.OpenCodeConfigFile); err != nil {
+		t.Fatalf("opencode config not written: %v", err)
+	}
+	b, err := os.ReadFile(p.OpenCodeConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), proxyToken) {
+		t.Fatalf("opencode config should not persist local proxy token:\n%s", b)
+	}
+	if strings.Contains(string(b), "AGENTSERVER_CODEX_LOCAL_API_KEY") {
+		t.Fatalf("opencode config should not use Codex-specific env names:\n%s", b)
+	}
+	if !strings.Contains(string(b), "{env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}") {
+		t.Fatalf("opencode config should use env substitution:\n%s", b)
+	}
+}
+
 func TestLaunchCompletedFrontendCodexDesktopRegistersLoomDriverMCP(t *testing.T) {
 	dir := t.TempDir()
 	installDir := filepath.Join(dir, "install")
@@ -1036,7 +1093,7 @@ func TestLaunchCompletedFrontendCodexDesktopRegistersLoomDriverMCP(t *testing.T)
 
 	if err := launchCompletedFrontend(context.Background(), st, p, sec, installDir, "", "", func(string) error {
 		return nil
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("launchCompletedFrontend: %v", err)
 	}
 
@@ -1230,7 +1287,7 @@ func TestLaunchCompletedFrontendMinimalVSCodeConfiguresLoomDriver(t *testing.T) 
 		CodexExePath:      filepath.Join(dir, "bin", "codex.exe"),
 	}
 
-	err := launchCompletedFrontend(context.Background(), st, p, sec, installDir, "", "", nil)
+	err := launchCompletedFrontend(context.Background(), st, p, sec, installDir, "", "", nil, nil)
 	if err == nil {
 		t.Fatal("expected missing VS Code executable error")
 	}
