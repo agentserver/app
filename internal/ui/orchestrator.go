@@ -62,6 +62,9 @@ type SanitizedState struct {
 	VSCodeVersion            string   `json:"vscode_version,omitempty"`
 	CodexDesktopInstalled    bool     `json:"codex_desktop_installed,omitempty"`
 	CodexDesktopVersion      string   `json:"codex_desktop_version,omitempty"`
+	OpenCodeDesktopInstalled bool     `json:"opencode_desktop_installed,omitempty"`
+	OpenCodeDesktopVersion   string   `json:"opencode_desktop_version,omitempty"`
+	OpenCodeDesktopPath      string   `json:"opencode_desktop_path,omitempty"`
 }
 
 func SanitizeState(s *state.State) SanitizedState {
@@ -81,14 +84,21 @@ func SanitizeState(s *state.State) SanitizedState {
 		VSCodeVersion:            s.VSCode.Version,
 		CodexDesktopInstalled:    s.CodexDesktop.Installed,
 		CodexDesktopVersion:      s.CodexDesktop.Version,
+		OpenCodeDesktopInstalled: s.OpenCodeDesktop.Installed,
+		OpenCodeDesktopVersion:   s.OpenCodeDesktop.Version,
+		OpenCodeDesktopPath:      s.OpenCodeDesktop.Path,
 	}
 }
 
 func frontendName(mode state.FrontendMode) string {
-	if state.NormalizeFrontendMode(mode) == state.FrontendModeMinimalVSCode {
+	switch state.NormalizeFrontendMode(mode) {
+	case state.FrontendModeMinimalVSCode:
 		return "极简界面"
+	case state.FrontendModeOpenCodeDesktop:
+		return "OpenCode Desktop"
+	default:
+		return "Codex Desktop"
 	}
-	return "Codex Desktop"
 }
 
 type ProgressEvent struct {

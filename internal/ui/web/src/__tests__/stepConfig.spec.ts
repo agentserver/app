@@ -32,6 +32,26 @@ describe('stepConfig', () => {
     ]);
   });
 
+  it('uses OpenCode Desktop steps when selected', () => {
+    expect(stepsForMode('opencode_desktop').map(s => s.id)).toEqual([
+      'modelserver_login',
+      'agentserver_login',
+      'opencode_desktop_install',
+      'opencode_desktop_configure',
+      'finalize',
+    ]);
+  });
+
+  it('uses user-facing labels for OpenCode Desktop setup', () => {
+    expect(stepsForMode('opencode_desktop').map(s => s.label)).toEqual([
+      '连接大模型',
+      '连接星池工作区',
+      '安装 OpenCode Desktop 智能助手',
+      '准备 OpenCode Desktop 智能助手',
+      '完成',
+    ]);
+  });
+
   it('uses user-facing labels for minimal workbench setup', () => {
     expect(stepsForMode('minimal_vscode').map(s => s.label)).toEqual([
       '连接大模型',
@@ -47,5 +67,8 @@ describe('stepConfig', () => {
     expect(completedMapForMode('codex_desktop').vscode_installed).toBeUndefined();
     expect(completedMapForMode('minimal_vscode').vscode_installed).toBe('vscode_install');
     expect(completedMapForMode('minimal_vscode').codex_desktop_installed).toBeUndefined();
+    expect(completedMapForMode('opencode_desktop').opencode_desktop_installed).toBe('opencode_desktop_install');
+    expect(completedMapForMode('opencode_desktop').opencode_desktop_configured).toBe('opencode_desktop_configure');
+    expect(completedMapForMode('opencode_desktop').codex_desktop_installed).toBeUndefined();
   });
 });
