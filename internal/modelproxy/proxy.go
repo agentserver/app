@@ -154,16 +154,14 @@ func normalizeResponsesInstructions(r *http.Request, body io.ReadCloser) error {
 		setRequestBody(r, raw)
 		return nil
 	}
-	if instructions, _ := root["instructions"].(string); strings.TrimSpace(instructions) != "" {
-		setRequestBody(r, raw)
-		return nil
+	if instructions, _ := root["instructions"].(string); strings.TrimSpace(instructions) == "" {
+		instructions = extractResponsesInstructions(root["input"])
+		if instructions == "" {
+			instructions = defaultResponsesInstructions
+		}
+		root["instructions"] = instructions
 	}
-
-	instructions := extractResponsesInstructions(root["input"])
-	if instructions == "" {
-		instructions = defaultResponsesInstructions
-	}
-	root["instructions"] = instructions
+	delete(root, "max_output_tokens")
 	rewritten, err := json.Marshal(root)
 	if err != nil {
 		setRequestBody(r, raw)

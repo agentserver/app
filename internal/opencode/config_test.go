@@ -27,6 +27,16 @@ func TestUpdateConfigCreatesModelserverProxyProvider(t *testing.T) {
 	if provider["npm"] != "@ai-sdk/openai" {
 		t.Fatalf("npm = %v", provider["npm"])
 	}
+	models := provider["models"].(map[string]any)
+	for _, model := range []string{"gpt-5.5", "glm-5.1", "deepseek-v4-pro"} {
+		entry, ok := models[model].(map[string]any)
+		if !ok {
+			t.Fatalf("model %q missing from %#v", model, models)
+		}
+		if entry["name"] != model {
+			t.Fatalf("model %q name = %v", model, entry["name"])
+		}
+	}
 	options := provider["options"].(map[string]any)
 	if options["baseURL"] != "http://127.0.0.1:53452/v1" {
 		t.Fatalf("baseURL = %v", options["baseURL"])

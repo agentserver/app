@@ -202,6 +202,51 @@ func TestProxyAddsDefaultResponsesInstructionsWhenMissing(t *testing.T) {
 	}
 }
 
+func TestProxyRemovesUnsupportedResponsesMaxOutputTokens(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	body := `{"model":"gpt-5.5","max_output_tokens":4096,"input":[{"role":"user","content":"你好"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	if _, ok := got["max_output_tokens"]; ok {
+		t.Fatalf("max_output_tokens should be removed before upstream: %#v", got)
+	}
+	if got["model"] != "gpt-5.5" {
+		t.Fatalf("model = %v", got["model"])
+	}
+	if got["instructions"] == "" {
+		t.Fatalf("instructions should still be normalized: %#v", got)
+	}
+}
+
 func TestProxyPreservesExistingResponsesInstructions(t *testing.T) {
 	sec := newTestSecrets()
 	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {

@@ -22,6 +22,12 @@ const (
 	configSchema     = "https://opencode.ai/config.json"
 )
 
+var supportedModels = []string{
+	"gpt-5.5",
+	"glm-5.1",
+	"deepseek-v4-pro",
+}
+
 type Settings struct {
 	BaseURL   string
 	APIKey    string
@@ -86,13 +92,20 @@ func applySettings(root map[string]any, s Settings) {
 			"baseURL": settings.BaseURL,
 			"apiKey":  settings.apiKeyValue(),
 		},
-		"models": map[string]any{
-			settings.Model: map[string]any{
-				"name": settings.Model,
-			},
-		},
+		"models": modelEntries(settings.Model),
 	}
 	root["provider"] = providers
+}
+
+func modelEntries(selectedModel string) map[string]any {
+	models := map[string]any{}
+	for _, model := range supportedModels {
+		models[model] = map[string]any{"name": model}
+	}
+	if _, ok := models[selectedModel]; !ok {
+		models[selectedModel] = map[string]any{"name": selectedModel}
+	}
+	return models
 }
 
 func normalizeSettings(s Settings) Settings {
