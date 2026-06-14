@@ -9,7 +9,6 @@
 #   driver-agent.exe, slave-agent.exe
 #   agentserver-app.vsix
 #   codex-desktop-installer.exe (bundled to avoid winget Store execution during install)
-#   opencode-desktop-installer.exe
 #   icon.ico, install.ps1, ensure-vscode.ps1, ensure-codex-desktop.ps1
 #   ensure-opencode-desktop.ps1
 #   ensure-codex.ps1, write-install-mode.ps1, machine.ps1, codex-manifest.json
@@ -53,7 +52,9 @@ cat > "$STAGE/README.txt" <<'EOF'
    To install the OpenCode Desktop interface instead, run:
      powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -OpenCodeDesktop
 
-   The simplified VS Code mode downloads the Microsoft Store bootstrapper during install.
+   The OpenCode Desktop mode downloads the latest official Windows installer during
+   install. The simplified VS Code mode downloads the Microsoft Store bootstrapper
+   during install.
 
 3) Double-click the "星池指挥官" shortcut on your desktop.
    The first launch opens a configuration wizard in your browser.

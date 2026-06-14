@@ -1,5 +1,5 @@
 param(
-    [string]$LocalInstallerPath = (Join-Path $PSScriptRoot 'opencode-desktop-installer.exe'),
+    [string]$InstallerURL = 'https://opencode.ai/download/stable/windows-x64-nsis',
     [int]$InstallTimeoutSeconds = 1200,
     [Int64]$MinInstallerSize = 65536
 )
@@ -120,30 +120,50 @@ function Test-OpenCodeDesktopInstallerFile([string]$Path) {
     }
 }
 
-function Invoke-OpenCodeDesktopLocalInstaller {
-    if (-not (Test-Path -LiteralPath $LocalInstallerPath)) {
-        Write-Warning "Bundled OpenCode Desktop installer not found: $LocalInstallerPath"
-        return $false
+function Invoke-OpenCodeDesktopInstallerDownload {
+    $cacheRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'agentserver-opencode-desktop'
+    if (-not (Test-Path -LiteralPath $cacheRoot)) {
+        New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
     }
-    Write-Step "Running bundled OpenCode Desktop installer..."
-    Write-Step $LocalInstallerPath
+    $installerPath = Join-Path $cacheRoot 'opencode-desktop-installer.exe'
+    $partialPath = $installerPath + '.part'
+    Remove-Item -LiteralPath $installerPath,$partialPath -Force -ErrorAction SilentlyContinue
+
+    Write-Step "Downloading latest OpenCode Desktop installer..."
+    Write-Step $InstallerURL
     try {
-        Test-OpenCodeDesktopInstallerFile $LocalInstallerPath
-        $proc = Start-Process -FilePath $LocalInstallerPath -Wait -PassThru
+        try {
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+        } catch {
+        }
+        Invoke-WebRequest -Uri $InstallerURL -OutFile $partialPath -UseBasicParsing
+        Move-Item -LiteralPath $partialPath -Destination $installerPath -Force
+        Test-OpenCodeDesktopInstallerFile $installerPath
+        return $installerPath
     } catch {
-        Write-Warning "Bundled OpenCode Desktop installer failed verification or startup: $($_.Exception.Message)"
-        return $false
+        Remove-Item -LiteralPath $partialPath -Force -ErrorAction SilentlyContinue
+        throw "OpenCode Desktop installer download or verification failed: $($_.Exception.Message)"
+    }
+}
+
+function Invoke-OpenCodeDesktopDownloadedInstaller {
+    $installerPath = Invoke-OpenCodeDesktopInstallerDownload
+    Write-Step "Running downloaded OpenCode Desktop installer..."
+    Write-Step $installerPath
+    try {
+        $proc = Start-Process -FilePath $installerPath -Wait -PassThru
+    } catch {
+        throw "OpenCode Desktop installer failed to start: $($_.Exception.Message)"
     }
     if ($null -ne $proc.ExitCode -and $proc.ExitCode -ne 0) {
-        Write-Warning "Bundled OpenCode Desktop installer failed with exit code $($proc.ExitCode)."
-        return $false
+        throw "OpenCode Desktop installer failed with exit code $($proc.ExitCode)."
     }
     Write-Step "Waiting for OpenCode Desktop to become available..."
     return (Wait-OpenCodeDesktopInstalled -TimeoutSeconds $InstallTimeoutSeconds)
 }
 
-function Invoke-OpenCodeDesktopManualFallback {
-    Write-Warning "Unable to install OpenCode Desktop from the bundled installer."
+function Invoke-OpenCodeDesktopManualFallback([string]$Reason) {
+    Write-Warning "Unable to install OpenCode Desktop automatically: $Reason"
     Write-Warning "Opening the official OpenCode download page: $OfficialDownloadURL"
     try {
         Start-Process $OfficialDownloadURL | Out-Null
@@ -160,8 +180,12 @@ if (Test-OpenCodeDesktopInstalled) {
     exit 0
 }
 
-if (-not (Invoke-OpenCodeDesktopLocalInstaller)) {
-    Invoke-OpenCodeDesktopManualFallback
+try {
+    if (-not (Invoke-OpenCodeDesktopDownloadedInstaller)) {
+        Invoke-OpenCodeDesktopManualFallback "downloaded installer exited, but OpenCode Desktop was not detected within $InstallTimeoutSeconds seconds"
+    }
+} catch {
+    Invoke-OpenCodeDesktopManualFallback $_.Exception.Message
 }
 
 Write-Step "Verifying OpenCode Desktop installation..."

@@ -211,7 +211,6 @@ $required = @(
     'driver-superpower-skills.tar.gz',
     'driver-codex-prompts.tar.gz',
     'codex-desktop-installer.exe',
-    'opencode-desktop-installer.exe',
     'agentserver-app.vsix',
     'ensure-vscode.ps1',
     'ensure-codex.ps1',
@@ -238,7 +237,8 @@ if (-not (Test-Path $InstallDir)) {
 $obsoletePayloads = @(
     'codex.exe',
     ('vscode-installer' + '.exe'),
-    ('vscode-manifest' + '.json')
+    ('vscode-manifest' + '.json'),
+    ('opencode-desktop-installer' + '.exe')
 )
 foreach ($obsolete in $obsoletePayloads) {
     $obsoletePath = Join-Path $InstallDir $obsolete
@@ -302,7 +302,7 @@ if ($OpenCodeDesktop) {
     Write-Step "Writing install mode opencode_desktop..."
     & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'opencode_desktop' -Path (Join-Path $InstallDir 'install-mode.json')
     Write-Step "Ensuring OpenCode Desktop is installed..."
-    & (Join-Path $InstallDir 'ensure-opencode-desktop.ps1') -LocalInstallerPath (Join-Path $srcDir 'opencode-desktop-installer.exe')
+    & (Join-Path $InstallDir 'ensure-opencode-desktop.ps1')
 } elseif ($MinimalVSCode) {
     Write-Step "Writing install mode minimal_vscode..."
     & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'minimal_vscode' -Path (Join-Path $InstallDir 'install-mode.json')

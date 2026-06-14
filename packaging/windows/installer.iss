@@ -60,8 +60,6 @@ Source: "..\..\dist\cache\loom\v0.0.5\driver-codex-prompts.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-codex-prompts.tar.gz"; Flags: ignoreversion
 Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
     DestDir: "{app}"; DestName: "codex-desktop-installer.exe"; Flags: ignoreversion
-Source: "..\..\dist\cache\opencode-desktop\stable\OpenCode Desktop Installer.exe"; \
-    DestDir: "{app}"; DestName: "opencode-desktop-installer.exe"; Flags: ignoreversion
 ; Bundled VS Code extension
 Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.2.vsix"; \
     DestDir: "{app}"; DestName: "agentserver-app.vsix"; Flags: ignoreversion
@@ -375,6 +373,7 @@ begin
   DeleteFile(ExpandConstant('{app}\codex.exe'));
   DeleteFile(ExpandConstant('{app}\vscode-installer' + '.exe'));
   DeleteFile(ExpandConstant('{app}\vscode-manifest' + '.json'));
+  DeleteFile(ExpandConstant('{app}\opencode-desktop-installer' + '.exe'));
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -439,7 +438,7 @@ begin
   if ShouldInstallOpenCodeDesktop then begin
     RunEstimatedPowerShellStep('opencode-mode', '正在准备 OpenCode Desktop 模式...', 'write-install-mode.ps1',
       '-Mode ' + PowerShellQuote('opencode_desktop') + ' -Path ' + PowerShellQuote(ModePath), 10);
-    RunEstimatedPowerShellStep('opencode-install', '正在安装 OpenCode Desktop（请在弹出的安装器中完成安装，请勿关闭）...', 'ensure-opencode-desktop.ps1',
+    RunEstimatedPowerShellStep('opencode-install', '正在下载并安装 OpenCode Desktop（请勿关闭）...', 'ensure-opencode-desktop.ps1',
       '', 900);
   end else if ShouldInstallCodexDesktop then begin
     RunEstimatedPowerShellStep('codex-mode', '正在准备 Codex Desktop 模式...', 'write-install-mode.ps1',
