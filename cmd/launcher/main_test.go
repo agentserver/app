@@ -666,6 +666,7 @@ func freeTCPPort(t *testing.T) int {
 
 func TestTrayStateFromConsoleFormatsQuotaRows(t *testing.T) {
 	got := trayStateFromConsole(console.State{
+		FrontendName: "OpenCode Desktop",
 		Quotas: []console.QuotaWindow{
 			{Window: "5h", Percentage: 58.2, RemainingPercentage: 41.8},
 			{Window: "7d", Percentage: 22.4, RemainingPercentage: 77.6},
@@ -682,6 +683,9 @@ func TestTrayStateFromConsoleFormatsQuotaRows(t *testing.T) {
 	if got.Tooltip != wantTooltip {
 		t.Fatalf("Tooltip=%q, want %q", got.Tooltip, wantTooltip)
 	}
+	if got.OpenFrontendLabel != "启动 OpenCode Desktop" {
+		t.Fatalf("OpenFrontendLabel=%q", got.OpenFrontendLabel)
+	}
 }
 
 func TestTrayStateFromConsoleDefaultsWhenQuotaUnavailable(t *testing.T) {
@@ -696,6 +700,9 @@ func TestTrayStateFromConsoleDefaultsWhenQuotaUnavailable(t *testing.T) {
 	wantTooltip := "星池指挥官\n5小时额度：暂不可用\n7天额度：暂不可用"
 	if got.Tooltip != wantTooltip {
 		t.Fatalf("Tooltip=%q, want %q", got.Tooltip, wantTooltip)
+	}
+	if got.OpenFrontendLabel != "启动 Codex Desktop" {
+		t.Fatalf("OpenFrontendLabel=%q", got.OpenFrontendLabel)
 	}
 }
 

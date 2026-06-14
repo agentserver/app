@@ -87,6 +87,31 @@ func TestLaunchUsesDetectedExecutableAndFolderWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestLaunchUsesProtocolWhenNoFolderEvenWithDetectedExecutable(t *testing.T) {
+	runnerCalled := false
+	var gotURL string
+	err := Launch(context.Background(), LaunchOptions{
+		Detected: Detected{Installed: true, Path: `C:\OpenCode\OpenCode.exe`},
+		Run: func(cmd *exec.Cmd) error {
+			runnerCalled = true
+			return nil
+		},
+		OpenURL: func(url string) error {
+			gotURL = url
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runnerCalled {
+		t.Fatal("empty-folder launch should use protocol activation instead of starting the executable directly")
+	}
+	if gotURL != "opencode://" {
+		t.Fatalf("url = %q", gotURL)
+	}
+}
+
 func TestLaunchFallsBackToProtocol(t *testing.T) {
 	var gotURL string
 	err := Launch(context.Background(), LaunchOptions{

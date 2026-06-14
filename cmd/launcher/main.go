@@ -644,10 +644,15 @@ func updateTrayOnce(ctx context.Context, app tray.App, ctrl trayConsoleControlle
 }
 
 func trayStateFromConsole(st console.State) tray.State {
+	frontendName := strings.TrimSpace(st.FrontendName)
+	if frontendName == "" {
+		frontendName = "Codex Desktop"
+	}
 	state := tray.State{
-		Tooltip:  "星池指挥官\n额度暂不可用",
-		FiveHour: "5小时额度：暂不可用",
-		SevenDay: "7天额度：暂不可用",
+		Tooltip:           "星池指挥官\n额度暂不可用",
+		FiveHour:          "5小时额度：暂不可用",
+		SevenDay:          "7天额度：暂不可用",
+		OpenFrontendLabel: "启动 " + frontendName,
 	}
 	for _, q := range st.Quotas {
 		line := fmt.Sprintf("%s额度：已用 %.0f%%，剩余约 %.0f%%", quotaLabel(q.Window), q.Percentage, q.RemainingPercentage)

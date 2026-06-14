@@ -23,6 +23,13 @@ func Launch(ctx context.Context, opts LaunchOptions) error {
 			return err
 		}
 	}
+	var protocolErr error
+	if opts.Folder == "" {
+		protocolErr = openProtocol(opts.OpenURL)
+		if protocolErr == nil {
+			return nil
+		}
+	}
 	if opts.Detected.Path != "" {
 		run := opts.Run
 		if run == nil {
@@ -34,14 +41,23 @@ func Launch(ctx context.Context, opts LaunchOptions) error {
 		cmd.Stdout = nil
 		cmd.Stderr = nil
 		process.HideWindow(cmd)
-		return run(cmd)
+		if err := run(cmd); err != nil {
+			return errors.Join(protocolErr, err)
+		}
+		return nil
 	}
-	openURL := opts.OpenURL
+	if protocolErr != nil {
+		return protocolErr
+	}
+	return openProtocol(opts.OpenURL)
+}
+
+func openProtocol(openURL func(string) error) error {
 	if openURL == nil {
 		openURL = browser.Open
 	}
 	if openURL == nil {
-		return errors.New("opencode desktop executable not found and no URL opener configured")
+		return errors.New("opencode desktop protocol opener is not configured")
 	}
 	if err := openURL("opencode://"); err != nil {
 		return fmt.Errorf("open opencode protocol: %w", err)
