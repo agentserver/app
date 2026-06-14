@@ -1,4 +1,4 @@
-.PHONY: all build test test-unit test-integration lint clean cross-windows package help ui-build ui-test
+.PHONY: all build test test-unit test-integration lint clean cross-windows cross-linux package package-linux help ui-build ui-test
 
 GO        ?= go
 GOFLAGS   ?= -trimpath
@@ -14,6 +14,7 @@ all: build
 help:
 	@echo "make build              - build native binaries to dist/<os>/"
 	@echo "make cross-windows      - cross-compile windows/amd64 to dist/windows/ (depends on ui-build)"
+	@echo "make cross-linux        - cross-compile linux amd64/arm64 agentserver"
 	@echo "make test               - go test -race ./..."
 	@echo "make test-unit          - unit tests only (-short)"
 	@echo "make test-integration   - integration tests (test/integration)"
@@ -22,6 +23,7 @@ help:
 	@echo "make ui-build           - build onboarding Vue front-end into internal/ui/assets/dist/"
 	@echo "make ui-test            - run frontend unit tests"
 	@echo "make package            - build Windows .exe installer (requires Inno Setup; depends on ui-build + ext-build)"
+	@echo "make package-linux      - build Linux headless tarballs"
 	@echo "make clean              - rm dist/ and out/"
 
 build: ui-build
@@ -41,6 +43,15 @@ cross-windows: ui-build
 		GOOS=$(GOOS_WIN) GOARCH=$(GOARCH) \
 		  $(GO) build $(GOFLAGS) -ldflags="$$ldflags" \
 		  -o $(DIST)/windows/$$cmd.exe ./cmd/$$cmd ; \
+	done
+
+cross-linux:
+	@mkdir -p $(DIST)/linux/amd64 $(DIST)/linux/arm64
+	@for arch in amd64 arm64; do \
+		echo "==> cross-building agentserver (linux/$$arch)"; \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch \
+		  $(GO) build $(GOFLAGS) -ldflags="$(LDFLAGS)" \
+		  -o $(DIST)/linux/$$arch/agentserver ./cmd/agentserver ; \
 	done
 
 test: ui-build
@@ -68,6 +79,9 @@ ui-test:
 
 package: cross-windows ext-build
 	bash scripts/package-windows.sh
+
+package-linux: cross-linux
+	OUT="$(DIST)" bash scripts/package-linux.sh
 
 clean:
 	rm -rf $(DIST) out coverage.out internal/ui/assets/dist

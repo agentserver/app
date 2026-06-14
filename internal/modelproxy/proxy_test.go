@@ -1,6 +1,7 @@
 package modelproxy
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -54,8 +55,9 @@ func TestProxyLoadsLatestAccessTokenForEveryRequest(t *testing.T) {
 	defer upstream.Close()
 
 	handler, err := NewHandler(Options{
-		Secrets:         sec,
-		UpstreamBaseURL: upstream.URL + "/v1",
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
 	})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
@@ -63,7 +65,13 @@ func TestProxyLoadsLatestAccessTokenForEveryRequest(t *testing.T) {
 	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
 
-	resp, err := http.Post(proxy.URL+"/v1/responses?trace=1", "text/plain", http.NoBody)
+	req, err := http.NewRequest(http.MethodPost, proxy.URL+"/v1/responses?trace=1", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("first request: %v", err)
 	}
@@ -78,7 +86,12 @@ func TestProxyLoadsLatestAccessTokenForEveryRequest(t *testing.T) {
 	if err := sec.Set(tokenrefresh.AccessTokenKey, "access-2"); err != nil {
 		t.Fatal(err)
 	}
-	resp, err = http.Get(proxy.URL + "/v1/models")
+	req, err = http.NewRequest(http.MethodGet, proxy.URL+"/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("second request: %v", err)
 	}
@@ -101,6 +114,149 @@ func TestProxyLoadsLatestAccessTokenForEveryRequest(t *testing.T) {
 	}
 }
 
+func TestProxyRequiresLocalBearerToken(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+	var upstreamCalled bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		auth string
+	}{
+		{name: "missing"},
+		{name: "wrong token", auth: "Bearer wrong"},
+		{name: "wrong scheme", auth: "Basic random-local-token"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			upstreamCalled = false
+			req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			if tt.auth != "" {
+				req.Header.Set("Authorization", tt.auth)
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+			}
+			if upstreamCalled {
+				t.Fatal("upstream should not be called without valid local bearer")
+			}
+		})
+	}
+}
+
+func TestProxyHealthDoesNotRequireLocalBearerToken(t *testing.T) {
+	handler, err := NewHandler(Options{
+		Secrets:          newTestSecrets(),
+		UpstreamBaseURL:  "https://upstream.test/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, HealthPath, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestProxyRejectsOversizedRequestBody(t *testing.T) {
+	upstreamCalled := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalled = true
+	}))
+	defer upstream.Close()
+
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(make([]byte, MaxRequestBodyBytes+1)))
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if upstreamCalled {
+		t.Fatal("upstream should not receive oversized request")
+	}
+}
+
+func TestProxyStripsHopByHopAndProxyAuthorizationHeaders(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	req.Header.Set("Connection", "keep-alive, X-Drop-Me")
+	req.Header.Set("X-Drop-Me", "drop")
+	req.Header.Set("Proxy-Authorization", "Basic secret")
+	req.Header.Set("TE", "trailers")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	for _, name := range []string{"Connection", "X-Drop-Me", "Proxy-Authorization", "TE"} {
+		if got.Get(name) != "" {
+			t.Fatalf("upstream header %s=%q, want stripped", name, got.Get(name))
+		}
+	}
+	if got.Get("Authorization") != "Bearer access" {
+		t.Fatalf("upstream Authorization=%q, want modelserver access token", got.Get("Authorization"))
+	}
+}
+
 func TestProxyReturnsUnauthorizedWhenAccessTokenMissing(t *testing.T) {
 	upstreamCalled := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -109,14 +265,16 @@ func TestProxyReturnsUnauthorizedWhenAccessTokenMissing(t *testing.T) {
 	defer upstream.Close()
 
 	handler, err := NewHandler(Options{
-		Secrets:         newTestSecrets(),
-		UpstreamBaseURL: upstream.URL + "/v1",
+		Secrets:          newTestSecrets(),
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
 	})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer random-local-token")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -125,5 +283,15 @@ func TestProxyReturnsUnauthorizedWhenAccessTokenMissing(t *testing.T) {
 	}
 	if upstreamCalled {
 		t.Fatal("upstream should not be called without an access token")
+	}
+}
+
+func TestProxyRequiresConfiguredLocalBearerToken(t *testing.T) {
+	_, err := NewHandler(Options{
+		Secrets:         newTestSecrets(),
+		UpstreamBaseURL: "https://upstream.test/v1",
+	})
+	if err == nil {
+		t.Fatal("NewHandler returned nil error without LocalBearerToken")
 	}
 }

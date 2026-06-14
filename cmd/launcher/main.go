@@ -563,7 +563,7 @@ func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestra
 	asBaseURL := completedAgentserverBaseURL(in.State)
 	asOAuth := in.ASOAuth
 	if asOAuth.Endpoint == "" {
-		asOAuth = defaultAgentserverOAuthConfig(asBaseURL)
+		asOAuth = agentserver.OAuthConfig(asBaseURL)
 	}
 	loomDriverPath := ""
 	if in.InstallDir != "" {
@@ -678,7 +678,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	// to Hydra. The CLI client `agentserver-agent-cli` is pre-registered
 	// by the Helm chart with grant=device_code, public (no secret),
 	// scopes=openid profile agent:register.
-	asOAuth := defaultAgentserverOAuthConfig("https://agent.cs.ac.cn")
+	asOAuth := agentserver.OAuthConfig("https://agent.cs.ac.cn")
 
 	installDir, err := os.Executable()
 	if err != nil {
@@ -749,19 +749,6 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	return err
 }
 
-func defaultAgentserverOAuthConfig(endpoint string) oauth.Config {
-	if strings.TrimSpace(endpoint) == "" {
-		endpoint = "https://agent.cs.ac.cn"
-	}
-	return oauth.Config{
-		Endpoint:  strings.TrimRight(strings.TrimSpace(endpoint), "/"),
-		AuthPath:  "/api/oauth2/device/auth",
-		TokenPath: "/api/oauth2/token",
-		ClientID:  "agentserver-agent-cli",
-		Scope:     "openid profile agent:register",
-	}
-}
-
 func launchCompletedInstall(ctx context.Context, codeExe string, p paths.Paths, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string) error {
 	if err := launchprep.PrepareVSCode(ctx, launchprep.Input{
 		CodeExe:          codeExe,
@@ -801,11 +788,11 @@ func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths,
 }
 
 func launchCompletedCodexDesktop(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, opener codexdesktop.Opener) error {
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, codex.LegacyLocalProxyAPIKeyValue)); err != nil {
 		return err
 	}
-	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
-	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
 	if err := codexdesktop.ConfigureLocale(
 		p.CodexDesktopGlobalStateFile,
 		p.CodexDesktopComputerUseConfigFile,
@@ -967,17 +954,17 @@ func lastN(s string, n int) string {
 }
 
 func execVSCode(codeExe string, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string) error {
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL)); err != nil {
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, codex.LegacyLocalProxyAPIKeyValue)); err != nil {
 		return err
 	}
-	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
-	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
 	if tokenRefresherExe != "" {
 		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
 	}
 	args := vscode.LaunchArgs(p.VSCodeUserDataDir, p.VSCodeExtDir, folder)
 	cmd := exec.Command(codeExe, args...)
-	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, codex.LocalProxyAPIKeyValue)
+	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Start()

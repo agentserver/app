@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -56,6 +57,28 @@ func TestRequestDeviceCode(t *testing.T) {
 	}
 	if ch.RetrievedAt.IsZero() {
 		t.Errorf("RetrievedAt not set")
+	}
+}
+
+func TestRequestDeviceCodeRejectsOversizedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"device_code":"` + strings.Repeat("x", maxDeviceResponseBytes) + `"}`))
+	}))
+	defer srv.Close()
+
+	cfg := Config{Endpoint: srv.URL, AuthPath: "/", ClientID: "test-client"}
+	_, err := RequestDeviceCode(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("RequestDeviceCode returned nil error for oversized response")
+	}
+}
+
+func TestDeviceHTTPClientHasTimeout(t *testing.T) {
+	if deviceHTTPClient == http.DefaultClient {
+		t.Fatal("deviceHTTPClient must not use http.DefaultClient")
+	}
+	if deviceHTTPClient.Timeout <= 0 {
+		t.Fatalf("deviceHTTPClient timeout=%v, want positive timeout", deviceHTTPClient.Timeout)
 	}
 }
 

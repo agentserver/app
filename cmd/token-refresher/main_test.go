@@ -45,6 +45,7 @@ func TestRunWithDepsServesLocalModelProxy(t *testing.T) {
 		errCh <- runWithDeps(ctx, runDeps{
 			Secrets:              sec,
 			OAuth:                oauth.AuthCodeConfig{ClientID: "client-x"},
+			LocalProxyToken:      "random-local-token",
 			ProxyAddr:            addr,
 			ProxyUpstreamBaseURL: upstream.URL + "/v1",
 			Refresh: func(context.Context, oauth.AuthCodeConfig, string) (oauth.Token, error) {
@@ -58,7 +59,12 @@ func TestRunWithDepsServesLocalModelProxy(t *testing.T) {
 	}()
 
 	waitForProxyHealth(t, addr)
-	resp, err := http.Get("http://" + addr + "/v1/models")
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("proxy request: %v", err)
 	}

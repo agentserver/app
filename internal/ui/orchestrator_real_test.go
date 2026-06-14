@@ -224,7 +224,7 @@ func TestConfigureVSCodeSetsStableLocalCodexKey(t *testing.T) {
 	if err := r.ConfigureVSCode(context.Background()); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != codex.LocalProxyAPIKeyValue {
+	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != codex.LegacyLocalProxyAPIKeyValue {
 		t.Fatalf("%s=%q, want stable local key", codex.LocalProxyAPIKeyEnv, got)
 	}
 	if got := os.Getenv("OPENAI_API_KEY"); got != "old-openai-token" {
@@ -322,7 +322,7 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(string(envBody)) != codex.LocalProxyAPIKeyValue {
+	if strings.TrimSpace(string(envBody)) != codex.LegacyLocalProxyAPIKeyValue {
 		t.Fatalf("%s child env = %q", codex.LocalProxyAPIKeyEnv, envBody)
 	}
 	argsBody, err := os.ReadFile(argsFile)
@@ -1278,10 +1278,10 @@ func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
 	if !strings.Contains(string(b), `base_url = "`+modelproxy.DefaultBaseURL+`"`) {
 		t.Fatalf("config missing local proxy base_url:\n%s", b)
 	}
-	if !strings.Contains(string(b), `env_key = "`+codex.LocalProxyAPIKeyEnv+`"`) {
-		t.Fatalf("config missing local proxy env_key:\n%s", b)
+	if !strings.Contains(string(b), `experimental_bearer_token = "`+codex.LegacyLocalProxyAPIKeyValue+`"`) {
+		t.Fatalf("config missing local proxy bearer token:\n%s", b)
 	}
-	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != codex.LocalProxyAPIKeyValue {
+	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != codex.LegacyLocalProxyAPIKeyValue {
 		t.Fatalf("%s=%q, want stable local key", codex.LocalProxyAPIKeyEnv, got)
 	}
 	if got := os.Getenv("OPENAI_API_KEY"); got != "old-openai-token" {

@@ -7,7 +7,7 @@ import (
 	"log"
 	"path/filepath"
 
-	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
+	"github.com/agentserver/agentserver-pkg/internal/modelaccess"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
@@ -30,17 +30,23 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	proxyToken, err := modelaccess.EnsureLocalProxyToken(modelaccess.DefaultLocalProxyTokenPath(p.InstallRoot))
+	if err != nil {
+		return err
+	}
 	return runWithDeps(context.Background(), runDeps{
-		Secrets:  secrets.New(p.SecretsFile),
-		OAuth:    modelserver.OAuthConfig(),
-		LockPath: filepath.Join(p.InstallRoot, "token-refresher.lock"),
-		Logf:     log.Printf,
+		Secrets:         secrets.New(p.SecretsFile),
+		OAuth:           modelserver.OAuthConfig(),
+		LocalProxyToken: proxyToken,
+		LockPath:        filepath.Join(p.InstallRoot, "token-refresher.lock"),
+		Logf:            log.Printf,
 	})
 }
 
 type runDeps struct {
 	Secrets              secrets.Store
 	OAuth                oauth.AuthCodeConfig
+	LocalProxyToken      string
 	ProxyAddr            string
 	ProxyUpstreamBaseURL string
 	LockPath             string
@@ -55,52 +61,14 @@ func runWithDeps(ctx context.Context, deps runDeps) error {
 	if deps.Logf == nil {
 		deps.Logf = log.Printf
 	}
-	if deps.LockPath != "" {
-		lock, err := tokenrefresh.AcquireDaemonLock(deps.LockPath)
-		if err != nil {
-			return err
-		}
-		defer lock.Close()
-	}
-
-	proxyErr := make(chan error, 1)
-	go func() {
-		proxyErr <- modelproxy.ListenAndServe(ctx, modelproxy.ServerOptions{
-			Addr:            deps.ProxyAddr,
-			Secrets:         deps.Secrets,
-			UpstreamBaseURL: deps.ProxyUpstreamBaseURL,
-		})
-	}()
-
-	refreshErr := make(chan error, 1)
-	go func() {
-		refreshErr <- tokenrefresh.Run(ctx, tokenrefresh.Options{
-			Secrets: deps.Secrets,
-			OAuth:   deps.OAuth,
-			Refresh: deps.Refresh,
-			Logf:    deps.Logf,
-		})
-	}()
-
-	for {
-		select {
-		case err := <-proxyErr:
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
-		case err := <-refreshErr:
-			if err == nil || errors.Is(err, context.Canceled) {
-				return nil
-			}
-			if errors.Is(err, tokenrefresh.ErrNoRefreshToken) {
-				deps.Logf("token refresh disabled: %v", err)
-				refreshErr = nil
-				continue
-			}
-			return err
-		case <-ctx.Done():
-			return nil
-		}
-	}
+	return modelaccess.RunDaemon(ctx, modelaccess.DaemonOptions{
+		Secrets:              deps.Secrets,
+		OAuth:                deps.OAuth,
+		LocalProxyToken:      deps.LocalProxyToken,
+		ProxyAddr:            deps.ProxyAddr,
+		ProxyUpstreamBaseURL: deps.ProxyUpstreamBaseURL,
+		LockPath:             deps.LockPath,
+		Refresh:              deps.Refresh,
+		Logf:                 deps.Logf,
+	})
 }
