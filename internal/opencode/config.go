@@ -1,0 +1,151 @@
+// Package opencode writes/merges OpenCode global JSON configuration.
+package opencode
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/tailscale/hujson"
+)
+
+const (
+	defaultProvider  = "modelserver"
+	defaultModel     = "gpt-5.5"
+	defaultBaseURL   = "http://127.0.0.1:53452/v1"
+	defaultAPIKeyEnv = "AGENTSERVER_CODEX_LOCAL_API_KEY"
+	configSchema     = "https://opencode.ai/config.json"
+)
+
+type Settings struct {
+	BaseURL   string
+	APIKeyEnv string
+	Model     string
+}
+
+func DefaultProxySettings() Settings {
+	return Settings{
+		BaseURL:   defaultBaseURL,
+		APIKeyEnv: defaultAPIKeyEnv,
+		Model:     defaultModel,
+	}
+}
+
+func UpdateConfig(path string, s Settings) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("opencode config path required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir opencode config dir: %w", err)
+	}
+	root := map[string]any{}
+	if b, err := os.ReadFile(path); err == nil {
+		if len(bytes.TrimSpace(b)) > 0 {
+			std, err := hujson.Standardize(b)
+			if err != nil {
+				return fmt.Errorf("parse opencode config: %w", err)
+			}
+			if err := json.Unmarshal(std, &root); err != nil {
+				return fmt.Errorf("parse opencode config: %w", err)
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read opencode config: %w", err)
+	}
+
+	applySettings(root, s)
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(root); err != nil {
+		return fmt.Errorf("marshal opencode config: %w", err)
+	}
+	return writeConfigFile(path, buf.Bytes())
+}
+
+func applySettings(root map[string]any, s Settings) {
+	settings := normalizeSettings(s)
+	if stringSetting(root, "$schema") == "" {
+		root["$schema"] = configSchema
+	}
+	root["model"] = defaultProvider + "/" + settings.Model
+	providers, _ := root["provider"].(map[string]any)
+	if providers == nil {
+		providers = map[string]any{}
+	}
+	providers[defaultProvider] = map[string]any{
+		"npm":  "@ai-sdk/openai",
+		"name": defaultProvider,
+		"options": map[string]any{
+			"baseURL": settings.BaseURL,
+			"apiKey":  "{env:" + settings.APIKeyEnv + "}",
+		},
+		"models": map[string]any{
+			settings.Model: map[string]any{
+				"name": settings.Model,
+			},
+		},
+	}
+	root["provider"] = providers
+}
+
+func normalizeSettings(s Settings) Settings {
+	if strings.TrimSpace(s.BaseURL) == "" {
+		s.BaseURL = defaultBaseURL
+	}
+	if strings.TrimSpace(s.APIKeyEnv) == "" {
+		s.APIKeyEnv = defaultAPIKeyEnv
+	}
+	if strings.TrimSpace(s.Model) == "" {
+		s.Model = defaultModel
+	}
+	s.BaseURL = strings.TrimRight(strings.TrimSpace(s.BaseURL), "/")
+	s.APIKeyEnv = strings.TrimSpace(s.APIKeyEnv)
+	s.Model = strings.TrimSpace(s.Model)
+	return s
+}
+
+func stringSetting(root map[string]any, key string) string {
+	value, _ := root[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func writeConfigFile(path string, body []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	tmpPath = ""
+	return os.Chmod(path, 0o600)
+}
