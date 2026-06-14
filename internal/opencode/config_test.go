@@ -62,7 +62,7 @@ func TestUpdateConfigCreatesModelserverProxyProvider(t *testing.T) {
 		t.Fatalf("compatible apiKey = %v", compatibleOptions["apiKey"])
 	}
 	compatibleModels := compatible["models"].(map[string]any)
-	for _, model := range []string{"glm-5.1", "deepseek-v4-pro"} {
+	for _, model := range []string{"deepseek-v4-pro"} {
 		entry, ok := compatibleModels[model].(map[string]any)
 		if !ok {
 			t.Fatalf("compatible model %q missing from %#v", model, compatibleModels)
@@ -70,6 +70,46 @@ func TestUpdateConfigCreatesModelserverProxyProvider(t *testing.T) {
 		if entry["name"] != model {
 			t.Fatalf("compatible model %q name = %v", model, entry["name"])
 		}
+	}
+	if _, ok := compatibleModels["glm-5.1"]; ok {
+		t.Fatalf("compatible provider should not expose Anthropic-only model glm-5.1: %#v", compatibleModels)
+	}
+
+	anthropic := got["provider"].(map[string]any)["modelserver-anthropic"].(map[string]any)
+	if anthropic["npm"] != "@ai-sdk/anthropic" {
+		t.Fatalf("anthropic npm = %v", anthropic["npm"])
+	}
+	anthropicOptions := anthropic["options"].(map[string]any)
+	if anthropicOptions["baseURL"] != "http://127.0.0.1:53452/v1" {
+		t.Fatalf("anthropic baseURL = %v", anthropicOptions["baseURL"])
+	}
+	if anthropicOptions["apiKey"] != "local-proxy-token" {
+		t.Fatalf("anthropic apiKey = %v", anthropicOptions["apiKey"])
+	}
+	anthropicModels := anthropic["models"].(map[string]any)
+	entry, ok := anthropicModels["glm-5.1"].(map[string]any)
+	if !ok {
+		t.Fatalf("anthropic model glm-5.1 missing from %#v", anthropicModels)
+	}
+	if entry["name"] != "glm-5.1" {
+		t.Fatalf("anthropic model glm-5.1 name = %v", entry["name"])
+	}
+}
+
+func TestUpdateConfigSelectsAnthropicProviderForGLM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode", "opencode.jsonc")
+	err := UpdateConfig(path, Settings{
+		BaseURL: "http://127.0.0.1:53452/v1",
+		APIKey:  "local-proxy-token",
+		Model:   "glm-5.1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	readJSONFile(t, path, &got)
+	if got["model"] != "modelserver-anthropic/glm-5.1" {
+		t.Fatalf("model = %v", got["model"])
 	}
 }
 

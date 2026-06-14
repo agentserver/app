@@ -474,6 +474,45 @@ func TestProxyStripsHopByHopAndProxyAuthorizationHeaders(t *testing.T) {
 	}
 }
 
+func TestProxyAcceptsLocalTokenFromAnthropicAPIKeyHeader(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"glm-5.1","messages":[]}`))
+	req.Header.Set("X-Api-Key", "random-local-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	if got.Get("Authorization") != "Bearer access" {
+		t.Fatalf("upstream Authorization=%q, want modelserver access token", got.Get("Authorization"))
+	}
+	if got.Get("X-Api-Key") != "" {
+		t.Fatalf("upstream X-Api-Key=%q, want stripped", got.Get("X-Api-Key"))
+	}
+}
+
 func TestProxyReturnsUnauthorizedWhenAccessTokenMissing(t *testing.T) {
 	upstreamCalled := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

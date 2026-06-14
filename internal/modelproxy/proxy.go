@@ -99,7 +99,7 @@ func NewHandler(opts Options) (http.Handler, error) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if !validLocalBearer(r.Header.Get("Authorization"), localBearerToken) {
+		if !validLocalRequestToken(r.Header, localBearerToken) {
 			http.Error(w, "local model proxy authorization required", http.StatusUnauthorized)
 			return
 		}
@@ -115,6 +115,7 @@ func NewHandler(opts Options) (http.Handler, error) {
 		r2 := r.Clone(r.Context())
 		r2.Header = r.Header.Clone()
 		stripHopByHopHeaders(r2.Header)
+		r2.Header.Del("X-Api-Key")
 		r2.Header.Set("Authorization", "Bearer "+token)
 		if err := normalizeResponsesInstructions(r2, http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)); err != nil {
 			if errors.Is(err, errRequestBodyTooLarge) {
@@ -268,6 +269,14 @@ func validLocalBearer(auth, token string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(token)) == 1
+}
+
+func validLocalRequestToken(h http.Header, token string) bool {
+	if validLocalBearer(h.Get("Authorization"), token) {
+		return true
+	}
+	apiKey := strings.TrimSpace(h.Get("X-Api-Key"))
+	return apiKey != "" && subtle.ConstantTimeCompare([]byte(apiKey), []byte(token)) == 1
 }
 
 func ListenAndServe(ctx context.Context, opts ServerOptions) error {

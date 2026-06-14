@@ -16,6 +16,7 @@ import (
 const (
 	defaultProvider          = "modelserver"
 	compatibleProvider       = "modelserver-compatible"
+	anthropicProvider        = "modelserver-anthropic"
 	defaultModel             = "gpt-5.5"
 	defaultBaseURL           = "http://127.0.0.1:53452/v1"
 	defaultAPIKey            = "agentserver-local-proxy"
@@ -23,7 +24,9 @@ const (
 	configSchema             = "https://opencode.ai/config.json"
 	openAINPM                = "@ai-sdk/openai"
 	openAICompatibleNPM      = "@ai-sdk/openai-compatible"
+	anthropicNPM             = "@ai-sdk/anthropic"
 	compatibleProviderName   = "modelserver-compatible"
+	anthropicProviderName    = "modelserver-anthropic"
 	defaultProviderModelName = "modelserver"
 )
 
@@ -32,8 +35,11 @@ var responsesModels = []string{
 }
 
 var compatibleModels = []string{
-	"glm-5.1",
 	"deepseek-v4-pro",
+}
+
+var anthropicModels = []string{
+	"glm-5.1",
 }
 
 type Settings struct {
@@ -111,6 +117,15 @@ func applySettings(root map[string]any, s Settings) {
 		},
 		"models": modelEntries(compatibleModels, settings.Model),
 	}
+	providers[anthropicProvider] = map[string]any{
+		"npm":  anthropicNPM,
+		"name": anthropicProviderName,
+		"options": map[string]any{
+			"baseURL": settings.BaseURL,
+			"apiKey":  settings.apiKeyValue(),
+		},
+		"models": modelEntries(anthropicModels, settings.Model),
+	}
 	root["provider"] = providers
 }
 
@@ -129,6 +144,9 @@ func modelEntries(modelsList []string, selectedModel string) map[string]any {
 }
 
 func providerForModel(model string) string {
+	if containsModel(anthropicModels, model) {
+		return anthropicProvider
+	}
 	if containsModel(compatibleModels, model) {
 		return compatibleProvider
 	}
@@ -136,6 +154,9 @@ func providerForModel(model string) string {
 }
 
 func providerForModels(modelsList []string) string {
+	if len(modelsList) > 0 && containsModel(anthropicModels, modelsList[0]) {
+		return anthropicProvider
+	}
 	if len(modelsList) > 0 && containsModel(compatibleModels, modelsList[0]) {
 		return compatibleProvider
 	}
