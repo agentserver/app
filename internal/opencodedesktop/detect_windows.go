@@ -17,6 +17,7 @@ function Emit($installed, $path, $version) {
 }
 $paths = @()
 if ($env:LOCALAPPDATA) {
+  $paths += (Join-Path $env:LOCALAPPDATA 'Programs\@opencode-aidesktop\OpenCode.exe')
   $paths += (Join-Path $env:LOCALAPPDATA 'Programs\OpenCode\OpenCode.exe')
 }
 $paths += (Join-Path $env:USERPROFILE 'AppData\Local\Programs\OpenCode\OpenCode.exe')
@@ -36,13 +37,23 @@ foreach ($root in $uninstallRoots) {
   if (-not (Test-Path $root)) { continue }
   foreach ($key in Get-ChildItem $root -ErrorAction SilentlyContinue) {
     $props = Get-ItemProperty $key.PSPath -ErrorAction SilentlyContinue
-    if ($props.DisplayName -eq 'OpenCode') {
+    if ($props.DisplayName -like 'OpenCode*') {
       $installLocation = [string]$props.InstallLocation
       $exe = if ($installLocation) { Join-Path $installLocation 'OpenCode.exe' } else { '' }
       if ($exe -and (Test-Path -LiteralPath $exe)) {
         Emit $true $exe ([string]$props.DisplayVersion)
         exit 0
       }
+      $uninstall = [string]$props.UninstallString
+      if ($uninstall -match '"([^"]*Uninstall OpenCode\.exe)"') {
+        $exe = Join-Path (Split-Path -Parent $matches[1]) 'OpenCode.exe'
+        if (Test-Path -LiteralPath $exe) {
+          Emit $true $exe ([string]$props.DisplayVersion)
+          exit 0
+        }
+      }
+      Emit $true '' ([string]$props.DisplayVersion)
+      exit 0
     }
   }
 }

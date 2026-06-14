@@ -24,6 +24,7 @@ function Write-Step([string]$Message) {
 function Get-OpenCodeDesktopExePath {
     $candidates = @()
     if ($env:LOCALAPPDATA) {
+        $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\@opencode-aidesktop\OpenCode.exe')
         $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\OpenCode\OpenCode.exe')
     }
     if ($env:USERPROFILE) {
@@ -44,10 +45,17 @@ function Get-OpenCodeDesktopExePath {
         if (-not (Test-Path $root)) { continue }
         foreach ($child in Get-ChildItem $root -ErrorAction SilentlyContinue) {
             $props = Get-ItemProperty -LiteralPath $child.PSPath -ErrorAction SilentlyContinue
-            if ($props.DisplayName -ne 'OpenCode') { continue }
+            if (-not ($props.DisplayName -like 'OpenCode*')) { continue }
             $installLocation = [string]$props.InstallLocation
             if (-not [string]::IsNullOrWhiteSpace($installLocation)) {
                 $exe = Join-Path $installLocation 'OpenCode.exe'
+                if (Test-Path -LiteralPath $exe) {
+                    return $exe
+                }
+            }
+            $uninstallString = [string]$props.UninstallString
+            if ($uninstallString -match '"([^"]*Uninstall OpenCode\.exe)"') {
+                $exe = Join-Path (Split-Path -Parent $matches[1]) 'OpenCode.exe'
                 if (Test-Path -LiteralPath $exe) {
                     return $exe
                 }

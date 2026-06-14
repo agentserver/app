@@ -2,7 +2,9 @@ package opencodedesktop
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -99,5 +101,25 @@ func TestLaunchFallsBackToProtocol(t *testing.T) {
 	}
 	if gotURL != "opencode://" {
 		t.Fatalf("url = %q", gotURL)
+	}
+}
+
+func TestWindowsDetectionScriptMatchesRealOpenCodeInstallLayout(t *testing.T) {
+	body, err := os.ReadFile("detect_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		`Programs\@opencode-aidesktop\OpenCode.exe`,
+		`DisplayName -like 'OpenCode*'`,
+		`UninstallString`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("detect_windows.go missing %q", want)
+		}
+	}
+	if strings.Contains(s, `DisplayName -eq 'OpenCode'`) {
+		t.Fatal("detect_windows.go must not require exact DisplayName 'OpenCode'")
 	}
 }
