@@ -76,6 +76,20 @@ func TestWriteAndReadMinimalVSCode(t *testing.T) {
 	}
 }
 
+func TestWriteAndReadOpenCodeDesktop(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "install-mode.json")
+	if err := Write(path, state.FrontendModeOpenCodeDesktop); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	got, err := Read(path)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if got != state.FrontendModeOpenCodeDesktop {
+		t.Fatalf("mode = %q, want %q", got, state.FrontendModeOpenCodeDesktop)
+	}
+}
+
 func TestWriteCreatesParentDirsAndTrailingNewline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "mode", "install-mode.json")
 	if err := Write(path, state.FrontendModeMinimalVSCode); err != nil {

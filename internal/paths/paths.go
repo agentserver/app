@@ -26,6 +26,8 @@ type Paths struct {
 	PendingSlaveRestartsFile string
 	VSCodeUserDataDir        string
 	VSCodeExtDir             string
+	OpenCodeConfigDir        string
+	OpenCodeConfigFile       string
 
 	// Codex config
 	CodexDir                          string
@@ -45,6 +47,7 @@ func Default() (Paths, error) {
 	}
 	root := filepath.Join(home, ".agentserver-app")
 	codex := filepath.Join(home, ".codex")
+	openCodeConfigDir := filepath.Join(home, ".config", "opencode")
 	p := Paths{
 		UserHome:                          home,
 		InstallRoot:                       root,
@@ -61,6 +64,8 @@ func Default() (Paths, error) {
 		PendingSlaveRestartsFile:          filepath.Join(root, "pending-slave-restarts.json"),
 		VSCodeUserDataDir:                 filepath.Join(root, "vscode-data"),
 		VSCodeExtDir:                      filepath.Join(root, "vscode-extensions"),
+		OpenCodeConfigDir:                 openCodeConfigDir,
+		OpenCodeConfigFile:                filepath.Join(openCodeConfigDir, "opencode.jsonc"),
 		CodexDir:                          codex,
 		CodexConfigFile:                   filepath.Join(codex, "config.toml"),
 		CodexDesktopGlobalStateFile:       filepath.Join(codex, ".codex-global-state.json"),
