@@ -60,8 +60,47 @@ function Get-OpenCodeDesktopExePath {
                     return $exe
                 }
             }
-            return 'registry'
         }
+    }
+
+    $schemePaths = @(
+        'Registry::HKEY_CURRENT_USER\Software\Classes\opencode\shell\open\command',
+        'Registry::HKEY_LOCAL_MACHINE\Software\Classes\opencode\shell\open\command'
+    )
+    foreach ($p in $schemePaths) {
+        $protocolExe = Get-OpenCodeProtocolExePath $p
+        if ($protocolExe -and (Test-Path -LiteralPath $protocolExe)) {
+            return $protocolExe
+        }
+    }
+    return $null
+}
+
+function Get-OpenCodeCommandExecutable([string]$Command) {
+    if ([string]::IsNullOrWhiteSpace($Command)) {
+        return $null
+    }
+    $trimmed = $Command.Trim()
+    if ($trimmed -match '^\s*"([^"]*OpenCode\.exe)"') {
+        return $matches[1]
+    }
+    if ($trimmed -match '^\s*([^"]*OpenCode\.exe)\b') {
+        return $matches[1].Trim()
+    }
+    return $null
+}
+
+function Get-OpenCodeProtocolExePath([string]$Path) {
+    if (-not (Test-Path $Path)) {
+        return $null
+    }
+    $props = Get-ItemProperty -LiteralPath $Path -ErrorAction SilentlyContinue
+    if ($null -eq $props) {
+        return $null
+    }
+    $protocolExe = Get-OpenCodeCommandExecutable ([string]$props.'(default)')
+    if ($protocolExe -and (Test-Path -LiteralPath $protocolExe)) {
+        return (Get-Item -LiteralPath $protocolExe).FullName
     }
     return $null
 }
@@ -69,13 +108,6 @@ function Get-OpenCodeDesktopExePath {
 function Test-OpenCodeDesktopInstalled {
     if (Get-OpenCodeDesktopExePath) {
         return $true
-    }
-    $schemePaths = @(
-        'Registry::HKEY_CURRENT_USER\Software\Classes\opencode\shell\open\command',
-        'Registry::HKEY_LOCAL_MACHINE\Software\Classes\opencode\shell\open\command'
-    )
-    foreach ($p in $schemePaths) {
-        if (Test-Path $p) { return $true }
     }
     return $false
 }
@@ -136,7 +168,15 @@ function Invoke-OpenCodeDesktopInstallerDownload {
             [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
         } catch {
         }
-        Invoke-WebRequest -Uri $InstallerURL -OutFile $partialPath -UseBasicParsing
+        $curl = Get-Command 'curl.exe' -ErrorAction SilentlyContinue
+        if ($curl) {
+            & $curl.Source -fL --retry 2 --connect-timeout 15 -o $partialPath $InstallerURL
+            if ($LASTEXITCODE -ne 0) {
+                throw "curl.exe failed with exit code $LASTEXITCODE"
+            }
+        } else {
+            Invoke-WebRequest -Uri $InstallerURL -OutFile $partialPath -UseBasicParsing
+        }
         Move-Item -LiteralPath $partialPath -Destination $installerPath -Force
         Test-OpenCodeDesktopInstallerFile $installerPath
         return $installerPath
@@ -148,10 +188,10 @@ function Invoke-OpenCodeDesktopInstallerDownload {
 
 function Invoke-OpenCodeDesktopDownloadedInstaller {
     $installerPath = Invoke-OpenCodeDesktopInstallerDownload
-    Write-Step "Running downloaded OpenCode Desktop installer..."
+    Write-Step "Running downloaded OpenCode Desktop installer silently..."
     Write-Step $installerPath
     try {
-        $proc = Start-Process -FilePath $installerPath -Wait -PassThru
+        $proc = Start-Process -FilePath $installerPath -ArgumentList '/S' -Wait -PassThru
     } catch {
         throw "OpenCode Desktop installer failed to start: $($_.Exception.Message)"
     }

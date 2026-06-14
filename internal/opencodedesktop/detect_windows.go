@@ -15,6 +15,27 @@ $ErrorActionPreference = 'Stop'
 function Emit($installed, $path, $version) {
   [pscustomobject]@{installed=$installed; path=$path; version=$version} | ConvertTo-Json -Compress
 }
+function Get-OpenCodeCommandExecutable([string]$command) {
+  if ([string]::IsNullOrWhiteSpace($command)) { return $null }
+  $trimmed = $command.Trim()
+  if ($trimmed -match '^\s*"([^"]*OpenCode\.exe)"') {
+    return $matches[1]
+  }
+  if ($trimmed -match '^\s*([^"]*OpenCode\.exe)\b') {
+    return $matches[1].Trim()
+  }
+  return $null
+}
+function Get-OpenCodeProtocolExePath([string]$scheme) {
+  if (-not (Test-Path $scheme)) { return $null }
+  $props = Get-ItemProperty -LiteralPath $scheme -ErrorAction SilentlyContinue
+  if (-not $props) { return $null }
+  $protocolExe = Get-OpenCodeCommandExecutable ([string]$props.'(default)')
+  if ($protocolExe -and (Test-Path -LiteralPath $protocolExe)) {
+    return (Get-Item -LiteralPath $protocolExe).FullName
+  }
+  return $null
+}
 $paths = @()
 if ($env:LOCALAPPDATA) {
   $paths += (Join-Path $env:LOCALAPPDATA 'Programs\@opencode-aidesktop\OpenCode.exe')
@@ -52,8 +73,6 @@ foreach ($root in $uninstallRoots) {
           exit 0
         }
       }
-      Emit $true '' ([string]$props.DisplayVersion)
-      exit 0
     }
   }
 }
@@ -62,8 +81,9 @@ $schemePaths = @(
   'Registry::HKEY_LOCAL_MACHINE\Software\Classes\opencode\shell\open\command'
 )
 foreach ($scheme in $schemePaths) {
-  if (Test-Path $scheme) {
-    Emit $true '' ''
+  $protocolExe = Get-OpenCodeProtocolExePath $scheme
+  if ($protocolExe) {
+    Emit $true $protocolExe ''
     exit 0
   }
 }

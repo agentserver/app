@@ -123,3 +123,23 @@ func TestWindowsDetectionScriptMatchesRealOpenCodeInstallLayout(t *testing.T) {
 		t.Fatal("detect_windows.go must not require exact DisplayName 'OpenCode'")
 	}
 }
+
+func TestWindowsDetectionScriptDoesNotTrustStaleProtocolRegistration(t *testing.T) {
+	body, err := os.ReadFile("detect_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	if strings.Contains(s, "if (Test-Path $scheme) {\n    Emit $true '' ''") {
+		t.Fatal("detect_windows.go must not treat a bare opencode protocol key as an installed desktop app")
+	}
+	for _, want := range []string{
+		"function Get-OpenCodeProtocolExePath",
+		"Get-ItemProperty -LiteralPath $scheme",
+		"Test-Path -LiteralPath $protocolExe",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("detect_windows.go missing %q", want)
+		}
+	}
+}

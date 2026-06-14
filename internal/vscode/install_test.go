@@ -488,6 +488,84 @@ func TestWindowsEnsureOpenCodeDesktopScriptDownloadsLatestInstaller(t *testing.T
 	}
 }
 
+func TestWindowsEnsureOpenCodeDesktopScriptDoesNotTrustStaleProtocolRegistration(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-opencode-desktop.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	if strings.Contains(s, "if (Test-Path $p) { return $true }") {
+		t.Fatal("ensure-opencode-desktop.ps1 must not treat a bare opencode protocol key as an installed desktop app")
+	}
+	for _, want := range []string{
+		"function Get-OpenCodeProtocolExePath",
+		"Get-ItemProperty -LiteralPath $Path",
+		"Test-Path -LiteralPath $protocolExe",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-opencode-desktop.ps1 missing %q", want)
+		}
+	}
+}
+
+func TestWindowsEnsureOpenCodeDesktopScriptRejectsUnsignedOpenCodeInstaller(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-opencode-desktop.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		`throw "OpenCode Desktop installer Authenticode signature is`,
+		`throw "OpenCode Desktop installer has no signer certificate"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-opencode-desktop.ps1 missing %q", want)
+		}
+	}
+	for _, notWant := range []string{
+		"Write-Warning \"OpenCode Desktop installer Authenticode signature is",
+		"Write-Warning \"OpenCode Desktop installer has no signer certificate\"",
+	} {
+		if strings.Contains(s, notWant) {
+			t.Fatalf("ensure-opencode-desktop.ps1 must fail, not warn, for unsigned OpenCode installers; found %q", notWant)
+		}
+	}
+}
+
+func TestWindowsEnsureOpenCodeDesktopScriptRunsDownloadedInstallerSilently(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-opencode-desktop.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"Start-Process -FilePath $installerPath -ArgumentList '/S' -Wait -PassThru",
+		"Running downloaded OpenCode Desktop installer silently",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-opencode-desktop.ps1 missing %q", want)
+		}
+	}
+}
+
+func TestWindowsEnsureOpenCodeDesktopScriptUsesCurlForInstallerDownload(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-opencode-desktop.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"Get-Command 'curl.exe'",
+		"& $curl.Source -fL",
+		"-o $partialPath",
+		"Invoke-WebRequest -Uri $InstallerURL -OutFile $partialPath -UseBasicParsing",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-opencode-desktop.ps1 missing %q", want)
+		}
+	}
+}
+
 func TestWindowsPackageScriptsUseSharedPayloadManifest(t *testing.T) {
 	common, err := os.ReadFile("../../scripts/windows-package-common.sh")
 	if err != nil {
