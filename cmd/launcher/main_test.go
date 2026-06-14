@@ -1000,9 +1000,17 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 
 func TestLaunchCompletedFrontendOpenCodeDesktopWritesConfigAndLaunches(t *testing.T) {
 	dir := t.TempDir()
+	proxyToken := "launcher-local-proxy-token"
 	p := paths.Paths{
+		InstallRoot:        filepath.Join(dir, ".agentserver-app"),
 		CodexConfigFile:    filepath.Join(dir, ".codex", "config.toml"),
 		OpenCodeConfigFile: filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+	}
+	if err := os.MkdirAll(p.InstallRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p.InstallRoot, "proxy-token"), []byte(proxyToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	s := &state.State{FrontendMode: state.FrontendModeOpenCodeDesktop}
 	s.OpenCodeDesktop.Installed = true
@@ -1023,6 +1031,13 @@ func TestLaunchCompletedFrontendOpenCodeDesktopWritesConfigAndLaunches(t *testin
 	}
 	if _, err := os.Stat(p.OpenCodeConfigFile); err != nil {
 		t.Fatalf("opencode config not written: %v", err)
+	}
+	b, err := os.ReadFile(p.OpenCodeConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"apiKey": "`+proxyToken+`"`) {
+		t.Fatalf("opencode config should use local proxy token:\n%s", b)
 	}
 }
 

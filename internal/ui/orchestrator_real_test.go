@@ -1359,6 +1359,14 @@ func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
 func TestConfigureOpenCodeDesktopWritesOpenCodeConfig(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv(codex.LocalProxyAPIKeyEnv, "")
+	proxyToken := "desktop-local-proxy-token"
+	proxyTokenPath := filepath.Join(dir, ".agentserver-app", "proxy-token")
+	if err := os.MkdirAll(filepath.Dir(proxyTokenPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(proxyTokenPath, []byte(proxyToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	store := state.NewStore(filepath.Join(dir, "state.json"))
 	if err := store.Update(func(s *state.State) error {
 		s.FrontendMode = state.FrontendModeOpenCodeDesktop
@@ -1367,9 +1375,10 @@ func TestConfigureOpenCodeDesktopWritesOpenCodeConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := &realOrchestrator{d: Deps{
-		State:              store,
-		CodexConfigPath:    filepath.Join(dir, ".codex", "config.toml"),
-		OpenCodeConfigPath: filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+		State:               store,
+		CodexConfigPath:     filepath.Join(dir, ".codex", "config.toml"),
+		LocalProxyTokenPath: proxyTokenPath,
+		OpenCodeConfigPath:  filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
 	}}
 	if err := r.ConfigureFrontend(context.Background()); err != nil {
 		t.Fatalf("ConfigureFrontend: %v", err)
@@ -1381,14 +1390,14 @@ func TestConfigureOpenCodeDesktopWritesOpenCodeConfig(t *testing.T) {
 	for _, want := range []string{
 		`"model": "modelserver/gpt-5.5"`,
 		`"baseURL": "` + modelproxy.DefaultBaseURL + `"`,
-		`"apiKey": "{env:` + codex.LocalProxyAPIKeyEnv + `}"`,
+		`"apiKey": "` + proxyToken + `"`,
 	} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("opencode config missing %q:\n%s", want, b)
 		}
 	}
-	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != codex.LegacyLocalProxyAPIKeyValue {
-		t.Fatalf("%s=%q, want stable local key", codex.LocalProxyAPIKeyEnv, got)
+	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != proxyToken {
+		t.Fatalf("%s=%q, want proxy token", codex.LocalProxyAPIKeyEnv, got)
 	}
 	s, _ := store.Load()
 	if !s.Onboarding.HasCompleted("opencode_desktop_configured") {

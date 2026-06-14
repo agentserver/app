@@ -18,6 +18,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/codexruntime"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/loom"
+	"github.com/agentserver/agentserver-pkg/internal/modelaccess"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
@@ -38,6 +39,7 @@ type Deps struct {
 	MSOAuth                           oauth.AuthCodeConfig // PKCE (modelserver path)
 	ASOAuth                           oauth.Config         // device code (agentserver path)
 	CodexConfigPath                   string
+	LocalProxyTokenPath               string
 	CodexDesktopGlobalStatePath       string
 	CodexDesktopComputerUseConfigPath string
 	VSCodeUserDataDir                 string
@@ -53,9 +55,9 @@ type Deps struct {
 	// Minimal VS Code mode uses CodexAbsPath when this is empty.
 	CodexDesktopCodexPath string
 
-	CodexDesktopEnsure    func(context.Context) (codexdesktop.Detected, error)
-	CodexDesktopOpen      func(string) error
-	OpenCodeConfigPath    string
+	CodexDesktopEnsure func(context.Context) (codexdesktop.Detected, error)
+	CodexDesktopOpen   func(string) error
+	OpenCodeConfigPath string
 
 	OpenCodeDesktopInstallerPath string
 	OpenCodeDesktopEnsure        func(context.Context) (opencodedesktop.Detected, error)
@@ -446,11 +448,15 @@ func (r *realOrchestrator) EnsureVSCode(ctx context.Context, ch chan<- ProgressE
 
 func (r *realOrchestrator) configureSharedCodex(ctx context.Context) error {
 	_ = ctx
-	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, codex.LegacyLocalProxyAPIKeyValue)); err != nil {
+	localProxyToken, err := r.localProxyBearerToken()
+	if err != nil {
 		return err
 	}
-	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
-	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, localProxyToken)); err != nil {
+		return err
+	}
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
 	if r.d.TokenRefresherExePath != "" {
 		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 	}
@@ -458,6 +464,13 @@ func (r *realOrchestrator) configureSharedCodex(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (r *realOrchestrator) localProxyBearerToken() (string, error) {
+	if r.d.LocalProxyTokenPath == "" {
+		return codex.LegacyLocalProxyAPIKeyValue, nil
+	}
+	return modelaccess.EnsureLocalProxyToken(r.d.LocalProxyTokenPath)
 }
 
 func (r *realOrchestrator) configureLoomDriver() error {
@@ -579,10 +592,14 @@ func (r *realOrchestrator) ConfigureOpenCodeDesktop(ctx context.Context) error {
 	if configPath == "" {
 		return fmt.Errorf("ConfigureOpenCodeDesktop: OpenCodeConfigPath required")
 	}
+	localProxyToken, err := r.localProxyBearerToken()
+	if err != nil {
+		return err
+	}
 	if err := opencode.UpdateConfig(configPath, opencode.Settings{
-		BaseURL:   modelproxy.DefaultBaseURL,
-		APIKeyEnv: codex.LocalProxyAPIKeyEnv,
-		Model:     "gpt-5.5",
+		BaseURL: modelproxy.DefaultBaseURL,
+		APIKey:  localProxyToken,
+		Model:   "gpt-5.5",
 	}); err != nil {
 		return err
 	}
@@ -774,17 +791,21 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 	}
 	mode := state.NormalizeFrontendMode(s.FrontendMode)
 	if mode == state.FrontendModeOpenCodeDesktop {
+		localProxyToken, err := r.localProxyBearerToken()
+		if err != nil {
+			return err
+		}
 		if r.d.OpenCodeConfigPath != "" {
 			if err := opencode.UpdateConfig(r.d.OpenCodeConfigPath, opencode.Settings{
-				BaseURL:   modelproxy.DefaultBaseURL,
-				APIKeyEnv: codex.LocalProxyAPIKeyEnv,
-				Model:     "gpt-5.5",
+				BaseURL: modelproxy.DefaultBaseURL,
+				APIKey:  localProxyToken,
+				Model:   "gpt-5.5",
 			}); err != nil {
 				return err
 			}
 		}
-		_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
-		_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+		_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+		_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
 		if r.d.TokenRefresherExePath != "" {
 			_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 		}
@@ -825,8 +846,12 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 	if s.VSCode.Path == "" {
 		return fmt.Errorf("VS Code path unknown; was vscode_install completed?")
 	}
+	localProxyToken, err := r.localProxyBearerToken()
+	if err != nil {
+		return err
+	}
 	cmd := exec.Command(s.VSCode.Path, vscode.LaunchArgs(r.d.VSCodeUserDataDir, r.d.VSCodeExtDir)...)
-	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, localProxyToken)
 	if r.d.TokenRefresherExePath != "" {
 		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/launchprep"
+	"github.com/agentserver/agentserver-pkg/internal/modelaccess"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/opencode"
 	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
@@ -135,23 +136,31 @@ func openFolder(ctx context.Context, codeExe string, p paths.Paths, folder strin
 	}); err != nil {
 		return err
 	}
+	localProxyToken, err := localProxyBearerToken(p)
+	if err != nil {
+		return err
+	}
 	if tokenRefresherExe != "" {
 		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
 	}
 
 	cmd := exec.Command(codeExe, vscode.LaunchArgs(p.VSCodeUserDataDir, p.VSCodeExtDir, folder)...)
-	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, localProxyToken)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Start()
 }
 
 func openFolderCodexDesktop(ctx context.Context, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string, opener codexdesktop.Opener) error {
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, codex.LegacyLocalProxyAPIKeyValue)); err != nil {
+	localProxyToken, err := localProxyBearerToken(p)
+	if err != nil {
 		return err
 	}
-	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
-	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, localProxyToken)); err != nil {
+		return err
+	}
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
 	if err := codexdesktop.ConfigureLocale(
 		p.CodexDesktopGlobalStateFile,
 		p.CodexDesktopComputerUseConfigFile,
@@ -166,20 +175,24 @@ func openFolderCodexDesktop(ctx context.Context, p paths.Paths, folder string, s
 }
 
 func openFolderOpenCodeDesktop(ctx context.Context, p paths.Paths, folder string, det opencodedesktop.Detected, tokenRefresherExe string, launcher func(context.Context, opencodedesktop.LaunchOptions) error) error {
-	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, codex.LegacyLocalProxyAPIKeyValue)); err != nil {
+	localProxyToken, err := localProxyBearerToken(p)
+	if err != nil {
+		return err
+	}
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, localProxyToken)); err != nil {
 		return err
 	}
 	if p.OpenCodeConfigFile != "" {
 		if err := opencode.UpdateConfig(p.OpenCodeConfigFile, opencode.Settings{
-			BaseURL:   modelproxy.DefaultBaseURL,
-			APIKeyEnv: codex.LocalProxyAPIKeyEnv,
-			Model:     "gpt-5.5",
+			BaseURL: modelproxy.DefaultBaseURL,
+			APIKey:  localProxyToken,
+			Model:   "gpt-5.5",
 		}); err != nil {
 			return err
 		}
 	}
-	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
-	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
 	if tokenRefresherExe != "" {
 		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
 	}
@@ -192,4 +205,11 @@ func openFolderOpenCodeDesktop(ctx context.Context, p paths.Paths, folder string
 		Detected: det,
 		Folder:   folder,
 	})
+}
+
+func localProxyBearerToken(p paths.Paths) (string, error) {
+	if p.InstallRoot == "" {
+		return codex.LegacyLocalProxyAPIKeyValue, nil
+	}
+	return modelaccess.EnsureLocalProxyToken(modelaccess.DefaultLocalProxyTokenPath(p.InstallRoot))
 }

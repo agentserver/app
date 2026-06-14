@@ -11,9 +11,9 @@ import (
 func TestUpdateConfigCreatesModelserverProxyProvider(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode", "opencode.jsonc")
 	err := UpdateConfig(path, Settings{
-		BaseURL:   "http://127.0.0.1:53452/v1",
-		APIKeyEnv: "AGENTSERVER_CODEX_LOCAL_API_KEY",
-		Model:     "gpt-5.5",
+		BaseURL: "http://127.0.0.1:53452/v1",
+		APIKey:  "local-proxy-token",
+		Model:   "gpt-5.5",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -31,7 +31,7 @@ func TestUpdateConfigCreatesModelserverProxyProvider(t *testing.T) {
 	if options["baseURL"] != "http://127.0.0.1:53452/v1" {
 		t.Fatalf("baseURL = %v", options["baseURL"])
 	}
-	if options["apiKey"] != "{env:AGENTSERVER_CODEX_LOCAL_API_KEY}" {
+	if options["apiKey"] != "local-proxy-token" {
 		t.Fatalf("apiKey = %v", options["apiKey"])
 	}
 }

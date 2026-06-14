@@ -17,21 +17,23 @@ const (
 	defaultProvider  = "modelserver"
 	defaultModel     = "gpt-5.5"
 	defaultBaseURL   = "http://127.0.0.1:53452/v1"
+	defaultAPIKey    = "agentserver-local-proxy"
 	defaultAPIKeyEnv = "AGENTSERVER_CODEX_LOCAL_API_KEY"
 	configSchema     = "https://opencode.ai/config.json"
 )
 
 type Settings struct {
 	BaseURL   string
+	APIKey    string
 	APIKeyEnv string
 	Model     string
 }
 
 func DefaultProxySettings() Settings {
 	return Settings{
-		BaseURL:   defaultBaseURL,
-		APIKeyEnv: defaultAPIKeyEnv,
-		Model:     defaultModel,
+		BaseURL: defaultBaseURL,
+		APIKey:  defaultAPIKey,
+		Model:   defaultModel,
 	}
 }
 
@@ -82,7 +84,7 @@ func applySettings(root map[string]any, s Settings) {
 		"name": defaultProvider,
 		"options": map[string]any{
 			"baseURL": settings.BaseURL,
-			"apiKey":  "{env:" + settings.APIKeyEnv + "}",
+			"apiKey":  settings.apiKeyValue(),
 		},
 		"models": map[string]any{
 			settings.Model: map[string]any{
@@ -104,9 +106,17 @@ func normalizeSettings(s Settings) Settings {
 		s.Model = defaultModel
 	}
 	s.BaseURL = strings.TrimRight(strings.TrimSpace(s.BaseURL), "/")
+	s.APIKey = strings.TrimSpace(s.APIKey)
 	s.APIKeyEnv = strings.TrimSpace(s.APIKeyEnv)
 	s.Model = strings.TrimSpace(s.Model)
 	return s
+}
+
+func (s Settings) apiKeyValue() string {
+	if s.APIKey != "" {
+		return s.APIKey
+	}
+	return "{env:" + s.APIKeyEnv + "}"
 }
 
 func stringSetting(root map[string]any, key string) string {

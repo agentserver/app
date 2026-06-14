@@ -124,9 +124,17 @@ func TestOpenFolderCodexDesktopWritesUILocaleBeforeLaunch(t *testing.T) {
 
 func TestOpenFolderOpenCodeDesktopWritesConfigAndUsesFolderWorkingDirectory(t *testing.T) {
 	dir := t.TempDir()
+	proxyToken := "open-folder-local-proxy-token"
 	p := paths.Paths{
+		InstallRoot:        filepath.Join(dir, ".agentserver-app"),
 		CodexConfigFile:    filepath.Join(dir, ".codex", "config.toml"),
 		OpenCodeConfigFile: filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+	}
+	if err := os.MkdirAll(p.InstallRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p.InstallRoot, "proxy-token"), []byte(proxyToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	var gotFolder string
 	err := openFolderOpenCodeDesktop(context.Background(), p, `C:\Project Folder`, opencodedesktop.Detected{
@@ -154,11 +162,18 @@ func TestOpenFolderOpenCodeDesktopWritesConfigAndUsesFolderWorkingDirectory(t *t
 	}
 	for _, want := range []string{
 		`base_url = "` + modelproxy.DefaultBaseURL + `"`,
-		`experimental_bearer_token = "` + codex.LegacyLocalProxyAPIKeyValue + `"`,
+		`experimental_bearer_token = "` + proxyToken + `"`,
 	} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("missing %q in:\n%s", want, b)
 		}
+	}
+	ob, readOpenCodeErr := os.ReadFile(p.OpenCodeConfigFile)
+	if readOpenCodeErr != nil {
+		t.Fatal(readOpenCodeErr)
+	}
+	if !strings.Contains(string(ob), `"apiKey": "`+proxyToken+`"`) {
+		t.Fatalf("opencode config should use local proxy token:\n%s", ob)
 	}
 }
 
