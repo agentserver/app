@@ -87,13 +87,15 @@ func TestLaunchUsesDetectedExecutableAndFolderWorkingDirectory(t *testing.T) {
 	}
 }
 
-func TestLaunchUsesProtocolWhenNoFolderEvenWithDetectedExecutable(t *testing.T) {
+func TestLaunchUsesDetectedExecutableEvenWithoutFolder(t *testing.T) {
 	runnerCalled := false
+	var gotName string
 	var gotURL string
 	err := Launch(context.Background(), LaunchOptions{
 		Detected: Detected{Installed: true, Path: `C:\OpenCode\OpenCode.exe`},
 		Run: func(cmd *exec.Cmd) error {
 			runnerCalled = true
+			gotName = cmd.Path
 			return nil
 		},
 		OpenURL: func(url string) error {
@@ -104,11 +106,14 @@ func TestLaunchUsesProtocolWhenNoFolderEvenWithDetectedExecutable(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runnerCalled {
-		t.Fatal("empty-folder launch should use protocol activation instead of starting the executable directly")
+	if !runnerCalled {
+		t.Fatal("launch should use detected executable when available")
 	}
-	if gotURL != "opencode://" {
-		t.Fatalf("url = %q", gotURL)
+	if gotName != `C:\OpenCode\OpenCode.exe` {
+		t.Fatalf("launch path=%q", gotName)
+	}
+	if gotURL != "" {
+		t.Fatalf("protocol fallback should not run when executable exists; url=%q", gotURL)
 	}
 }
 
@@ -136,7 +141,7 @@ func TestWindowsDetectionScriptMatchesRealOpenCodeInstallLayout(t *testing.T) {
 	}
 	s := string(body)
 	for _, want := range []string{
-		`Programs\@opencode-aidesktop\OpenCode.exe`,
+		`Programs\OpenCode\OpenCode.exe`,
 		`DisplayName -like 'OpenCode*'`,
 		`UninstallString`,
 	} {
@@ -146,6 +151,9 @@ func TestWindowsDetectionScriptMatchesRealOpenCodeInstallLayout(t *testing.T) {
 	}
 	if strings.Contains(s, `DisplayName -eq 'OpenCode'`) {
 		t.Fatal("detect_windows.go must not require exact DisplayName 'OpenCode'")
+	}
+	if strings.Contains(s, `Programs\@opencode-aidesktop\OpenCode.exe`) {
+		t.Fatal("detect_windows.go must not contain the stale @opencode-aidesktop candidate")
 	}
 }
 
@@ -165,6 +173,56 @@ func TestWindowsDetectionScriptDoesNotTrustStaleProtocolRegistration(t *testing.
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("detect_windows.go missing %q", want)
+		}
+	}
+}
+
+func TestWindowsDetectionSeparatesStderrFromJSONOutput(t *testing.T) {
+	body, err := os.ReadFile("detect_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"var stderr bytes.Buffer",
+		"cmd.Stderr = &stderr",
+		"cmd.Output()",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("detect_windows.go missing %q", want)
+		}
+	}
+	if strings.Contains(s, "CombinedOutput()") {
+		t.Fatal("detect_windows.go must not mix PowerShell stderr into JSON stdout")
+	}
+}
+
+func TestRunLocalInstallerValidatesAuthenticodeSignature(t *testing.T) {
+	installBody, err := os.ReadFile("install.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	installSource := string(installBody)
+	validateIdx := strings.Index(installSource, "localInstallerSignatureValidator(ctx, path)")
+	runIdx := strings.Index(installSource, "exec.CommandContext(ctx, path)")
+	if validateIdx < 0 {
+		t.Fatal("runLocalInstaller must validate Authenticode signature before executing the installer")
+	}
+	if runIdx < 0 || validateIdx > runIdx {
+		t.Fatalf("signature validation must happen before exec.CommandContext:\n%s", installSource)
+	}
+	windowsBody, err := os.ReadFile("install_authenticode_windows.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowsSource := string(windowsBody)
+	for _, want := range []string{
+		"Get-AuthenticodeSignature",
+		"OpenCode Desktop installer Authenticode signature is",
+		"signer subject",
+	} {
+		if !strings.Contains(windowsSource, want) {
+			t.Fatalf("install_authenticode_windows.go missing %q", want)
 		}
 	}
 }

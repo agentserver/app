@@ -185,7 +185,6 @@ func openFolderOpenCodeDesktop(ctx context.Context, p paths.Paths, folder string
 	if p.OpenCodeConfigFile != "" {
 		if err := opencode.UpdateConfig(p.OpenCodeConfigFile, opencode.Settings{
 			BaseURL: modelproxy.DefaultBaseURL,
-			APIKey:  localProxyToken,
 			Model:   "gpt-5.5",
 		}); err != nil {
 			return err

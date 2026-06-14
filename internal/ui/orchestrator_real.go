@@ -598,11 +598,12 @@ func (r *realOrchestrator) ConfigureOpenCodeDesktop(ctx context.Context) error {
 	}
 	if err := opencode.UpdateConfig(configPath, opencode.Settings{
 		BaseURL: modelproxy.DefaultBaseURL,
-		APIKey:  localProxyToken,
 		Model:   "gpt-5.5",
 	}); err != nil {
 		return err
 	}
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
 	return r.d.State.Update(func(s *state.State) error {
 		s.Onboarding.AddCompleted("opencode_desktop_configured")
 		return nil
@@ -791,23 +792,17 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 	}
 	mode := state.NormalizeFrontendMode(s.FrontendMode)
 	if mode == state.FrontendModeOpenCodeDesktop {
-		localProxyToken, err := r.localProxyBearerToken()
-		if err != nil {
+		if r.d.OpenCodeConfigPath == "" {
+			return fmt.Errorf("LaunchAndShutdown: OpenCodeConfigPath required")
+		}
+		if err := r.configureSharedCodex(ctx); err != nil {
 			return err
 		}
-		if r.d.OpenCodeConfigPath != "" {
-			if err := opencode.UpdateConfig(r.d.OpenCodeConfigPath, opencode.Settings{
-				BaseURL: modelproxy.DefaultBaseURL,
-				APIKey:  localProxyToken,
-				Model:   "gpt-5.5",
-			}); err != nil {
-				return err
-			}
-		}
-		_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
-		_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
-		if r.d.TokenRefresherExePath != "" {
-			_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
+		if err := opencode.UpdateConfig(r.d.OpenCodeConfigPath, opencode.Settings{
+			BaseURL: modelproxy.DefaultBaseURL,
+			Model:   "gpt-5.5",
+		}); err != nil {
+			return err
 		}
 		launch := r.d.OpenCodeDesktopLaunch
 		if launch == nil {

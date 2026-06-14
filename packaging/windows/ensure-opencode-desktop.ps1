@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$InstallerURL = 'https://opencode.ai/download/stable/windows-x64-nsis',
     [int]$InstallTimeoutSeconds = 1200,
     [Int64]$MinInstallerSize = 65536
@@ -21,17 +21,35 @@ function Write-Step([string]$Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
+function Test-OpenCodeDesktopExecutable([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return $false
+    }
+    try {
+        $proc = Start-Process -FilePath $Path -ArgumentList '--version' -WindowStyle Hidden -PassThru -ErrorAction Stop
+        if (-not $proc.WaitForExit(10000)) {
+            try {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            } catch {
+            }
+            return $false
+        }
+        return ($proc.ExitCode -eq 0)
+    } catch {
+        return $false
+    }
+}
+
 function Get-OpenCodeDesktopExePath {
     $candidates = @()
     if ($env:LOCALAPPDATA) {
-        $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\@opencode-aidesktop\OpenCode.exe')
         $candidates += (Join-Path $env:LOCALAPPDATA 'Programs\OpenCode\OpenCode.exe')
     }
     if ($env:USERPROFILE) {
         $candidates += (Join-Path $env:USERPROFILE 'AppData\Local\Programs\OpenCode\OpenCode.exe')
     }
     foreach ($p in ($candidates | Where-Object { $_ } | Select-Object -Unique)) {
-        if (Test-Path -LiteralPath $p) {
+        if (Test-OpenCodeDesktopExecutable $p) {
             return $p
         }
     }
@@ -49,14 +67,14 @@ function Get-OpenCodeDesktopExePath {
             $installLocation = [string]$props.InstallLocation
             if (-not [string]::IsNullOrWhiteSpace($installLocation)) {
                 $exe = Join-Path $installLocation 'OpenCode.exe'
-                if (Test-Path -LiteralPath $exe) {
+                if (Test-OpenCodeDesktopExecutable $exe) {
                     return $exe
                 }
             }
             $uninstallString = [string]$props.UninstallString
             if ($uninstallString -match '"([^"]*Uninstall OpenCode\.exe)"') {
                 $exe = Join-Path (Split-Path -Parent $matches[1]) 'OpenCode.exe'
-                if (Test-Path -LiteralPath $exe) {
+                if (Test-OpenCodeDesktopExecutable $exe) {
                     return $exe
                 }
             }
@@ -69,7 +87,7 @@ function Get-OpenCodeDesktopExePath {
     )
     foreach ($p in $schemePaths) {
         $protocolExe = Get-OpenCodeProtocolExePath $p
-        if ($protocolExe -and (Test-Path -LiteralPath $protocolExe)) {
+        if ($protocolExe) {
             return $protocolExe
         }
     }
@@ -99,7 +117,7 @@ function Get-OpenCodeProtocolExePath([string]$Path) {
         return $null
     }
     $protocolExe = Get-OpenCodeCommandExecutable ([string]$props.'(default)')
-    if ($protocolExe -and (Test-Path -LiteralPath $protocolExe)) {
+    if ($protocolExe -and (Test-OpenCodeDesktopExecutable $protocolExe)) {
         return (Get-Item -LiteralPath $protocolExe).FullName
     }
     return $null
@@ -108,17 +126,6 @@ function Get-OpenCodeProtocolExePath([string]$Path) {
 function Test-OpenCodeDesktopInstalled {
     if (Get-OpenCodeDesktopExePath) {
         return $true
-    }
-    return $false
-}
-
-function Wait-OpenCodeDesktopInstalled([int]$TimeoutSeconds) {
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        if (Test-OpenCodeDesktopInstalled) {
-            return $true
-        }
-        Start-Sleep -Seconds 3
     }
     return $false
 }
@@ -145,7 +152,8 @@ function Test-OpenCodeDesktopInstallerFile([string]$Path) {
 
     $sig = Get-AuthenticodeSignature -FilePath $Path
     if ($sig.Status -ne 'Valid') {
-        throw "OpenCode Desktop installer Authenticode signature is $($sig.Status)"
+        $subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '<none>' }
+        throw "OpenCode Desktop installer Authenticode signature is $($sig.Status); signer subject: $subject"
     }
     if ($null -eq $sig.SignerCertificate) {
         throw "OpenCode Desktop installer has no signer certificate"
@@ -170,12 +178,12 @@ function Invoke-OpenCodeDesktopInstallerDownload {
         }
         $curl = Get-Command 'curl.exe' -ErrorAction SilentlyContinue
         if ($curl) {
-            & $curl.Source -fL --retry 2 --connect-timeout 15 -o $partialPath $InstallerURL
+            & $curl.Source -fL --retry 2 --connect-timeout 15 --max-time 1200 --speed-time 30 --speed-limit 1024 -o $partialPath $InstallerURL
             if ($LASTEXITCODE -ne 0) {
                 throw "curl.exe failed with exit code $LASTEXITCODE"
             }
         } else {
-            Invoke-WebRequest -Uri $InstallerURL -OutFile $partialPath -UseBasicParsing
+            Invoke-WebRequest -Uri $InstallerURL -OutFile $partialPath -UseBasicParsing -TimeoutSec 1200
         }
         Move-Item -LiteralPath $partialPath -Destination $installerPath -Force
         Test-OpenCodeDesktopInstallerFile $installerPath
@@ -198,8 +206,8 @@ function Invoke-OpenCodeDesktopDownloadedInstaller {
     if ($null -ne $proc.ExitCode -and $proc.ExitCode -ne 0) {
         throw "OpenCode Desktop installer failed with exit code $($proc.ExitCode)."
     }
-    Write-Step "Waiting for OpenCode Desktop to become available..."
-    return (Wait-OpenCodeDesktopInstalled -TimeoutSeconds $InstallTimeoutSeconds)
+    Write-Step "Checking OpenCode Desktop installation result..."
+    return (Test-OpenCodeDesktopInstalled)
 }
 
 function Invoke-OpenCodeDesktopManualFallback([string]$Reason) {

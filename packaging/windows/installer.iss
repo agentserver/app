@@ -95,7 +95,7 @@ var
 
 function ShouldInstallCodexDesktop(): Boolean;
 begin
-  Result := WizardIsTaskSelected('codexdesktop') or ((not WizardIsTaskSelected('opencodedesktop')) and (not WizardIsTaskSelected('minimalvscode')));
+  Result := WizardIsTaskSelected('codexdesktop');
 end;
 
 function ShouldInstallOpenCodeDesktop(): Boolean;
@@ -399,6 +399,13 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+  if (CurPageID = wpSelectTasks) and
+     (not WizardIsTaskSelected('codexdesktop')) and
+     (not WizardIsTaskSelected('opencodedesktop')) and
+     (not WizardIsTaskSelected('minimalvscode')) then begin
+    MsgBox('请选择一种界面模式。', mbError, MB_OK);
+    Result := False;
+  end;
   if (CurPageID = ComputerNamePage.ID) and (Trim(ComputerNamePage.Values[0]) = '') then begin
     MsgBox('电脑名称不能为空。', mbError, MB_OK);
     Result := False;

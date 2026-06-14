@@ -817,7 +817,6 @@ func launchCompletedOpenCodeDesktop(ctx context.Context, s *state.State, p paths
 	if p.OpenCodeConfigFile != "" {
 		if err := opencode.UpdateConfig(p.OpenCodeConfigFile, opencode.Settings{
 			BaseURL: modelproxy.DefaultBaseURL,
-			APIKey:  localProxyToken,
 			Model:   "gpt-5.5",
 		}); err != nil {
 			return err

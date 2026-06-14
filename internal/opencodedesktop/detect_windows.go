@@ -3,8 +3,10 @@
 package opencodedesktop
 
 import (
+	"bytes"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"github.com/agentserver/agentserver-pkg/internal/process"
 )
@@ -36,11 +38,10 @@ function Get-OpenCodeProtocolExePath([string]$scheme) {
   }
   return $null
 }
-$paths = @()
-if ($env:LOCALAPPDATA) {
-  $paths += (Join-Path $env:LOCALAPPDATA 'Programs\@opencode-aidesktop\OpenCode.exe')
-  $paths += (Join-Path $env:LOCALAPPDATA 'Programs\OpenCode\OpenCode.exe')
-}
+	$paths = @()
+	if ($env:LOCALAPPDATA) {
+	  $paths += (Join-Path $env:LOCALAPPDATA 'Programs\OpenCode\OpenCode.exe')
+	}
 $paths += (Join-Path $env:USERPROFILE 'AppData\Local\Programs\OpenCode\OpenCode.exe')
 foreach ($candidate in $paths) {
   if ($candidate -and (Test-Path -LiteralPath $candidate)) {
@@ -92,9 +93,15 @@ exit 0
 `
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script)
 	process.HideWindow(cmd)
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return Detected{}, fmt.Errorf("detect opencode desktop with PowerShell failed: %w; output: %s", err, string(out))
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = strings.TrimSpace(string(out))
+		}
+		return Detected{}, fmt.Errorf("detect opencode desktop with PowerShell failed: %w; output: %s", err, msg)
 	}
 	return parseDetectOutput(out)
 }

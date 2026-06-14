@@ -125,6 +125,7 @@ func NewHandler(opts Options) (http.Handler, error) {
 			http.Error(w, "request body unavailable", http.StatusBadRequest)
 			return
 		}
+		r2.Header.Del("X-AgentServer-Client")
 		proxy.ServeHTTP(w, r2)
 	}), nil
 }
@@ -156,13 +157,19 @@ func normalizeResponsesInstructions(r *http.Request, body io.ReadCloser) error {
 		return nil
 	}
 	if instructions, _ := root["instructions"].(string); strings.TrimSpace(instructions) == "" {
-		instructions = extractResponsesInstructions(root["input"])
+		var filtered any
+		var changed bool
+		instructions, filtered, changed = extractResponsesInstructions(root["input"])
 		if instructions == "" {
 			instructions = defaultResponsesInstructions
+		} else if changed {
+			root["input"] = filtered
 		}
 		root["instructions"] = instructions
 	}
-	delete(root, "max_output_tokens")
+	if isOpenCodeRequest(r) {
+		delete(root, "max_output_tokens")
+	}
 	rewritten, err := json.Marshal(root)
 	if err != nil {
 		setRequestBody(r, raw)
@@ -183,28 +190,39 @@ func shouldNormalizeResponsesInstructions(r *http.Request) bool {
 	return strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "application/json")
 }
 
-func extractResponsesInstructions(input any) string {
+func isOpenCodeRequest(r *http.Request) bool {
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-AgentServer-Client")), "opencode")
+}
+
+func extractResponsesInstructions(input any) (string, any, bool) {
 	messages, ok := input.([]any)
 	if !ok {
-		return ""
+		return "", input, false
 	}
 	var parts []string
+	filtered := make([]any, 0, len(messages))
+	changed := false
 	for _, item := range messages {
 		message, ok := item.(map[string]any)
 		if !ok {
+			filtered = append(filtered, item)
 			continue
 		}
 		role, _ := message["role"].(string)
 		switch strings.ToLower(strings.TrimSpace(role)) {
 		case "developer", "system":
 		default:
+			filtered = append(filtered, item)
 			continue
 		}
 		if text := strings.TrimSpace(extractTextContent(message["content"])); text != "" {
 			parts = append(parts, text)
+			changed = true
+			continue
 		}
+		filtered = append(filtered, item)
 	}
-	return strings.Join(parts, "\n\n")
+	return strings.Join(parts, "\n\n"), filtered, changed
 }
 
 func extractTextContent(content any) string {

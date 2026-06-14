@@ -1043,8 +1043,11 @@ func TestLaunchCompletedFrontendOpenCodeDesktopWritesConfigAndLaunches(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"apiKey": "`+proxyToken+`"`) {
-		t.Fatalf("opencode config should use local proxy token:\n%s", b)
+	if strings.Contains(string(b), proxyToken) {
+		t.Fatalf("opencode config should not persist local proxy token:\n%s", b)
+	}
+	if !strings.Contains(string(b), "{env:AGENTSERVER_CODEX_LOCAL_API_KEY}") {
+		t.Fatalf("opencode config should use env substitution:\n%s", b)
 	}
 }
 

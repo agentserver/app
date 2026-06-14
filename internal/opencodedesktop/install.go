@@ -16,6 +16,8 @@ type Options struct {
 	LocalInstallerPath string
 }
 
+var localInstallerSignatureValidator = validateInstallerSignature
+
 func EnsureInstalled(ctx context.Context, opts Options) (Detected, error) {
 	detect := opts.Detect
 	if detect == nil {
@@ -56,6 +58,9 @@ func runLocalInstaller(ctx context.Context, path string) error {
 	}
 	if path == "" {
 		return errors.New("local OpenCode Desktop installer path required")
+	}
+	if err := localInstallerSignatureValidator(ctx, path); err != nil {
+		return err
 	}
 	cmd := exec.CommandContext(ctx, path)
 	process.HideWindow(cmd)

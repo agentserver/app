@@ -172,8 +172,11 @@ func TestOpenFolderOpenCodeDesktopWritesConfigAndUsesFolderWorkingDirectory(t *t
 	if readOpenCodeErr != nil {
 		t.Fatal(readOpenCodeErr)
 	}
-	if !strings.Contains(string(ob), `"apiKey": "`+proxyToken+`"`) {
-		t.Fatalf("opencode config should use local proxy token:\n%s", ob)
+	if strings.Contains(string(ob), proxyToken) {
+		t.Fatalf("opencode config should not persist local proxy token:\n%s", ob)
+	}
+	if !strings.Contains(string(ob), "{env:AGENTSERVER_CODEX_LOCAL_API_KEY}") {
+		t.Fatalf("opencode config should use env substitution:\n%s", ob)
 	}
 }
 
