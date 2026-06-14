@@ -18,8 +18,6 @@ const (
 	anthropicProvider        = "modelserver-anthropic"
 	defaultModel             = "gpt-5.5"
 	defaultBaseURL           = "http://127.0.0.1:53452/v1"
-	defaultAPIKey            = "agentserver-local-proxy"
-	defaultAPIKeyEnv         = "AGENTSERVER_CODEX_LOCAL_API_KEY"
 	configSchema             = "https://opencode.ai/config.json"
 	openAINPM                = "@ai-sdk/openai"
 	openAICompatibleNPM      = "@ai-sdk/openai-compatible"
@@ -27,6 +25,9 @@ const (
 	compatibleProviderName   = "modelserver-compatible"
 	anthropicProviderName    = "modelserver-anthropic"
 	defaultProviderModelName = "modelserver"
+
+	// LocalProxyAPIKeyEnv is used by OpenCode Desktop config and process launch.
+	LocalProxyAPIKeyEnv = "AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY"
 )
 
 var responsesModels = []string{
@@ -187,7 +188,7 @@ func normalizeSettings(s Settings) Settings {
 		s.BaseURL = defaultBaseURL
 	}
 	if strings.TrimSpace(s.APIKeyEnv) == "" {
-		s.APIKeyEnv = defaultAPIKeyEnv
+		s.APIKeyEnv = LocalProxyAPIKeyEnv
 	}
 	if strings.TrimSpace(s.Model) == "" {
 		s.Model = defaultModel

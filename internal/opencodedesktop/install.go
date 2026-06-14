@@ -42,26 +42,34 @@ func EnsureInstalled(ctx context.Context, opts Options) (Detected, error) {
 	det, err = detect()
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return Detected{}, fmt.Errorf("opencode desktop 安装后仍未检测到: %w", err)
+			return Detected{}, fmt.Errorf("OpenCode Desktop was not detected after installation: %w", err)
 		}
-		return Detected{}, fmt.Errorf("opencode desktop 安装后检测失败: %w", err)
+		return Detected{}, fmt.Errorf("detect OpenCode Desktop after installation: %w", err)
 	}
 	if !det.Installed {
-		return Detected{}, fmt.Errorf("opencode desktop 安装后仍未检测到: %w", ErrNotFound)
+		return Detected{}, fmt.Errorf("OpenCode Desktop was not detected after installation: %w", ErrNotFound)
 	}
 	return det, nil
 }
 
 func runLocalInstaller(ctx context.Context, path string) error {
-	if runtime.GOOS != "windows" {
+	return runLocalInstallerWithDeps(ctx, path, runtime.GOOS, localInstallerSignatureValidator, runInstallerProcess)
+}
+
+func runLocalInstallerWithDeps(ctx context.Context, path, goos string, validate func(context.Context, string) error, run func(context.Context, string) error) error {
+	if goos != "windows" {
 		return ErrUnsupportedPlatform
 	}
 	if path == "" {
 		return errors.New("local OpenCode Desktop installer path required")
 	}
-	if err := localInstallerSignatureValidator(ctx, path); err != nil {
+	if err := validate(ctx, path); err != nil {
 		return err
 	}
+	return run(ctx, path)
+}
+
+func runInstallerProcess(ctx context.Context, path string) error {
 	cmd := exec.CommandContext(ctx, path)
 	process.HideWindow(cmd)
 	return cmd.Run()

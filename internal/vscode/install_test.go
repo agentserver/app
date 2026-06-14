@@ -384,6 +384,9 @@ func TestWindowsInstallScriptSupportsOpenCodeDesktopMode(t *testing.T) {
 	if strings.Contains(s, "opencode-desktop-installer.exe") {
 		t.Fatal("install.ps1 must not require a bundled OpenCode Desktop installer")
 	}
+	if strings.Contains(s, "'opencode-desktop-installer' + '.exe'") {
+		t.Fatal("install.ps1 must not carry dead cleanup for a bundled OpenCode Desktop installer")
+	}
 }
 
 func TestWriteInstallModeAllowsOpenCodeDesktop(t *testing.T) {
@@ -421,6 +424,32 @@ func TestWindowsPackagingDoesNotBundleOpenCodeDesktopInstaller(t *testing.T) {
 	}
 }
 
+func TestOpenCodeDesktopDesignMatchesRuntimeDownloadInstaller(t *testing.T) {
+	body, err := os.ReadFile("../../docs/superpowers/specs/2026-06-14-opencode-desktop-windows-design.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"downloads the latest OpenCode Desktop installer at install time",
+		"does not bundle the OpenCode Desktop installer",
+		"AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY",
+		"OPENCODE_CONFIG",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("OpenCode design spec missing %q", want)
+		}
+	}
+	for _, notWant := range []string{
+		"bundles it as `opencode-desktop-installer.exe`",
+		"require and copy `opencode-desktop-installer.exe`",
+	} {
+		if strings.Contains(s, notWant) {
+			t.Fatalf("OpenCode design spec still describes bundled installer flow; found %q", notWant)
+		}
+	}
+}
+
 func TestWindowsInnoInstallerSupportsOpenCodeDesktopMode(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
@@ -444,6 +473,7 @@ func TestWindowsInnoInstallerSupportsOpenCodeDesktopMode(t *testing.T) {
 	for _, notWant := range []string{
 		"OpenCode Desktop Installer.exe",
 		"opencode-desktop-installer.exe",
+		"opencode-desktop-installer' + '.exe'",
 		"dist\\cache\\opencode-desktop",
 		"((not WizardIsTaskSelected('opencodedesktop')) and (not WizardIsTaskSelected('minimalvscode')))",
 	} {

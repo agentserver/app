@@ -237,8 +237,7 @@ if (-not (Test-Path $InstallDir)) {
 $obsoletePayloads = @(
     'codex.exe',
     ('vscode-installer' + '.exe'),
-    ('vscode-manifest' + '.json'),
-    ('opencode-desktop-installer' + '.exe')
+    ('vscode-manifest' + '.json')
 )
 foreach ($obsolete in $obsoletePayloads) {
     $obsoletePath = Join-Path $InstallDir $obsolete

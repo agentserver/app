@@ -25,6 +25,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
+	"github.com/agentserver/agentserver-pkg/internal/opencode"
 	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -1278,7 +1279,7 @@ func TestEnsureFrontendOpenCodeDesktop(t *testing.T) {
 	}
 }
 
-func TestEnsureOpenCodeDesktopUsesBundledInstallerPath(t *testing.T) {
+func TestEnsureOpenCodeDesktopUsesRuntimeDownloadInstaller(t *testing.T) {
 	dir := t.TempDir()
 	store := state.NewStore(filepath.Join(dir, "state.json"))
 	if err := store.Update(func(s *state.State) error {
@@ -1287,7 +1288,6 @@ func TestEnsureOpenCodeDesktopUsesBundledInstallerPath(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	installerPath := filepath.Join(dir, "opencode-desktop-installer.exe")
 	var gotPath string
 	old := ensureOpenCodeDesktopInstalled
 	ensureOpenCodeDesktopInstalled = func(ctx context.Context, opts opencodedesktop.Options) (opencodedesktop.Detected, error) {
@@ -1297,14 +1297,13 @@ func TestEnsureOpenCodeDesktopUsesBundledInstallerPath(t *testing.T) {
 	t.Cleanup(func() { ensureOpenCodeDesktopInstalled = old })
 
 	r := NewRealOrchestrator(Deps{
-		State:                        store,
-		OpenCodeDesktopInstallerPath: installerPath,
+		State: store,
 	}).(*realOrchestrator)
 	if err := r.EnsureFrontend(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if gotPath != installerPath {
-		t.Fatalf("LocalInstallerPath = %q, want %q", gotPath, installerPath)
+	if gotPath != "" {
+		t.Fatalf("LocalInstallerPath = %q, want empty so installer downloads the latest OpenCode Desktop", gotPath)
 	}
 }
 
@@ -1390,17 +1389,23 @@ func TestConfigureOpenCodeDesktopWritesOpenCodeConfig(t *testing.T) {
 	for _, want := range []string{
 		"modelserver/gpt-5.5",
 		modelproxy.DefaultBaseURL,
-		"{env:AGENTSERVER_CODEX_LOCAL_API_KEY}",
+		"{env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}",
 	} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("opencode config missing %q:\n%s", want, b)
 		}
+	}
+	if strings.Contains(string(b), "AGENTSERVER_CODEX_LOCAL_API_KEY") {
+		t.Fatalf("opencode config should not use Codex-specific env names:\n%s", b)
 	}
 	if strings.Contains(string(b), proxyToken) {
 		t.Fatalf("opencode config should not persist local proxy token:\n%s", b)
 	}
 	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != proxyToken {
 		t.Fatalf("%s=%q, want proxy token", codex.LocalProxyAPIKeyEnv, got)
+	}
+	if got := os.Getenv(opencode.LocalProxyAPIKeyEnv); got != proxyToken {
+		t.Fatalf("%s=%q, want proxy token", opencode.LocalProxyAPIKeyEnv, got)
 	}
 	s, _ := store.Load()
 	if !s.Onboarding.HasCompleted("opencode_desktop_configured") {
@@ -1755,6 +1760,15 @@ func TestLaunchAndShutdownOpenCodeDesktopConfiguresLoomDriverBeforeOpen(t *testi
 		LoomConfigPath:     loomConfig,
 		OpenCodeDesktopLaunch: func(ctx context.Context, opts opencodedesktop.LaunchOptions) error {
 			launched = true
+			if opts.Config.Path != filepath.Join(dir, ".config", "opencode", "opencode.jsonc") {
+				return fmt.Errorf("OpenCode config path = %q", opts.Config.Path)
+			}
+			if opts.Config.APIKeyEnv != "AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY" {
+				return fmt.Errorf("OpenCode API key env = %q", opts.Config.APIKeyEnv)
+			}
+			if opts.Config.APIKey == "" {
+				return fmt.Errorf("OpenCode API key empty")
+			}
 			if _, err := os.Stat(loomConfig); err != nil {
 				return fmt.Errorf("loom driver config missing before launch: %w", err)
 			}

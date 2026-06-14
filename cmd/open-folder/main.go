@@ -120,12 +120,20 @@ func ensureConsoleBackground(ctx context.Context, d consoleBackgroundDeps) error
 }
 
 func startDetached(exe string, args ...string) error {
+	return startDetachedWithDeps(exe, args, process.HideWindow, func(cmd *exec.Cmd) error {
+		return cmd.Start()
+	})
+}
+
+func startDetachedWithDeps(exe string, args []string, hideWindow func(*exec.Cmd), start func(*exec.Cmd) error) error {
 	cmd := exec.Command(exe, args...)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	process.HideWindow(cmd)
-	return cmd.Start()
+	if hideWindow != nil {
+		hideWindow(cmd)
+	}
+	return start(cmd)
 }
 
 func openFolder(ctx context.Context, codeExe string, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string, embeddedVSIXPath string) error {
@@ -191,7 +199,9 @@ func openFolderOpenCodeDesktop(ctx context.Context, p paths.Paths, folder string
 		}
 	}
 	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = env.PersistUserEnv(opencode.LocalProxyAPIKeyEnv, localProxyToken)
 	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = os.Setenv(opencode.LocalProxyAPIKeyEnv, localProxyToken)
 	if tokenRefresherExe != "" {
 		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
 	}
@@ -203,6 +213,11 @@ func openFolderOpenCodeDesktop(ctx context.Context, p paths.Paths, folder string
 	return launcher(ctx, opencodedesktop.LaunchOptions{
 		Detected: det,
 		Folder:   folder,
+		Config: opencodedesktop.ConfigEnv{
+			Path:      p.OpenCodeConfigFile,
+			APIKeyEnv: opencode.LocalProxyAPIKeyEnv,
+			APIKey:    localProxyToken,
+		},
 	})
 }
 

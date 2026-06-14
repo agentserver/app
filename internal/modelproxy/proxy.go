@@ -117,6 +117,9 @@ func NewHandler(opts Options) (http.Handler, error) {
 		stripHopByHopHeaders(r2.Header)
 		r2.Header.Del("X-Api-Key")
 		r2.Header.Set("Authorization", "Bearer "+token)
+		if isAnthropicMessagesRequest(r2) {
+			r2.Header.Set("X-Api-Key", token)
+		}
 		if err := normalizeResponsesInstructions(r2, http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)); err != nil {
 			if errors.Is(err, errRequestBodyTooLarge) {
 				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
@@ -192,6 +195,11 @@ func shouldNormalizeResponsesInstructions(r *http.Request) bool {
 
 func isOpenCodeRequest(r *http.Request) bool {
 	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-AgentServer-Client")), "opencode")
+}
+
+func isAnthropicMessagesRequest(r *http.Request) bool {
+	path := strings.TrimRight(r.URL.Path, "/")
+	return path == "/v1/messages" || path == "/messages"
 }
 
 func extractResponsesInstructions(input any) (string, any, bool) {

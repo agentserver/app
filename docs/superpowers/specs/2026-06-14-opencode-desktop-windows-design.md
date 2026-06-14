@@ -25,7 +25,7 @@ OpenCode Desktop production builds use:
 - URL protocol: `opencode`
 - Windows target: NSIS, per-user one-click install
 
-OpenCode configuration uses global JSON/JSONC files under `~/.config/opencode/`, supports config merging, and supports `{env:VAR}` substitution. Custom providers use `provider.<id>.npm`, `provider.<id>.options.baseURL`, and `provider.<id>.options.apiKey`. For `/v1/responses`, OpenCode documents `@ai-sdk/openai` as the provider package.
+OpenCode configuration uses global JSON/JSONC files under `~/.config/opencode/`, supports config merging, supports `OPENCODE_CONFIG` for an explicit config file, and supports `{env:VAR}` substitution. Custom providers use `provider.<id>.npm`, `provider.<id>.options.baseURL`, and `provider.<id>.options.apiKey`. For `/v1/responses`, OpenCode documents `@ai-sdk/openai` as the provider package.
 
 Sources:
 
@@ -117,7 +117,7 @@ The managed provider config is:
       "name": "modelserver",
       "options": {
         "baseURL": "http://127.0.0.1:53452/v1",
-        "apiKey": "{env:AGENTSERVER_CODEX_LOCAL_API_KEY}"
+        "apiKey": "{env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}"
       },
       "models": {
         "gpt-5.5": {
@@ -142,13 +142,13 @@ http://127.0.0.1:53452/v1
 with:
 
 ```text
-Authorization: Bearer {env:AGENTSERVER_CODEX_LOCAL_API_KEY}
+Authorization: Bearer {env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}
 ```
 
 The existing Windows desktop path persists:
 
 ```text
-AGENTSERVER_CODEX_LOCAL_API_KEY=agentserver-local-proxy
+AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY=<per-user local proxy token>
 ```
 
 and starts `token-refresher.exe`. The local proxy injects the current modelserver bearer token and refreshes it through the existing token refresh path. This avoids OpenCode long-lived processes holding a stale access token after refresh.
@@ -170,16 +170,17 @@ Detection order:
 
 Installer behavior:
 
-- Windows packaging downloads `https://opencode.ai/download/stable/windows-x64-nsis` into the build cache.
-- Portable and Inno bundles it as `opencode-desktop-installer.exe`.
-- `ensure-opencode-desktop.ps1` validates the file is an MZ executable, has a reasonable minimum size, and has a valid Authenticode signature.
+- Windows packaging does not bundle the OpenCode Desktop installer.
+- `ensure-opencode-desktop.ps1` downloads the latest OpenCode Desktop installer at install time from `https://opencode.ai/download/stable/windows-x64-nsis`.
+- `ensure-opencode-desktop.ps1` validates the downloaded file is an MZ executable, has a reasonable minimum size, and has a valid Authenticode signature.
 - The script must not require the signer to be Microsoft. It should report the signer subject in errors for debugging.
-- If the bundled installer fails or is missing, fall back to opening the official download URL or using a documented fallback only if OpenCode later publishes a stable package manager id. Do not invent a winget id.
+- If the runtime download or installer fails, fall back to opening the official download URL or using a documented fallback only if OpenCode later publishes a stable package manager id. Do not invent a winget id.
 
 Launch behavior:
 
 - Prefer launching the detected `OpenCode.exe` directly.
 - If a folder is supplied, set the process working directory to that folder.
+- Launch with `OPENCODE_CONFIG` pointing at the managed config file so Windows path differences cannot make OpenCode read a different config.
 - If no executable is found but the protocol is registered, open `opencode://` as a fallback.
 
 The current design does not assume a documented OpenCode folder deep link. If OpenCode later documents one, add it behind tests.
@@ -201,7 +202,7 @@ The current design does not assume a documented OpenCode folder deep link. If Op
 `configureSharedCodex` remains the shared place that:
 
 - writes Codex config for the bundled CLI and driver use
-- persists `AGENTSERVER_CODEX_LOCAL_API_KEY`
+- persists `AGENTSERVER_CODEX_LOCAL_API_KEY` for Codex/driver compatibility and `AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY` for OpenCode
 - starts the token refresher
 - installs the Loom driver MCP config
 
@@ -223,7 +224,7 @@ Update portable `install.ps1`:
 
 - add `[switch]$OpenCodeDesktop`
 - reject `-OpenCodeDesktop` together with `-MinimalVSCode`
-- require and copy `opencode-desktop-installer.exe`
+- do not require or copy `opencode-desktop-installer.exe`; the OpenCode ensure script downloads the latest installer at install time
 - run `ensure-opencode-desktop.ps1` in OpenCode mode
 - write `install-mode.json` with `opencode_desktop`
 
@@ -267,7 +268,7 @@ Default frontend display name:
 
 Installer failures should surface actionable errors:
 
-- missing bundled installer
+- failed runtime installer download
 - too-small or non-MZ installer
 - invalid Authenticode signature
 - installer exit code

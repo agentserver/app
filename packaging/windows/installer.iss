@@ -373,7 +373,6 @@ begin
   DeleteFile(ExpandConstant('{app}\codex.exe'));
   DeleteFile(ExpandConstant('{app}\vscode-installer' + '.exe'));
   DeleteFile(ExpandConstant('{app}\vscode-manifest' + '.json'));
-  DeleteFile(ExpandConstant('{app}\opencode-desktop-installer' + '.exe'));
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

@@ -58,10 +58,7 @@ func main() {
 }
 
 func run() error {
-	opts, err := parseLauncherOptions(os.Args[1:])
-	if err != nil {
-		return err
-	}
+	opts := parseLauncherOptions(os.Args[1:])
 	return runWithOptions(context.Background(), opts)
 }
 
@@ -71,7 +68,7 @@ type launcherOptions struct {
 	OpenFrontend bool
 }
 
-func parseLauncherOptions(args []string) (launcherOptions, error) {
+func parseLauncherOptions(args []string) launcherOptions {
 	opts := launcherOptions{OpenPage: true, OpenFrontend: true}
 	for _, arg := range args {
 		switch arg {
@@ -83,7 +80,7 @@ func parseLauncherOptions(args []string) (launcherOptions, error) {
 			log.Printf("launcher: ignoring unknown option %s", arg)
 		}
 	}
-	return opts, nil
+	return opts
 }
 
 func runWithOptions(ctx context.Context, opts launcherOptions) error {
@@ -587,7 +584,6 @@ func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestra
 		CodexConfigPath:                   in.Paths.CodexConfigFile,
 		LocalProxyTokenPath:               modelaccess.DefaultLocalProxyTokenPath(in.Paths.InstallRoot),
 		OpenCodeConfigPath:                in.Paths.OpenCodeConfigFile,
-		OpenCodeDesktopInstallerPath:      joinExe(in.InstallDir, "opencode-desktop-installer.exe"),
 		CodexDesktopGlobalStatePath:       in.Paths.CodexDesktopGlobalStateFile,
 		CodexDesktopComputerUseConfigPath: in.Paths.CodexDesktopComputerUseConfigFile,
 		CodexAbsPath:                      in.Paths.CodexExePath,
@@ -714,7 +710,6 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		CodexConfigPath:                   p.CodexConfigFile,
 		LocalProxyTokenPath:               modelaccess.DefaultLocalProxyTokenPath(p.InstallRoot),
 		OpenCodeConfigPath:                p.OpenCodeConfigFile,
-		OpenCodeDesktopInstallerPath:      joinExe(installDir, "opencode-desktop-installer.exe"),
 		CodexDesktopGlobalStatePath:       p.CodexDesktopGlobalStateFile,
 		CodexDesktopComputerUseConfigPath: p.CodexDesktopComputerUseConfigFile,
 		VSCodeUserDataDir:                 p.VSCodeUserDataDir,
@@ -823,7 +818,9 @@ func launchCompletedOpenCodeDesktop(ctx context.Context, s *state.State, p paths
 		}
 	}
 	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = env.PersistUserEnv(opencode.LocalProxyAPIKeyEnv, localProxyToken)
 	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = os.Setenv(opencode.LocalProxyAPIKeyEnv, localProxyToken)
 	if err := configureCompletedLoomDriver(p, s, sec, installDir); err != nil {
 		return err
 	}
@@ -840,6 +837,11 @@ func launchCompletedOpenCodeDesktop(ctx context.Context, s *state.State, p paths
 			Installed: s.OpenCodeDesktop.Installed,
 			Path:      s.OpenCodeDesktop.Path,
 			Version:   s.OpenCodeDesktop.Version,
+		},
+		Config: opencodedesktop.ConfigEnv{
+			Path:      p.OpenCodeConfigFile,
+			APIKeyEnv: opencode.LocalProxyAPIKeyEnv,
+			APIKey:    localProxyToken,
 		},
 	})
 }

@@ -66,6 +66,31 @@ func TestEnsureInstalledDetectsAfterInstaller(t *testing.T) {
 	}
 }
 
+func TestEnsureInstalledUsesEnglishDetectionErrors(t *testing.T) {
+	calls := 0
+	_, err := EnsureInstalled(context.Background(), Options{
+		Detect: func() (Detected, error) {
+			calls++
+			return Detected{Installed: false}, ErrNotFound
+		},
+		RunInstaller: func(context.Context) error {
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if calls != 2 {
+		t.Fatalf("detect calls = %d, want 2", calls)
+	}
+	if !strings.Contains(err.Error(), "OpenCode Desktop was not detected after installation") {
+		t.Fatalf("error = %q", err)
+	}
+	if strings.Contains(err.Error(), "安装") {
+		t.Fatalf("OpenCode Desktop errors should not mix Chinese and English: %q", err)
+	}
+}
+
 func TestLaunchUsesDetectedExecutableAndFolderWorkingDirectory(t *testing.T) {
 	var gotName string
 	var gotDir string
@@ -84,6 +109,33 @@ func TestLaunchUsesDetectedExecutableAndFolderWorkingDirectory(t *testing.T) {
 	}
 	if gotName != `C:\OpenCode\OpenCode.exe` || gotDir != `C:\work\repo` {
 		t.Fatalf("launch path=%q dir=%q", gotName, gotDir)
+	}
+}
+
+func TestLaunchInjectsOpenCodeConfigPathAndAPIKeyEnv(t *testing.T) {
+	var gotEnv []string
+	err := Launch(context.Background(), LaunchOptions{
+		Detected: Detected{Installed: true, Path: `C:\OpenCode\OpenCode.exe`},
+		Config: ConfigEnv{
+			Path:      `C:\Users\alice\.config\opencode\opencode.jsonc`,
+			APIKeyEnv: "AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY",
+			APIKey:    "local-proxy-token",
+		},
+		Run: func(cmd *exec.Cmd) error {
+			gotEnv = cmd.Env
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`OPENCODE_CONFIG=C:\Users\alice\.config\opencode\opencode.jsonc`,
+		"AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY=local-proxy-token",
+	} {
+		if !containsEnv(gotEnv, want) {
+			t.Fatalf("launch env missing %q in %#v", want, gotEnv)
+		}
 	}
 }
 
@@ -197,20 +249,28 @@ func TestWindowsDetectionSeparatesStderrFromJSONOutput(t *testing.T) {
 	}
 }
 
-func TestRunLocalInstallerValidatesAuthenticodeSignature(t *testing.T) {
-	installBody, err := os.ReadFile("install.go")
+func TestRunLocalInstallerValidatesAuthenticodeSignatureBeforeExecuting(t *testing.T) {
+	var order []string
+	err := runLocalInstallerWithDeps(
+		context.Background(),
+		`C:\OpenCode Desktop Installer.exe`,
+		"windows",
+		func(context.Context, string) error {
+			order = append(order, "validate")
+			return nil
+		},
+		func(context.Context, string) error {
+			order = append(order, "run")
+			return nil
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	installSource := string(installBody)
-	validateIdx := strings.Index(installSource, "localInstallerSignatureValidator(ctx, path)")
-	runIdx := strings.Index(installSource, "exec.CommandContext(ctx, path)")
-	if validateIdx < 0 {
-		t.Fatal("runLocalInstaller must validate Authenticode signature before executing the installer")
+	if strings.Join(order, ",") != "validate,run" {
+		t.Fatalf("order = %v, want validate before run", order)
 	}
-	if runIdx < 0 || validateIdx > runIdx {
-		t.Fatalf("signature validation must happen before exec.CommandContext:\n%s", installSource)
-	}
+
 	windowsBody, err := os.ReadFile("install_authenticode_windows.go")
 	if err != nil {
 		t.Fatal(err)
@@ -225,4 +285,13 @@ func TestRunLocalInstallerValidatesAuthenticodeSignature(t *testing.T) {
 			t.Fatalf("install_authenticode_windows.go missing %q", want)
 		}
 	}
+}
+
+func containsEnv(env []string, want string) bool {
+	for _, got := range env {
+		if got == want {
+			return true
+		}
+	}
+	return false
 }

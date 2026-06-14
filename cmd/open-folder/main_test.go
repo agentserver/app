@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -145,6 +146,15 @@ func TestOpenFolderOpenCodeDesktopWritesConfigAndUsesFolderWorkingDirectory(t *t
 		if opts.Detected.Path != `C:\OpenCode\OpenCode.exe` {
 			t.Fatalf("OpenCode path = %q", opts.Detected.Path)
 		}
+		if opts.Config.Path != p.OpenCodeConfigFile {
+			t.Fatalf("OpenCode config path = %q, want %q", opts.Config.Path, p.OpenCodeConfigFile)
+		}
+		if opts.Config.APIKeyEnv != "AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY" {
+			t.Fatalf("OpenCode API key env = %q", opts.Config.APIKeyEnv)
+		}
+		if opts.Config.APIKey != proxyToken {
+			t.Fatalf("OpenCode API key = %q, want proxy token", opts.Config.APIKey)
+		}
 		return nil
 	})
 	if err != nil {
@@ -175,7 +185,10 @@ func TestOpenFolderOpenCodeDesktopWritesConfigAndUsesFolderWorkingDirectory(t *t
 	if strings.Contains(string(ob), proxyToken) {
 		t.Fatalf("opencode config should not persist local proxy token:\n%s", ob)
 	}
-	if !strings.Contains(string(ob), "{env:AGENTSERVER_CODEX_LOCAL_API_KEY}") {
+	if strings.Contains(string(ob), "AGENTSERVER_CODEX_LOCAL_API_KEY") {
+		t.Fatalf("opencode config should not use Codex-specific env names:\n%s", ob)
+	}
+	if !strings.Contains(string(ob), "{env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}") {
 		t.Fatalf("opencode config should use env substitution:\n%s", ob)
 	}
 }
@@ -255,13 +268,35 @@ func TestEnsureConsoleDoesNotStartWhenHealthy(t *testing.T) {
 	}
 }
 
-func TestStartDetachedHidesConsoleWindow(t *testing.T) {
-	body, err := os.ReadFile("main.go")
+func TestStartDetachedPreparesHiddenDetachedCommand(t *testing.T) {
+	hideCalled := false
+	startCalled := false
+	err := startDetachedWithDeps("launcher.exe", []string{"--background"},
+		func(cmd *exec.Cmd) {
+			hideCalled = true
+			if cmd.Path != "launcher.exe" {
+				t.Fatalf("Path = %q", cmd.Path)
+			}
+			if len(cmd.Args) != 2 || cmd.Args[1] != "--background" {
+				t.Fatalf("Args = %#v", cmd.Args)
+			}
+		},
+		func(cmd *exec.Cmd) error {
+			startCalled = true
+			if cmd.Stdin != nil || cmd.Stdout != nil || cmd.Stderr != nil {
+				t.Fatalf("stdio should be detached: stdin=%v stdout=%v stderr=%v", cmd.Stdin, cmd.Stdout, cmd.Stderr)
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "process.HideWindow(cmd)") {
-		t.Fatalf("startDetached should hide the child console window:\n%s", body)
+	if !hideCalled {
+		t.Fatal("hide hook was not called")
+	}
+	if !startCalled {
+		t.Fatal("start hook was not called")
 	}
 }
 

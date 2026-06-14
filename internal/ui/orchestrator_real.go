@@ -59,9 +59,8 @@ type Deps struct {
 	CodexDesktopOpen   func(string) error
 	OpenCodeConfigPath string
 
-	OpenCodeDesktopInstallerPath string
-	OpenCodeDesktopEnsure        func(context.Context) (opencodedesktop.Detected, error)
-	OpenCodeDesktopLaunch        func(context.Context, opencodedesktop.LaunchOptions) error
+	OpenCodeDesktopEnsure func(context.Context) (opencodedesktop.Detected, error)
+	OpenCodeDesktopLaunch func(context.Context, opencodedesktop.LaunchOptions) error
 
 	// OpenBrowser is invoked by the orchestrator after starting the PKCE
 	// listener. Optional in tests.
@@ -350,9 +349,7 @@ func (r *realOrchestrator) EnsureOpenCodeDesktop(ctx context.Context, ch chan<- 
 	ensure := r.d.OpenCodeDesktopEnsure
 	if ensure == nil {
 		ensure = func(ctx context.Context) (opencodedesktop.Detected, error) {
-			return ensureOpenCodeDesktopInstalled(ctx, opencodedesktop.Options{
-				LocalInstallerPath: r.d.OpenCodeDesktopInstallerPath,
-			})
+			return ensureOpenCodeDesktopInstalled(ctx, opencodedesktop.Options{})
 		}
 	}
 	if ch != nil {
@@ -603,7 +600,9 @@ func (r *realOrchestrator) ConfigureOpenCodeDesktop(ctx context.Context) error {
 		return err
 	}
 	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = env.PersistUserEnv(opencode.LocalProxyAPIKeyEnv, localProxyToken)
 	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = os.Setenv(opencode.LocalProxyAPIKeyEnv, localProxyToken)
 	return r.d.State.Update(func(s *state.State) error {
 		s.Onboarding.AddCompleted("opencode_desktop_configured")
 		return nil
@@ -804,6 +803,10 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 		}); err != nil {
 			return err
 		}
+		localProxyToken, err := r.localProxyBearerToken()
+		if err != nil {
+			return err
+		}
 		launch := r.d.OpenCodeDesktopLaunch
 		if launch == nil {
 			launch = func(ctx context.Context, opts opencodedesktop.LaunchOptions) error {
@@ -814,6 +817,10 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 			Installed: s.OpenCodeDesktop.Installed,
 			Path:      s.OpenCodeDesktop.Path,
 			Version:   s.OpenCodeDesktop.Version,
+		}, Config: opencodedesktop.ConfigEnv{
+			Path:      r.d.OpenCodeConfigPath,
+			APIKeyEnv: opencode.LocalProxyAPIKeyEnv,
+			APIKey:    localProxyToken,
 		}}); err != nil {
 			return fmt.Errorf("launch OpenCode Desktop: %w", err)
 		}

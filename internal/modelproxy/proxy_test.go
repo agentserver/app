@@ -385,6 +385,50 @@ func TestProxyLeavesNonResponsesJSONBodyUnchanged(t *testing.T) {
 	}
 }
 
+func TestProxyForwardsAnthropicMessagesTokenAsBearerAndXAPIKey(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "modelserver-access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotAuth string
+	var gotAPIKey string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotAPIKey = r.Header.Get("X-Api-Key")
+		if gotAPIKey == "random-local-token" {
+			t.Fatal("local proxy token leaked upstream in X-Api-Key")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"glm-5.1","messages":[]}`))
+	req.Header.Set("X-Api-Key", "random-local-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotAuth != "Bearer modelserver-access" {
+		t.Fatalf("Authorization = %q, want modelserver bearer", gotAuth)
+	}
+	if gotAPIKey != "modelserver-access" {
+		t.Fatalf("X-Api-Key = %q, want modelserver access token for Anthropic-compatible upstreams", gotAPIKey)
+	}
+}
+
 func TestProxyRequiresLocalBearerToken(t *testing.T) {
 	sec := newTestSecrets()
 	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
@@ -562,8 +606,8 @@ func TestProxyAcceptsLocalTokenFromAnthropicAPIKeyHeader(t *testing.T) {
 	if got.Get("Authorization") != "Bearer access" {
 		t.Fatalf("upstream Authorization=%q, want modelserver access token", got.Get("Authorization"))
 	}
-	if got.Get("X-Api-Key") != "" {
-		t.Fatalf("upstream X-Api-Key=%q, want stripped", got.Get("X-Api-Key"))
+	if got.Get("X-Api-Key") != "access" {
+		t.Fatalf("upstream X-Api-Key=%q, want modelserver access token", got.Get("X-Api-Key"))
 	}
 }
 

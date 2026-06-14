@@ -14,7 +14,7 @@ func TestUpdateConfigCreatesModelserverProxyProvider(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "opencode", "opencode.jsonc")
 	err := UpdateConfig(path, Settings{
 		BaseURL:   "http://127.0.0.1:53452/v1",
-		APIKeyEnv: "AGENTSERVER_CODEX_LOCAL_API_KEY",
+		APIKeyEnv: "AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY",
 		Model:     "gpt-5.5",
 	})
 	if err != nil {
@@ -48,7 +48,7 @@ func TestUpdateConfigCreatesModelserverProxyProvider(t *testing.T) {
 	if options["baseURL"] != "http://127.0.0.1:53452/v1" {
 		t.Fatalf("baseURL = %v", options["baseURL"])
 	}
-	if options["apiKey"] != "{env:AGENTSERVER_CODEX_LOCAL_API_KEY}" {
+	if options["apiKey"] != "{env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}" {
 		t.Fatalf("apiKey = %v", options["apiKey"])
 	}
 	assertOpenCodeProxyHeaders(t, options)
@@ -61,7 +61,7 @@ func TestUpdateConfigCreatesModelserverProxyProvider(t *testing.T) {
 	if compatibleOptions["baseURL"] != "http://127.0.0.1:53452/v1" {
 		t.Fatalf("compatible baseURL = %v", compatibleOptions["baseURL"])
 	}
-	if compatibleOptions["apiKey"] != "{env:AGENTSERVER_CODEX_LOCAL_API_KEY}" {
+	if compatibleOptions["apiKey"] != "{env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}" {
 		t.Fatalf("compatible apiKey = %v", compatibleOptions["apiKey"])
 	}
 	assertOpenCodeProxyHeaders(t, compatibleOptions)
@@ -87,7 +87,7 @@ func TestUpdateConfigCreatesModelserverProxyProvider(t *testing.T) {
 	if anthropicOptions["baseURL"] != "http://127.0.0.1:53452/v1" {
 		t.Fatalf("anthropic baseURL = %v", anthropicOptions["baseURL"])
 	}
-	if anthropicOptions["apiKey"] != "{env:AGENTSERVER_CODEX_LOCAL_API_KEY}" {
+	if anthropicOptions["apiKey"] != "{env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}" {
 		t.Fatalf("anthropic apiKey = %v", anthropicOptions["apiKey"])
 	}
 	assertOpenCodeProxyHeaders(t, anthropicOptions)
@@ -127,11 +127,31 @@ func TestDefaultProxySettingsKeepsProxyTokenOutOfConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(body), defaultAPIKey) {
+	if strings.Contains(string(body), "agentserver-local-proxy") {
 		t.Fatalf("opencode config must not contain raw local proxy token:\n%s", body)
 	}
-	if !strings.Contains(string(body), `"{env:AGENTSERVER_CODEX_LOCAL_API_KEY}"`) {
+	if !strings.Contains(string(body), `"{env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}"`) {
 		t.Fatalf("opencode config must use env substitution:\n%s", body)
+	}
+}
+
+func TestDefaultProxySettingsUsesOpenCodeNeutralEnvName(t *testing.T) {
+	if got := DefaultProxySettings().APIKeyEnv; got != "" {
+		t.Fatalf("DefaultProxySettings APIKeyEnv = %q, want empty so normalizeSettings applies default", got)
+	}
+	path := filepath.Join(t.TempDir(), "opencode", "opencode.jsonc")
+	if err := UpdateConfig(path, DefaultProxySettings()); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "AGENTSERVER_CODEX_LOCAL_API_KEY") {
+		t.Fatalf("opencode config should not use Codex-specific env names:\n%s", body)
+	}
+	if !strings.Contains(string(body), "AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY") {
+		t.Fatalf("opencode config should use neutral local proxy env name:\n%s", body)
 	}
 }
 

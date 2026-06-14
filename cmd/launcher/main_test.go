@@ -33,30 +33,21 @@ import (
 )
 
 func TestLauncherOptionsDefaultOpensPageAndFrontend(t *testing.T) {
-	got, err := parseLauncherOptions([]string{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := parseLauncherOptions([]string{})
 	if got.Background || !got.OpenPage || !got.OpenFrontend {
 		t.Fatalf("options=%+v", got)
 	}
 }
 
 func TestLauncherOptionsBackgroundDoesNotOpenPageOrFrontend(t *testing.T) {
-	got, err := parseLauncherOptions([]string{"--background"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := parseLauncherOptions([]string{"--background"})
 	if !got.Background || got.OpenPage || got.OpenFrontend {
 		t.Fatalf("options=%+v", got)
 	}
 }
 
 func TestLauncherOptionsIgnoresUnknownFlag(t *testing.T) {
-	got, err := parseLauncherOptions([]string{"--backgrond"})
-	if err != nil {
-		t.Fatalf("unknown flags should not abort GUI launcher: %v", err)
-	}
+	got := parseLauncherOptions([]string{"--backgrond"})
 	if got.Background || !got.OpenPage || !got.OpenFrontend {
 		t.Fatalf("options=%+v, want default foreground behavior", got)
 	}
@@ -1028,6 +1019,15 @@ func TestLaunchCompletedFrontendOpenCodeDesktopWritesConfigAndLaunches(t *testin
 		if opts.Detected.Path != `C:\OpenCode\OpenCode.exe` {
 			t.Fatalf("OpenCode path = %q", opts.Detected.Path)
 		}
+		if opts.Config.Path != p.OpenCodeConfigFile {
+			t.Fatalf("OpenCode config path = %q, want %q", opts.Config.Path, p.OpenCodeConfigFile)
+		}
+		if opts.Config.APIKeyEnv != "AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY" {
+			t.Fatalf("OpenCode API key env = %q", opts.Config.APIKeyEnv)
+		}
+		if opts.Config.APIKey != proxyToken {
+			t.Fatalf("OpenCode API key = %q, want proxy token", opts.Config.APIKey)
+		}
 		return nil
 	})
 	if err != nil {
@@ -1046,7 +1046,10 @@ func TestLaunchCompletedFrontendOpenCodeDesktopWritesConfigAndLaunches(t *testin
 	if strings.Contains(string(b), proxyToken) {
 		t.Fatalf("opencode config should not persist local proxy token:\n%s", b)
 	}
-	if !strings.Contains(string(b), "{env:AGENTSERVER_CODEX_LOCAL_API_KEY}") {
+	if strings.Contains(string(b), "AGENTSERVER_CODEX_LOCAL_API_KEY") {
+		t.Fatalf("opencode config should not use Codex-specific env names:\n%s", b)
+	}
+	if !strings.Contains(string(b), "{env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}") {
 		t.Fatalf("opencode config should use env substitution:\n%s", b)
 	}
 }
