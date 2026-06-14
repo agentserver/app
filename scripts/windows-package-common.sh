@@ -3,6 +3,10 @@ CODEX_DESKTOP_ASSET="Codex Installer.exe"
 CODEX_DESKTOP_URL="https://get.microsoft.com/installer/download/$CODEX_DESKTOP_PRODUCT_ID?cid=website_cta_psi"
 CODEX_DESKTOP_CACHE="$OUT/cache/codex-desktop/$CODEX_DESKTOP_PRODUCT_ID/$CODEX_DESKTOP_ASSET"
 CODEX_DESKTOP_MIN_SIZE=65536
+OPENCODE_DESKTOP_ASSET="OpenCode Desktop Installer.exe"
+OPENCODE_DESKTOP_URL="https://opencode.ai/download/stable/windows-x64-nsis"
+OPENCODE_DESKTOP_CACHE="$OUT/cache/opencode-desktop/stable/$OPENCODE_DESKTOP_ASSET"
+OPENCODE_DESKTOP_MIN_SIZE=65536
 LOOM_RELEASE="v0.0.5"
 LOOM_BASE_URL="https://github.com/agentserver/loom/releases/download/$LOOM_RELEASE"
 LOOM_DRIVER_ASSET="driver-agent.windows-amd64.exe"
@@ -33,12 +37,14 @@ WINDOWS_PACKAGE_REQUIRED_FILES=(
   "packaging/windows/ensure-codex.ps1"
   "packaging/windows/codex-manifest.json"
   "packaging/windows/ensure-codex-desktop.ps1"
+  "packaging/windows/ensure-opencode-desktop.ps1"
   "packaging/windows/write-install-mode.ps1"
   "packaging/windows/machine.ps1"
   "packaging/windows/ChineseSimplified.isl"
   "packaging/windows/icon.ico"
   "packaging/windows/LICENSE.zh.txt"
   "$CODEX_DESKTOP_CACHE"
+  "$OPENCODE_DESKTOP_CACHE"
   "$LOOM_DRIVER_CACHE"
   "$LOOM_SLAVE_CACHE"
   "$LOOM_DRIVER_SKILLS_CACHE"
@@ -59,6 +65,7 @@ PORTABLE_PAYLOADS=(
   "$SUPERPOWER_SKILLS_CACHE::driver-superpower-skills.tar.gz"
   "$LOOM_DRIVER_CODEX_PROMPTS_CACHE::driver-codex-prompts.tar.gz"
   "$CODEX_DESKTOP_CACHE::codex-desktop-installer.exe"
+  "$OPENCODE_DESKTOP_CACHE::opencode-desktop-installer.exe"
   "extensions/agentserver-app/agentserver-app-$VERSION.vsix::agentserver-app.vsix"
   "packaging/windows/install.ps1::install.ps1"
   "packaging/windows/install-driver-support.ps1::install-driver-support.ps1"
@@ -66,6 +73,7 @@ PORTABLE_PAYLOADS=(
   "packaging/windows/ensure-codex.ps1::ensure-codex.ps1"
   "packaging/windows/codex-manifest.json::codex-manifest.json"
   "packaging/windows/ensure-codex-desktop.ps1::ensure-codex-desktop.ps1"
+  "packaging/windows/ensure-opencode-desktop.ps1::ensure-opencode-desktop.ps1"
   "packaging/windows/write-install-mode.ps1::write-install-mode.ps1"
   "packaging/windows/machine.ps1::machine.ps1"
   "packaging/windows/icon.ico::icon.ico"
@@ -120,6 +128,35 @@ if (-not ($chainSubjects -match "Microsoft")) { throw "Codex Desktop installer s
   "$ps" -NoProfile -Command "$script" "$path"
 }
 
+verify_opencode_desktop_installer() {
+  local path size magic
+  path="$1"
+  [[ -f "$path" ]] || return 1
+  size=$(stat -c%s "$path")
+  (( size >= OPENCODE_DESKTOP_MIN_SIZE )) || return 1
+  magic=$(head -c 2 "$path" 2>/dev/null || true)
+  [[ "$magic" == "MZ" ]] || return 1
+  verify_opencode_desktop_signature "$path"
+}
+
+verify_opencode_desktop_signature() {
+  local path ps script
+  path="$1"
+  if command -v pwsh >/dev/null 2>&1; then
+    ps="pwsh"
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    ps="powershell.exe"
+  else
+    echo "ERROR: PowerShell required to verify OpenCode Desktop Authenticode signature" >&2
+    return 1
+  fi
+  script='param([string]$Path)
+$sig = Get-AuthenticodeSignature -FilePath $Path
+if ($sig.Status -ne "Valid") { throw "OpenCode Desktop installer Authenticode signature is $($sig.Status)" }
+if ($null -eq $sig.SignerCertificate) { throw "OpenCode Desktop installer has no signer certificate" }'
+  "$ps" -NoProfile -Command "$script" "$path"
+}
+
 download_loom_asset() {
   local asset cache expected url sum
   asset="$1"
@@ -167,6 +204,24 @@ fetch_windows_package_assets() {
   mv -f "$codex_desktop_tmp" "$CODEX_DESKTOP_CACHE"
   codex_desktop_size=$(stat -c%s "$CODEX_DESKTOP_CACHE")
   echo "Codex Desktop installer: $codex_desktop_size bytes (fresh)"
+
+  mkdir -p "$(dirname "$OPENCODE_DESKTOP_CACHE")"
+  opencode_desktop_tmp=$(mktemp "$OPENCODE_DESKTOP_CACHE.part.XXXXXX")
+  echo "Fetching OpenCode Desktop installer ..."
+  echo "  URL: $OPENCODE_DESKTOP_URL"
+  if ! curl --fail --location --retry 2 --retry-delay 2 --output "$opencode_desktop_tmp" "$OPENCODE_DESKTOP_URL"; then
+    rm -f "$opencode_desktop_tmp"
+    echo "ERROR: failed to download OpenCode Desktop installer" >&2
+    exit 2
+  fi
+  if ! verify_opencode_desktop_installer "$opencode_desktop_tmp"; then
+    rm -f "$opencode_desktop_tmp"
+    echo "ERROR: invalid OpenCode Desktop installer download" >&2
+    exit 2
+  fi
+  mv -f "$opencode_desktop_tmp" "$OPENCODE_DESKTOP_CACHE"
+  opencode_desktop_size=$(stat -c%s "$OPENCODE_DESKTOP_CACHE")
+  echo "OpenCode Desktop installer: $opencode_desktop_size bytes (fresh)"
 
   download_loom_asset "$LOOM_DRIVER_ASSET" "$LOOM_DRIVER_CACHE" "$LOOM_DRIVER_SHA256"
   download_loom_asset "$LOOM_SLAVE_ASSET" "$LOOM_SLAVE_CACHE" "$LOOM_SLAVE_SHA256"

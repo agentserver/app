@@ -7,12 +7,14 @@
 #
 # Installs to %LOCALAPPDATA%\Programs\agentserver-app, creates desktop
 # shortcut + folder context menu, and installs the selected frontend.
-# Default frontend is Codex Desktop; use -MinimalVSCode for simplified VS Code.
+# Default frontend is Codex Desktop; use -OpenCodeDesktop for OpenCode Desktop
+# or -MinimalVSCode for simplified VS Code.
 # Launch the shortcut to onboard.
 
 param(
     [switch]$Silent,
     [switch]$Uninstall,
+    [switch]$OpenCodeDesktop,
     [switch]$MinimalVSCode
 )
 
@@ -30,6 +32,10 @@ function Set-ScriptOutputEncoding {
 }
 
 Set-ScriptOutputEncoding
+
+if ($OpenCodeDesktop -and $MinimalVSCode) {
+    throw "-OpenCodeDesktop and -MinimalVSCode cannot be used together."
+}
 
 $AppName    = 'agentserver-app'
 $AppDisplayName = '星池指挥官'
@@ -205,10 +211,12 @@ $required = @(
     'driver-superpower-skills.tar.gz',
     'driver-codex-prompts.tar.gz',
     'codex-desktop-installer.exe',
+    'opencode-desktop-installer.exe',
     'agentserver-app.vsix',
     'ensure-vscode.ps1',
     'ensure-codex.ps1',
     'ensure-codex-desktop.ps1',
+    'ensure-opencode-desktop.ps1',
     'install-driver-support.ps1',
     'write-install-mode.ps1',
     'machine.ps1',
@@ -290,7 +298,12 @@ Write-Step "Initializing computer name..."
 Write-Step "Ensuring Codex runtime..."
 & (Join-Path $InstallDir 'ensure-codex.ps1') -ManifestPath (Join-Path $InstallDir 'codex-manifest.json') -AgentctlPath (Join-Path $InstallDir 'agentctl.exe')
 
-if ($MinimalVSCode) {
+if ($OpenCodeDesktop) {
+    Write-Step "Writing install mode opencode_desktop..."
+    & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'opencode_desktop' -Path (Join-Path $InstallDir 'install-mode.json')
+    Write-Step "Ensuring OpenCode Desktop is installed..."
+    & (Join-Path $InstallDir 'ensure-opencode-desktop.ps1') -LocalInstallerPath (Join-Path $srcDir 'opencode-desktop-installer.exe')
+} elseif ($MinimalVSCode) {
     Write-Step "Writing install mode minimal_vscode..."
     & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'minimal_vscode' -Path (Join-Path $InstallDir 'install-mode.json')
     Write-Step "Ensuring VS Code is installed..."

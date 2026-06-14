@@ -363,6 +363,109 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 	}
 }
 
+func TestWindowsInstallScriptSupportsOpenCodeDesktopMode(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"[switch]$OpenCodeDesktop",
+		"$OpenCodeDesktop -and $MinimalVSCode",
+		"opencode_desktop",
+		"ensure-opencode-desktop.ps1",
+		"opencode-desktop-installer.exe",
+		"Writing install mode opencode_desktop",
+		"Ensuring OpenCode Desktop is installed",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install.ps1 missing %q", want)
+		}
+	}
+}
+
+func TestWriteInstallModeAllowsOpenCodeDesktop(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/write-install-mode.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "'opencode_desktop'") {
+		t.Fatal("write-install-mode.ps1 must allow opencode_desktop")
+	}
+}
+
+func TestWindowsPackagingBundlesOpenCodeDesktopInstaller(t *testing.T) {
+	body, err := os.ReadFile("../../scripts/windows-package-common.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"OPENCODE_DESKTOP_URL=\"https://opencode.ai/download/stable/windows-x64-nsis\"",
+		"OPENCODE_DESKTOP_CACHE",
+		"verify_opencode_desktop_installer()",
+		"$OPENCODE_DESKTOP_CACHE::opencode-desktop-installer.exe",
+		"packaging/windows/ensure-opencode-desktop.ps1",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("windows-package-common.sh missing %q", want)
+		}
+	}
+}
+
+func TestWindowsInnoInstallerSupportsOpenCodeDesktopMode(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"opencodedesktop",
+		"OpenCode Desktop",
+		"OpenCode Desktop Installer.exe",
+		"DestName: \"opencode-desktop-installer.exe\"",
+		"ensure-opencode-desktop.ps1",
+		"ShouldInstallOpenCodeDesktop",
+		"opencode_desktop",
+		"opencode-install",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("installer.iss missing %q", want)
+		}
+	}
+}
+
+func TestWindowsEnsureOpenCodeDesktopScriptValidatesBundledInstaller(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/ensure-opencode-desktop.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"function Test-OpenCodeDesktopInstalled",
+		"function Wait-OpenCodeDesktopInstalled",
+		"function Test-OpenCodeDesktopInstallerFile",
+		"function Invoke-OpenCodeDesktopLocalInstaller",
+		"Get-AuthenticodeSignature",
+		"SignerCertificate",
+		"OpenCode Desktop installer is not a valid MZ executable",
+		"https://opencode.ai/download",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-opencode-desktop.ps1 missing %q", want)
+		}
+	}
+	for _, notWant := range []string{
+		"winget",
+		"O=Microsoft Corporation",
+		"Microsoft Corporation",
+	} {
+		if strings.Contains(s, notWant) {
+			t.Fatalf("ensure-opencode-desktop.ps1 must not contain %q", notWant)
+		}
+	}
+}
+
 func TestWindowsPackageScriptsUseSharedPayloadManifest(t *testing.T) {
 	common, err := os.ReadFile("../../scripts/windows-package-common.sh")
 	if err != nil {

@@ -9,7 +9,9 @@
 #   driver-agent.exe, slave-agent.exe
 #   agentserver-app.vsix
 #   codex-desktop-installer.exe (bundled to avoid winget Store execution during install)
+#   opencode-desktop-installer.exe
 #   icon.ico, install.ps1, ensure-vscode.ps1, ensure-codex-desktop.ps1
+#   ensure-opencode-desktop.ps1
 #   ensure-codex.ps1, write-install-mode.ps1, machine.ps1, codex-manifest.json
 #   LICENSE.zh.txt, README.txt
 #
@@ -47,6 +49,9 @@ cat > "$STAGE/README.txt" <<'EOF'
    domestic npm mirrors and installs Codex Desktop with the bundled Microsoft installer.
    To install the simplified VS Code interface instead, run:
      powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -MinimalVSCode
+
+   To install the OpenCode Desktop interface instead, run:
+     powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -OpenCodeDesktop
 
    The simplified VS Code mode downloads the Microsoft Store bootstrapper during install.
 
