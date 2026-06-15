@@ -38,7 +38,7 @@
 
 ## 典型使用
 
-1. 用户安装 Windows 安装包，或在 Linux 服务器上解压 `agentserver`。
+1. 用户安装 Windows 安装包、把 macOS DMG 里的 `星池指挥官.app` 拖到 `/Applications`，或在 Linux 服务器上解压 `agentserver`。
 2. 首次启动时完成 ModelServer 和 AgentServer 登录。
 3. 星池指挥官配置 Codex/Codex Desktop，让模型请求走本地代理。
 4. 用户可以从桌面、右键菜单或 Linux 命令进入同一个工作区。
@@ -53,9 +53,27 @@ make cross-windows  # 交叉构建 Windows 二进制
 make package        # 完整 Windows 打包，需要 Wine + Inno Setup
 ```
 
+## macOS
+
+- **支持平台：** macOS 11.0+，universal binary（Apple Silicon arm64 + Intel amd64）。
+- **构建（仅 Mac，需 CGo）：**
+  ```bash
+  make package-macos   # 产出 dist/macos/星池指挥官-<version>-universal.dmg + .sha256
+  ```
+  目标 `cross-darwin`（universal 二进制）、`macos-icon`（`image/icon.png` → `icon.icns`）由 `package-macos` 依赖。CGo（`fyne.io/systray` 菜单栏）无法在 Linux 上交叉编译，故 macOS 构建必须在 Mac 上原生运行。
+- **安装：** 挂载 DMG → 拖 `星池指挥官.app` 到 `/Applications`（标准账户通常无需密码；非管理员可拖到 `~/Applications`）→ 双击首启 onboarding。
+- **Gatekeeper：** v1 未签名/未公证，首启需「右键 → 打开」或 `xattr -dr com.apple.quarantine /Applications/星池指挥官.app`。拿到 Apple Developer ID 后按 [`packaging/macos/SIGNING.md`](packaging/macos/SIGNING.md) 启用签名 + 公证。
+- **数据位置：** `~/.agentserver-app/`（与 Windows/Linux 一致）。
+- **已知限制：**
+  - GUI 应用不继承 rc 环境变量；env 持久化走 `launchctl setenv` + rc 受管块（只对当前会话生效，对 launcher 显式 spawn 的子进程足够）。
+  - 无 Mac App Store 沙箱版（需写 `~/.codex`、`launchctl setenv`、spawn codex/VS Code，与沙箱不兼容）。
+  - 不强制开机自启（与 Windows 行为对齐；login item 作为后续可选增强）。
+
 更多设计文档见：
 
 - `docs/superpowers/specs/2026-06-07-tray-dashboard-design.md`
 - `docs/superpowers/specs/2026-06-09-local-token-proxy-design.md`
 - `docs/superpowers/specs/2026-06-09-local-slave-management-design.md`
 - `docs/superpowers/specs/2026-06-13-linux-headless-server-design.md`
+- `docs/superpowers/specs/2026-06-15-macos-commander-design.md`（macOS 版设计）
+- `docs/superpowers/plans/2026-06-15-macos-commander-implementation.md`（macOS 版实现计划）
