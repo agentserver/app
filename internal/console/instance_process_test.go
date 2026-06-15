@@ -4,9 +4,9 @@ import "testing"
 
 func TestParseUIDFromPS(t *testing.T) {
 	tests := []struct {
-		in   string
-		uid  int
-		ok   bool
+		in  string
+		uid int
+		ok  bool
 	}{
 		{"  501\n", 501, true},
 		{"501", 501, true},

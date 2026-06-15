@@ -4,8 +4,9 @@ package slave
 
 import "testing"
 
-// 强核验：pid 1 在 macOS 上是 launchd，不是 slave-agent，因此带上 expectedExe 时
-// 应判为 processMismatch，而非历史弱行为 processMatch。
+// Strong verification: pid 1 on macOS is launchd, not slave-agent, so with an
+// expectedExe set the inspection must be processMismatch — not the historical
+// weak behavior of processMatch (trusting any live PID).
 func TestInspectOSProcessOnDarwinVerifiesExeNotBlindly(t *testing.T) {
 	got, err := inspectOSProcess(1, "/Applications/星池指挥官.app/Contents/MacOS/slave-agent")
 	if err != nil {

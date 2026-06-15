@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -17,8 +18,10 @@ import (
 // Overridden per-platform by init() in process_liveness_{linux,darwin}.go.
 // Windows is excluded: it has its own self-contained implementation in
 // process_liveness_windows.go (OpenProcess-based, not syscall.Kill).
+// The default returns an error naming runtime.GOOS so a misconfigured build-tag
+// matrix is diagnosable instead of silently degrading.
 var resolveProcessExe = func(pid int) (string, error) {
-	return "", errors.New("resolveProcessExe not wired for this platform")
+	return "", fmt.Errorf("resolveProcessExe not wired for GOOS=%s", runtime.GOOS)
 }
 
 func osProcessExists(pid int) bool {
