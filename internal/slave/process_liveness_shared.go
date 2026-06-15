@@ -8,11 +8,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 	"time"
 )
+
+// resolveProcessExe returns the real executable path of a running pid.
+// Overridden per-platform by init() in process_liveness_{linux,darwin}.go.
+// Windows is excluded: it has its own self-contained implementation in
+// process_liveness_windows.go (OpenProcess-based, not syscall.Kill).
+var resolveProcessExe = func(pid int) (string, error) {
+	return "", errors.New("resolveProcessExe not wired for this platform")
+}
 
 func osProcessExists(pid int) bool {
 	inspection, err := inspectOSProcess(pid, "")
@@ -20,6 +27,12 @@ func osProcessExists(pid int) bool {
 }
 
 func inspectOSProcess(pid int, expectedExe string) (processInspection, error) {
+	return inspectOSProcessWith(pid, expectedExe, resolveProcessExe)
+}
+
+// inspectOSProcessWith is the platform-agnostic core; resolve is injected so the
+// decision logic is unit-testable on Linux.
+func inspectOSProcessWith(pid int, expectedExe string, resolve func(int) (string, error)) (processInspection, error) {
 	if pid <= 0 {
 		return processMissing, nil
 	}
@@ -34,10 +47,7 @@ func inspectOSProcess(pid int, expectedExe string) (processInspection, error) {
 	if strings.TrimSpace(expectedExe) == "" {
 		return processMatch, nil
 	}
-	if runtime.GOOS != "linux" {
-		return processMatch, nil
-	}
-	procExe, err := os.Readlink(filepath.Join("/proc", fmt.Sprint(pid), "exe"))
+	procExe, err := resolve(pid)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return processMissing, nil
