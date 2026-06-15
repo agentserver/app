@@ -1,4 +1,4 @@
-.PHONY: all build test test-unit test-integration lint clean cross-windows cross-linux package package-linux help ui-build ui-test
+.PHONY: all build test test-unit test-integration lint clean cross-windows cross-linux package package-linux help ui-build ui-test cross-darwin macos-icon package-macos
 
 GO        ?= go
 GOFLAGS   ?= -trimpath
@@ -24,6 +24,9 @@ help:
 	@echo "make ui-test            - run frontend unit tests"
 	@echo "make package            - build Windows .exe installer (requires Inno Setup; depends on ui-build + ext-build)"
 	@echo "make package-linux      - build Linux headless tarballs"
+	@echo "make cross-darwin      - build darwin universal binaries (macOS host, CGO)"
+	@echo "make macos-icon        - generate packaging/macos/icon.icns from image/icon.png (macOS)"
+	@echo "make package-macos     - build 星池指挥官.app + DMG (macOS host; depends on ui-build+ext-build)"
 	@echo "make clean              - rm dist/ and out/"
 
 build: ui-build
@@ -82,6 +85,25 @@ package: cross-windows ext-build
 
 package-linux: cross-linux
 	OUT="$(DIST)" bash scripts/package-linux.sh
+
+# ---- macOS ----
+# 注：CGo（systray）二进制无法在 Linux 交叉编译；以下目标仅在 macOS 上运行。
+cross-darwin: ui-build
+	@echo "==> cross-build darwin universal binaries (CGO, run on macOS)"
+	@mkdir -p $(DIST)/macos/bin
+	@for cmd in launcher open-folder token-refresher agentctl uninstall; do \
+	  echo "  ==> $$cmd (arm64+amd64 → lipo)"; \
+	  GOARCH=arm64 CGO_ENABLED=1 $(GO) build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(DIST)/macos/bin/$$cmd.arm64 ./cmd/$$cmd ; \
+	  GOARCH=amd64 CGO_ENABLED=1 $(GO) build $(GOFLAGS) -ldflags="$(LDFLAGS)" -o $(DIST)/macos/bin/$$cmd.amd64 ./cmd/$$cmd ; \
+	  lipo -create -output $(DIST)/macos/bin/$$cmd $(DIST)/macos/bin/$$cmd.arm64 $(DIST)/macos/bin/$$cmd.amd64 ; \
+	  rm $(DIST)/macos/bin/$$cmd.arm64 $(DIST)/macos/bin/$$cmd.amd64 ; \
+	done
+
+macos-icon:
+	@bash scripts/make-icns.sh image/icon.png
+
+package-macos: cross-darwin macos-icon ext-build
+	@bash scripts/package-macos.sh
 
 clean:
 	rm -rf $(DIST) out coverage.out internal/ui/assets/dist
