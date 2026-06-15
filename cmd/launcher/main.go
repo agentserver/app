@@ -988,10 +988,10 @@ func joinExe(dir, name string) string {
 }
 
 func preferredIconPath(installDir string) string {
-	matches, err := filepath.Glob(filepath.Join(installDir, "icon-*.ico"))
+	matches, err := filepath.Glob(filepath.Join(installDir, iconGlobSuffix))
 	if err == nil && len(matches) > 0 {
 		sort.Strings(matches)
 		return matches[len(matches)-1]
 	}
-	return joinExe(installDir, "icon.ico")
+	return joinExe(installDir, defaultIconSuffix)
 }
