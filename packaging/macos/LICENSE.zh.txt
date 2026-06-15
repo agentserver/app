@@ -1,0 +1,19 @@
+星池指挥官 安装包
+
+本安装包会在本机安装并配置以下软件:
+  - VS Code (微软, MIT License) — 若未安装
+  - codex CLI (OpenAI)
+  - 一个名为 星池指挥官 的 VS Code 扩展
+
+并将以下数据写入用户目录:
+  - %USERPROFILE%\.agentserver-app\  (本安装包自身的状态)
+  - %USERPROFILE%\.codex\config.toml   (合并)
+  - %LOCALAPPDATA%\agentserver-app\ (codex.exe)
+  - HKCU\Software\Classes\*\shell\AgentserverApp (文件右键菜单)
+  - HKCU\Software\Classes\Directory\shell\AgentserverApp (文件夹右键菜单)
+  - 桌面 星池指挥官.lnk
+
+API key 由本安装包通过 OAuth 流程从 https://code.cs.ac.cn 与
+https://agent.cs.ac.cn 创建,存入 Windows 凭据管理器。
+
+继续安装即表示您同意上述行为。
