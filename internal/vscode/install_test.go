@@ -88,8 +88,8 @@ func TestDownloadBootstrapperRejectsNonExecutableBody(t *testing.T) {
 
 	dst := filepath.Join(t.TempDir(), "vscode-store-bootstrapper.exe")
 	err := DownloadBootstrapper(context.Background(), srv.URL, dst, http.DefaultClient)
-	if err == nil || !strings.Contains(err.Error(), "MZ") {
-		t.Fatalf("err=%v, want MZ validation failure", err)
+	if err == nil || !strings.Contains(err.Error(), "unknown magic") {
+		t.Fatalf("err=%v, want unknown-magic validation failure", err)
 	}
 	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
 		t.Fatalf("invalid bootstrapper should not be promoted, stat err=%v", statErr)

@@ -95,6 +95,13 @@ func WriteSettings(path string, in SettingsInput) error {
 				"args": []string{"/k", in.CodexAbsPath},
 			},
 		},
+		"terminal.integrated.defaultProfile.osx": "codex",
+		"terminal.integrated.profiles.osx": map[string]any{
+			"codex": map[string]any{
+				"path": "/bin/zsh",
+				"args": []string{"-c", in.CodexAbsPath + "; exec /bin/zsh -l"},
+			},
+		},
 	}
 	for k, v := range overrides {
 		m[k] = v
