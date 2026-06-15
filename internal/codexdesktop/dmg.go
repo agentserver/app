@@ -48,9 +48,15 @@ func installDMGApp(ctx context.Context, dmgPath, appName string) error {
 		return err
 	}
 	if out, err := exec.CommandContext(ctx, "hdiutil", "attach", "-nobrowse", "-mountpoint", mnt, dmgPath).CombinedOutput(); err != nil {
+		_ = os.RemoveAll(mnt)
 		return fmt.Errorf("hdiutil attach: %w: %s", err, out)
 	}
-	defer exec.Command("hdiutil", "detach", mnt).Run()
+	// Detach first (LIFO: runs before RemoveAll), then remove the now-empty
+	// mountpoint dir so we don't leak a temp dir per install.
+	defer func() {
+		_ = exec.Command("hdiutil", "detach", mnt).Run()
+		_ = os.RemoveAll(mnt)
+	}()
 	src := filepath.Join(mnt, appName)
 	dst := filepath.Join("/Applications", appName)
 	_ = os.RemoveAll(dst)

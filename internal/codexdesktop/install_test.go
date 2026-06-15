@@ -156,9 +156,47 @@ func TestEnsureInstalledPostInstallInstalledFalseWrapsSentinel(t *testing.T) {
 	}
 }
 
-func TestEnsureInstalledDefaultUnsupportedOnNonWindows(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("non-Windows behavior")
+func TestEnsureInstalledUsesInjectedInstallOverWinget(t *testing.T) {
+	installCalls := 0
+	wingetCalls := 0
+	detectCalls := 0
+	det, err := EnsureInstalled(context.Background(), Options{
+		Detect: func() (Detected, error) {
+			detectCalls++
+			if detectCalls == 1 {
+				return Detected{Installed: false}, nil
+			}
+			return Detected{Installed: true, Version: "3.0.0"}, nil
+		},
+		Install: func(context.Context) error {
+			installCalls++
+			return nil
+		},
+		RunWinget: func(context.Context, []string) (string, error) {
+			wingetCalls++
+			return "should not be used", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("EnsureInstalled: %v", err)
+	}
+	if !det.Installed || det.Version != "3.0.0" {
+		t.Fatalf("det=%+v", det)
+	}
+	if installCalls != 1 {
+		t.Fatalf("Install called %d times, want 1", installCalls)
+	}
+	if wingetCalls != 0 {
+		t.Fatalf("RunWinget called %d times, want 0 (Install takes precedence)", wingetCalls)
+	}
+}
+
+// The default dispatcher (installDesktopPlatform) returns ErrUnsupportedPlatform
+// only on non-desktop platforms. On darwin it would run the real dmg installer
+// (network + hdiutil), so guard this to linux only.
+func TestEnsureInstalledDefaultUnsupportedOnLinux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only: default dispatch returns ErrUnsupportedPlatform")
 	}
 	_, err := EnsureInstalled(context.Background(), Options{})
 	if !errors.Is(err, ErrUnsupportedPlatform) {
