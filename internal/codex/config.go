@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,12 +105,14 @@ func UpdateConfig(path string, s Settings) error {
 	root["approvals_reviewer"] = defaultString(s.ApprovalsReviewer, defaultApprovalsReviewer)
 	root["sandbox_mode"] = defaultString(s.SandboxMode, defaultSandboxMode)
 	root["developer_instructions"] = defaultString(s.DeveloperInstructions, defaultDeveloperInstructions)
-	windows, _ := root["windows"].(map[string]any)
-	if windows == nil {
-		windows = map[string]any{}
+	if runtime.GOOS == "windows" {
+		windows, _ := root["windows"].(map[string]any)
+		if windows == nil {
+			windows = map[string]any{}
+		}
+		windows["sandbox"] = defaultString(s.WindowsSandbox, defaultWindowsSandbox)
+		root["windows"] = windows
 	}
-	windows["sandbox"] = defaultString(s.WindowsSandbox, defaultWindowsSandbox)
-	root["windows"] = windows
 	providers, _ := root["model_providers"].(map[string]any)
 	if providers == nil {
 		providers = map[string]any{}

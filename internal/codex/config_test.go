@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -29,8 +30,6 @@ func TestUpdateConfig_Empty(t *testing.T) {
 		`approvals_reviewer = "guardian_subagent"`,
 		`sandbox_mode = "danger-full-access"`,
 		`developer_instructions = "请始终使用简体中文与用户交流；除非用户明确要求其他语言。"`,
-		`[windows]`,
-		`sandbox = "unelevated"`,
 		`[model_providers.modelserver]`,
 		`base_url = "https://code.ai.cs.ac.cn/v1"`,
 		`env_key = "OPENAI_API_KEY"`,
@@ -38,6 +37,16 @@ func TestUpdateConfig_Empty(t *testing.T) {
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in:\n%s", want, s)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		for _, want := range []string{
+			`[windows]`,
+			`sandbox = "unelevated"`,
+		} {
+			if !strings.Contains(s, want) {
+				t.Errorf("missing %q in:\n%s", want, s)
+			}
 		}
 	}
 	if strings.Contains(s, `[projects.`) {
@@ -139,11 +148,16 @@ base_url = "https://old/v1"
 		`[model_providers.modelserver]`,
 		`model_provider = "modelserver"`,
 		`[windows]`,
-		`sandbox = "unelevated"`,
 		`sandbox_private_desktop = false`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("missing %q in merged config:\n%s", want, s)
+		}
+	}
+	// The emitted sandbox key is windows-only.
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(s, `sandbox = "unelevated"`) {
+			t.Errorf("missing %q in merged config:\n%s", `sandbox = "unelevated"`, s)
 		}
 	}
 	// Backup created
@@ -390,4 +404,27 @@ func writeCodexTestFile(t *testing.T, path, body string) {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func TestUpdateConfigNoWindowsSectionOnNonWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows-specific")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	err := UpdateConfig(path, Settings{
+		Provider: "agentserver",
+		BaseURL:  "http://127.0.0.1:53452/v1",
+		WireAPI:  "responses",
+	})
+	if err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(b), "[windows]") {
+		t.Errorf("non-windows config must not emit [windows] section:\n%s", b)
+	}
 }

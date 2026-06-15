@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -895,11 +896,20 @@ func TestExecVSCodeEnsuresCodexConfigBeforeLaunch(t *testing.T) {
 		`model_provider = "modelserver"`,
 		`base_url = "` + modelproxy.DefaultBaseURL + `"`,
 		`experimental_bearer_token = "` + codex.LegacyLocalProxyAPIKeyValue + `"`,
-		`[windows]`,
-		`sandbox = "unelevated"`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q in:\n%s", want, s)
+		}
+	}
+	// The [windows] sandbox section is windows-only.
+	if runtime.GOOS == "windows" {
+		for _, want := range []string{
+			`[windows]`,
+			`sandbox = "unelevated"`,
+		} {
+			if !strings.Contains(s, want) {
+				t.Fatalf("missing %q in:\n%s", want, s)
+			}
 		}
 	}
 }
