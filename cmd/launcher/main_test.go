@@ -25,6 +25,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/process"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tray"
@@ -1003,7 +1004,7 @@ func TestLaunchCompletedFrontendCodexDesktopRegistersLoomDriverMCP(t *testing.T)
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	driverPath := filepath.Join(installDir, "driver-agent.exe")
+	driverPath := filepath.Join(installDir, process.ExeName("driver-agent"))
 	if err := os.WriteFile(driverPath, []byte("driver"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1064,7 +1065,7 @@ func TestConfigureCompletedLoomDriverUsesDefaultObserver(t *testing.T) {
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(installDir, "driver-agent.exe"), []byte("driver"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(installDir, process.ExeName("driver-agent")), []byte("driver"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeLauncherTestTarGz(t, filepath.Join(installDir, "driver-skills.tar.gz"), map[string]string{
@@ -1164,7 +1165,7 @@ func TestConfigureCompletedLoomDriverMinimalVSCodeUsesVSCodeCodexPath(t *testing
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(installDir, "driver-agent.exe"), []byte("driver"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(installDir, process.ExeName("driver-agent")), []byte("driver"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	sec := secrets.New(filepath.Join(dir, "secrets.json"))
@@ -1205,7 +1206,7 @@ func TestLaunchCompletedFrontendMinimalVSCodeConfiguresLoomDriver(t *testing.T) 
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(installDir, "driver-agent.exe"), []byte("driver"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(installDir, process.ExeName("driver-agent")), []byte("driver"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	sec := secrets.New(filepath.Join(dir, "secrets.json"))
@@ -1251,7 +1252,7 @@ func TestConfigureCompletedLoomDriverFallsBackToExistingDriverTokens(t *testing.
 	if err := os.MkdirAll(installDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(installDir, "driver-agent.exe"), []byte("driver"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(installDir, process.ExeName("driver-agent")), []byte("driver"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	loomPath := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
