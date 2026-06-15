@@ -248,7 +248,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 			}
 			return launchCompletedFrontend(ctx, current, in.Paths, sec,
 				in.InstallDir,
-				joinExe(in.InstallDir, "token-refresher.exe"),
+				joinExe(in.InstallDir, process.ExeName("token-refresher")),
 				joinExe(in.InstallDir, "agentserver-app.vsix"),
 				nil)
 		},
@@ -268,7 +268,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		InstallDir:            in.InstallDir,
 		MSOAuth:               modelserver.OAuthConfig(),
 		OpenBrowser:           func(url string) { _ = openBrowser(url) },
-		TokenRefresherExePath: joinExe(in.InstallDir, "token-refresher.exe"),
+		TokenRefresherExePath: joinExe(in.InstallDir, process.ExeName("token-refresher")),
 	}), ctrl, token)
 
 	port := ln.Addr().(*net.TCPAddr).Port
@@ -444,7 +444,7 @@ func completedSlaveManagerDeps(in completedServeInput) (slave.ManagerDeps, error
 	return slave.ManagerDeps{
 		Machines:  machines,
 		Registry:  slave.NewRegistry(in.Paths.SlavesFile, in.Paths.SlavesDir),
-		SlaveExe:  joinExe(in.InstallDir, "slave-agent.exe"),
+		SlaveExe:  joinExe(in.InstallDir, process.ExeName("slave-agent")),
 		ServerURL: "https://agent.cs.ac.cn",
 		CodexBin:  in.Paths.CodexExePath,
 		OpenAuthURL: func(url string) {
@@ -567,7 +567,7 @@ func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestra
 	}
 	loomDriverPath := ""
 	if in.InstallDir != "" {
-		loomDriverPath = joinExe(in.InstallDir, "driver-agent.exe")
+		loomDriverPath = joinExe(in.InstallDir, process.ExeName("driver-agent"))
 	}
 	loomConfigPath := ""
 	if in.Paths.UserHome != "" {
@@ -706,16 +706,16 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		VSCodeExtDir:                      p.VSCodeExtDir,
 		EmbeddedVSIXPath:                  joinExe(installDir, "agentserver-app.vsix"),
 		CodexAbsPath:                      p.CodexExePath,
-		BundledCodexPath:                  joinExe(installDir, "codex.exe"),
+		BundledCodexPath:                  joinExe(installDir, process.ExeName("codex")),
 		CodexManifestPath:                 joinExe(installDir, "codex-manifest.json"),
-		LoomDriverPath:                    joinExe(installDir, "driver-agent.exe"),
+		LoomDriverPath:                    joinExe(installDir, process.ExeName("driver-agent")),
 		LoomConfigPath:                    filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml"),
-		LauncherExePath:                   joinExe(installDir, "launcher.exe"),
-		OpenFolderExePath:                 joinExe(installDir, "open-folder.exe"),
-		TokenRefresherExePath:             joinExe(installDir, "token-refresher.exe"),
+		LauncherExePath:                   joinExe(installDir, process.ExeName("launcher")),
+		OpenFolderExePath:                 joinExe(installDir, process.ExeName("open-folder")),
+		TokenRefresherExePath:             joinExe(installDir, process.ExeName("token-refresher")),
 		IconPath:                          preferredIconPath(installDir),
 		StartCompletedConsole: func(ctx context.Context) error {
-			return startCompletedConsole(ctx, joinExe(installDir, "launcher.exe"))
+			return startCompletedConsole(ctx, joinExe(installDir, process.ExeName("launcher")))
 		},
 	}
 
@@ -813,7 +813,7 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 	if p.UserHome == "" || s == nil || sec == nil || installDir == "" {
 		return nil
 	}
-	driverPath := joinExe(installDir, "driver-agent.exe")
+	driverPath := joinExe(installDir, process.ExeName("driver-agent"))
 	if _, err := os.Stat(driverPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
