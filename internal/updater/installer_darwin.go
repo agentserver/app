@@ -12,7 +12,7 @@ import (
 )
 
 // StartInstaller extracts the downloaded archive (zip or dmg) containing the new
-// .app, swaps the running bundle via replaceFile, and relaunches. Mirrors the
+// .app, swaps the running bundle via swapAppBundle, and relaunches. Mirrors the
 // Windows cmd.Start()+Process.Release() "fire and forget" model.
 func StartInstaller(ctx context.Context, path string) error {
 	exe, err := os.Executable()
