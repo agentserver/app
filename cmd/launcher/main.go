@@ -690,6 +690,11 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	}
 	installDir = osDir(installDir)
 
+	codexManifest, err := codexManifestForDesktop(installDir)
+	if err != nil {
+		return fmt.Errorf("resolve codex manifest: %w", err)
+	}
+
 	deps := ui.Deps{
 		State:   store,
 		Secrets: sec,
@@ -711,7 +716,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		EmbeddedVSIXPath:                  joinExe(installDir, "agentserver-app.vsix"),
 		CodexAbsPath:                      p.CodexExePath,
 		BundledCodexPath:                  joinExe(installDir, process.ExeName("codex")),
-		CodexManifestPath:                 joinExe(installDir, "codex-manifest.json"),
+		CodexManifestPath:                 codexManifest,
 		LoomDriverPath:                    joinExe(installDir, process.ExeName("driver-agent")),
 		LoomConfigPath:                    filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml"),
 		LauncherExePath:                   joinExe(installDir, process.ExeName("launcher")),
