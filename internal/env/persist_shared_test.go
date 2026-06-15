@@ -34,3 +34,19 @@ func TestRemoveManagedBlock(t *testing.T) {
 		t.Error("non-managed content should be preserved")
 	}
 }
+
+func TestShellQuote(t *testing.T) {
+	cases := map[string]string{
+		"plain":               "'plain'",
+		"":                    "''",
+		"with space":          "'with space'",
+		`it's a quote`:        `'it'\''s a quote'`,
+		"$(rm -rf $HOME)":     "'$(rm -rf $HOME)'",
+		`back` + "`" + `tick`: "'back`tick'",
+	}
+	for in, want := range cases {
+		if got := shellQuote(in); got != want {
+			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

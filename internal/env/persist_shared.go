@@ -43,3 +43,13 @@ func ensureTrailingNewline(s string) string {
 	}
 	return s
 }
+
+// shellQuote wraps s in POSIX single quotes so it is safe to embed in a shell
+// rc file (export KEY=<quoted>). Embedded single quotes are escaped with the
+// standard close-quote/escaped-quote/reopen-quote sequence. Go's %q is NOT
+// shell-safe (it leaves $, backtick, and quote characters intact), so it must
+// not be used here — a value containing $(...) or backticks would be executed
+// when the rc file is sourced.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}

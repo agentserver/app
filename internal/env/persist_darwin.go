@@ -19,7 +19,7 @@ func persistUserEnv(key, value string) error {
 	if err := exec.Command("launchctl", "setenv", key, value).Run(); err != nil {
 		return fmt.Errorf("launchctl setenv %s: %w", key, err)
 	}
-	line := fmt.Sprintf("export %s=%q", key, value)
+	line := "export " + key + "=" + shellQuote(value)
 	for _, rc := range []string{".zshrc", ".bash_profile"} {
 		if err := writeManagedRC(rc, line); err != nil {
 			return err
