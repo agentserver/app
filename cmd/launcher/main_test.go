@@ -809,35 +809,6 @@ func (f *fakeTrayApp) Notify(title, message string) error {
 	return nil
 }
 
-func TestStopTrayAndWaitCancelsAndObservesDone(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		<-ctx.Done()
-		close(done)
-	}()
-
-	if ok := stopTrayAndWait(cancel, done, time.Second); !ok {
-		t.Fatal("tray shutdown should complete")
-	}
-}
-
-func TestStopTrayAndWaitTimesOut(t *testing.T) {
-	cancelCalled := false
-	done := make(chan struct{})
-
-	ok := stopTrayAndWait(func() {
-		cancelCalled = true
-	}, done, time.Nanosecond)
-
-	if ok {
-		t.Fatal("tray shutdown should time out")
-	}
-	if !cancelCalled {
-		t.Fatal("cancel was not called")
-	}
-}
-
 func TestRemoveConsolePortFileIfMatchesKeepsNewerInstance(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "console-port.json")
 	oldInfo := console.InstanceInfo{Port: 12345, PID: 111}

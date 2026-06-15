@@ -313,12 +313,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 			})
 		},
 	}
-	trayDone := runTrayApp(trayCtx, trayApp, trayActions)
-	defer func() {
-		if !stopTrayAndWait(stopTray, trayDone, trayShutdownTimeout) {
-			log.Printf("launcher: tray cleanup did not finish within %s", trayShutdownTimeout)
-		}
-	}()
+	defer stopTray()
 	go runTrayStatusLoop(trayCtx, trayApp, ctrl, console.ReminderEngine{
 		Store: console.NewFileReminderStore(in.Paths.ConsoleNotificationsFile),
 	})
@@ -334,11 +329,16 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		})
 	}
 
-	err = srv.Serve(ln)
-	if err == http.ErrServerClosed {
-		return nil
-	}
-	return err
+	return runMainLoop(
+		func(c context.Context) error { return trayApp.Run(c, trayActions) },
+		trayCtx,
+		func() error {
+			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+				return err
+			}
+			return nil
+		},
+	)
 }
 
 func newCompletedUpdater(p paths.Paths) *updater.Service {
@@ -468,34 +468,6 @@ func completedComputerName() string {
 		}
 	}
 	return "local-computer"
-}
-
-const trayShutdownTimeout = 2 * time.Second
-
-func runTrayApp(ctx context.Context, app tray.App, actions tray.Actions) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := app.Run(ctx, actions); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("launcher: tray run: %v", err)
-		}
-	}()
-	return done
-}
-
-func stopTrayAndWait(cancel context.CancelFunc, done <-chan struct{}, timeout time.Duration) bool {
-	cancel()
-	if done == nil {
-		return true
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-done:
-		return true
-	case <-timer.C:
-		return false
-	}
 }
 
 func runTrayStatusLoop(ctx context.Context, app tray.App, ctrl trayConsoleController, reminders console.ReminderEngine) {
