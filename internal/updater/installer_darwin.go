@@ -43,7 +43,7 @@ func StartInstaller(ctx context.Context, path string) error {
 		return fmt.Errorf("unknown installer archive: %s", path)
 	}
 
-	if err := replaceFile(newApp, installedApp); err != nil {
+	if err := swapAppBundle(newApp, installedApp); err != nil {
 		return err
 	}
 
