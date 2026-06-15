@@ -94,7 +94,11 @@ func runWithOptions(ctx context.Context, opts launcherOptions) error {
 	exe, _ := os.Executable()
 	installDir := osDir(exe)
 	store := state.NewStore(p.StateFile)
-	if err := installmode.SyncStoreIfPresent(store, installmode.PathForExecutable(exe)); err != nil {
+	installModePath, err := installmode.Path()
+	if err != nil {
+		return err
+	}
+	if err := installmode.SyncStoreIfPresent(store, installModePath); err != nil {
 		return err
 	}
 	s, err := store.Load()

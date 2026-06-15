@@ -168,3 +168,25 @@ func TestPathForExecutable(t *testing.T) {
 		t.Fatalf("PathForExecutable() = %q, want %q", got, want)
 	}
 }
+
+func TestPathForWritableBaseName(t *testing.T) {
+	got := PathForWritable(filepath.Join(t.TempDir(), "state"))
+	if filepath.Base(got) != "install-mode.json" {
+		t.Fatalf("PathForWritable base = %q, want install-mode.json", filepath.Base(got))
+	}
+}
+
+func TestRoundTripWritable(t *testing.T) {
+	dir := t.TempDir()
+	p := PathForWritable(dir)
+	if err := Write(p, state.FrontendModeCodexDesktop); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	mode, err := Read(p)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if mode != state.FrontendModeCodexDesktop {
+		t.Fatalf("mode=%v want %v", mode, state.FrontendModeCodexDesktop)
+	}
+}
