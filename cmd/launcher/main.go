@@ -59,6 +59,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	updater.CleanupOldBundles()
 	return runWithOptions(context.Background(), opts)
 }
 
@@ -343,7 +344,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 func newCompletedUpdater(p paths.Paths) *updater.Service {
 	return &updater.Service{
 		CurrentVersion: appversion.Version,
-		ManifestURL:    updater.DefaultManifestURL,
+		ManifestURL:    updater.DefaultManifestURLForPlatform(),
 		CacheDir:       p.UpdatesCacheDir,
 		State:          updater.NewStateStore(p.UpdateStateFile),
 	}
