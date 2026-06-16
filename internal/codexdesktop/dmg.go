@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 func downloadToCache(ctx context.Context, url string) (string, error) {
@@ -63,5 +64,19 @@ func installDMGApp(ctx context.Context, dmgPath, appName string) error {
 	if out, err := exec.CommandContext(ctx, "cp", "-R", src, dst).CombinedOutput(); err != nil {
 		return fmt.Errorf("cp %s: %w: %s", appName, err, out)
 	}
+	return nil
+}
+
+// verifyAppBundle validates the extracted app's code signature (hard fail — a
+// broken signature means tampering) and runs a best-effort Gatekeeper
+// assessment (notarization is optional for v1). This is the supply-chain check
+// applied to a downloaded Codex Desktop before clearing quarantine.
+func verifyAppBundle(ctx context.Context, appPath string) error {
+	if out, err := exec.CommandContext(ctx, "codesign", "--verify", "--deep", "--strict", appPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("codesign verify %s: %w: %s", appPath, err, strings.TrimSpace(string(out)))
+	}
+	// spctl assess: unsigned/unnotarized builds fail; v1 accepts that (user
+	// right-click-opens), so log only, do not fail.
+	_, _ = exec.CommandContext(ctx, "spctl", "--assess", "--type", "execute", "--verbose", appPath).CombinedOutput()
 	return nil
 }

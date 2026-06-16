@@ -25,6 +25,9 @@ func installDesktopDarwin(ctx context.Context) error {
 	if err := installDMGApp(ctx, cache, "Codex.app"); err != nil {
 		return fmt.Errorf("install codex desktop dmg: %w", err)
 	}
+	if err := verifyAppBundle(ctx, "/Applications/Codex.app"); err != nil {
+		return fmt.Errorf("verify codex desktop signature: %w", err)
+	}
 	_ = exec.CommandContext(ctx, "xattr", "-dr", "com.apple.quarantine", "/Applications/Codex.app").Run()
 	return nil
 }
