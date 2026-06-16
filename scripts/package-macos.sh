@@ -10,6 +10,22 @@ DMG="dist/macos/${APP_NAME}-${VERSION}-universal.dmg"
 MACOS_DIR="${STAGE}/${APP_INTERNAL}/Contents/MacOS"
 RES_DIR="${STAGE}/${APP_INTERNAL}/Contents/Resources"
 
+# Precondition check: resources the .app layout copies must exist, else fail
+# early with a clear message instead of a cryptic mid-assembly cp error.
+WORKFLOW="packaging/macos/用星池指挥官打开.workflow"
+require_file() {
+  local path="$1" hint="$2"
+  if [[ ! -f "$path" ]]; then
+    echo "ERROR: required resource missing: $path" >&2
+    echo "       $hint" >&2
+    exit 1
+  fi
+}
+require_file "packaging/macos/icon.icns"        "run 'make macos-icon' (needs iconutil/sips on macOS) to generate it from image/icon.png"
+require_file "packaging/macos/icon.png"         "provide the color app icon (copy from image/icon.png)"
+require_file "packaging/macos/icon-template.png" "provide the menu-bar template icon (black + alpha, ~22px)"
+require_file "$WORKFLOW"                         "author the Finder Quick Action in Automator (see packaging/macos/MAC_HANDOFF.md)"
+
 echo "==> [1/8] build universal binaries"
 mkdir -p dist/macos/bin
 for cmd in launcher open-folder token-refresher agentctl uninstall; do
