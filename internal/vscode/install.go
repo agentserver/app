@@ -42,16 +42,35 @@ func PlanInstall() InstallPlan {
 }
 
 func planInstallFor(goos, goarch string) InstallPlan {
-	if goos != "windows" || goarch != "amd64" {
+	switch goos {
+	case "windows":
+		if goarch != "amd64" {
+			panic(fmt.Sprintf("vscode install: unsupported %s/%s in v1", goos, goarch))
+		}
+		return InstallPlan{
+			URLs:            []string{StoreBootstrapperURL},
+			URL:             StoreBootstrapperURL,
+			BootstrapperURL: StoreBootstrapperURL,
+			StoreProductID:  StoreProductID,
+			InstallerType:   "MicrosoftStoreBootstrapper",
+			FileExt:         ".exe",
+		}
+	case "darwin":
+		arch := "darwin-universal"
+		if goarch == "arm64" {
+			arch = "darwin-arm64"
+		} else if goarch == "amd64" {
+			arch = "darwin-x64"
+		}
+		u := "https://update.code.visualstudio.com/latest/" + arch + "/stable"
+		return InstallPlan{
+			URLs:          []string{u},
+			URL:           u,
+			InstallerType: "MacZip",
+			FileExt:       ".zip",
+		}
+	default:
 		panic(fmt.Sprintf("vscode install: unsupported %s/%s in v1", goos, goarch))
-	}
-	return InstallPlan{
-		URLs:            []string{StoreBootstrapperURL},
-		URL:             StoreBootstrapperURL,
-		BootstrapperURL: StoreBootstrapperURL,
-		StoreProductID:  StoreProductID,
-		InstallerType:   "MicrosoftStoreBootstrapper",
-		FileExt:         ".exe",
 	}
 }
 
@@ -179,21 +198,28 @@ func validateBootstrapperFile(ctx context.Context, path string) error {
 		return err
 	}
 	if st.Size() < minBootstrapperSize {
-		return fmt.Errorf("VS Code Microsoft Store bootstrapper too small: got %d bytes, want at least %d", st.Size(), minBootstrapperSize)
+		return fmt.Errorf("VS Code installer too small: got %d bytes, want at least %d", st.Size(), minBootstrapperSize)
 	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	magic := make([]byte, 2)
+	magic := make([]byte, 4)
 	if _, err := io.ReadFull(f, magic); err != nil {
 		return err
 	}
-	if string(magic) != "MZ" {
-		return fmt.Errorf("VS Code Microsoft Store bootstrapper missing MZ executable header")
+	switch {
+	case string(magic[:2]) == "MZ":
+		// Windows PE bootstrapper — verify Authenticode signature.
+		return bootstrapperSignatureValidator(ctx, path)
+	case string(magic[:2]) == "PK":
+		// macOS zip — magic confirmed. codesign verification happens after
+		// extraction in silentInstallPlatform (a zip has no code signature).
+		return nil
+	default:
+		return fmt.Errorf("VS Code installer has unknown magic %q", magic)
 	}
-	return bootstrapperSignatureValidator(ctx, path)
 }
 
 // SilentInstall runs the downloaded installer with platform-appropriate args.

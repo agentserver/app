@@ -2,6 +2,19 @@
 /dist/
 /bin/
 /out/
+# Bare binaries produced by `go build ./cmd/<name>` at the repo root
+/launcher
+/launcher.exe
+/open-folder
+/open-folder.exe
+/uninstall
+/uninstall.exe
+/token-refresher
+/token-refresher.exe
+/agentctl
+/agentctl.exe
+/onboarding-server
+/onboarding-server.exe
 
 # Cache
 /.cache/

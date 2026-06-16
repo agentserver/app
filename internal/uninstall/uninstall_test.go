@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/process"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
 )
@@ -503,20 +504,20 @@ func TestRunStopsLocalSlaveAndInstallProcessesBeforeRemovingState(t *testing.T) 
 	if len(stopped) != 1 {
 		t.Fatalf("stopped=%+v, want exactly one running slave PID", stopped)
 	}
-	if stopped[0].pid != 4242 || stopped[0].exe != filepath.Join(appDir, "slave-agent.exe") {
+	if stopped[0].pid != 4242 || stopped[0].exe != filepath.Join(appDir, process.ExeName("slave-agent")) {
 		t.Fatalf("stopped=%+v", stopped)
 	}
 	appCall, ok := findFallbackCall(fallbackCalls, appDir)
 	if !ok {
 		t.Fatalf("fallback calls=%+v, want app dir %s", fallbackCalls, appDir)
 	}
-	for _, want := range []string{"slave-agent.exe", "driver-agent.exe", "token-refresher.exe"} {
+	for _, want := range []string{process.ExeName("slave-agent"), process.ExeName("driver-agent"), process.ExeName("token-refresher")} {
 		if !containsString(appCall.names, want) {
 			t.Fatalf("fallback process names missing %q: %v", want, appCall.names)
 		}
 	}
 	localCall, ok := findFallbackCall(fallbackCalls, p.LocalAppDataRoot)
-	if !ok || !containsString(localCall.names, "codex.exe") {
+	if !ok || !containsString(localCall.names, process.ExeName("codex")) {
 		t.Fatalf("fallback calls=%+v, want local codex stop under %s", fallbackCalls, p.LocalAppDataRoot)
 	}
 }
@@ -554,11 +555,11 @@ func TestRunStopsLocalAppDataCodexBeforeRemovingState(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	for _, call := range fallbackCalls {
-		if call.dir == localRoot && containsString(call.names, "codex.exe") {
+		if call.dir == localRoot && containsString(call.names, process.ExeName("codex")) {
 			return
 		}
 	}
-	t.Fatalf("fallback calls=%+v, want codex.exe stopped under %s", fallbackCalls, localRoot)
+	t.Fatalf("fallback calls=%+v, want codex stopped under %s", fallbackCalls, localRoot)
 }
 
 func TestWindowsFallbackStopWaitsForProcessesToExit(t *testing.T) {

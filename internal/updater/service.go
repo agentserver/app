@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -333,13 +334,23 @@ func installerCachePath(cacheDir string, m Manifest) (string, error) {
 	}
 	name := filepath.Base(u.Path)
 	if name == "." || name == "/" || name == "" {
-		name = "agentserver-app-" + m.Version + "-setup.exe"
+		name = "agentserver-app-" + m.Version + "-setup" + defaultInstallerExt()
 	}
-	if !strings.HasSuffix(strings.ToLower(name), ".exe") {
-		name += ".exe"
+	if !strings.HasSuffix(strings.ToLower(name), defaultInstallerExt()) {
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
 	}
 	name = filepath.Base(name)
 	return filepath.Join(cacheDir, name), nil
+}
+
+// defaultInstallerExt is the fallback installer extension when a URL has none.
+func defaultInstallerExt() string {
+	if runtime.GOOS == "darwin" {
+		return ".dmg"
+	}
+	return ".exe"
 }
 
 func availableFromManifest(m Manifest) *AvailableUpdate {

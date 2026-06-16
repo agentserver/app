@@ -59,6 +59,7 @@ func main() {
 
 func run() error {
 	opts := parseLauncherOptions(os.Args[1:])
+	updater.CleanupOldBundles()
 	return runWithOptions(context.Background(), opts)
 }
 
@@ -94,7 +95,11 @@ func runWithOptions(ctx context.Context, opts launcherOptions) error {
 	exe, _ := os.Executable()
 	installDir := osDir(exe)
 	store := state.NewStore(p.StateFile)
-	if err := installmode.SyncStoreIfPresent(store, installmode.PathForExecutable(exe)); err != nil {
+	installModePath, err := installmode.Path()
+	if err != nil {
+		return err
+	}
+	if err := installmode.SyncStoreIfPresent(store, installModePath); err != nil {
 		return err
 	}
 	s, err := store.Load()
@@ -248,7 +253,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 			}
 			return launchCompletedFrontend(ctx, current, in.Paths, sec,
 				in.InstallDir,
-				joinExe(in.InstallDir, "token-refresher.exe"),
+				joinExe(in.InstallDir, process.ExeName("token-refresher")),
 				joinExe(in.InstallDir, "agentserver-app.vsix"),
 				nil,
 				nil)
@@ -269,7 +274,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		InstallDir:            in.InstallDir,
 		MSOAuth:               modelserver.OAuthConfig(),
 		OpenBrowser:           func(url string) { _ = openBrowser(url) },
-		TokenRefresherExePath: joinExe(in.InstallDir, "token-refresher.exe"),
+		TokenRefresherExePath: joinExe(in.InstallDir, process.ExeName("token-refresher")),
 	}), ctrl, token)
 
 	port := ln.Addr().(*net.TCPAddr).Port
@@ -309,12 +314,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 			})
 		},
 	}
-	trayDone := runTrayApp(trayCtx, trayApp, trayActions)
-	defer func() {
-		if !stopTrayAndWait(stopTray, trayDone, trayShutdownTimeout) {
-			log.Printf("launcher: tray cleanup did not finish within %s", trayShutdownTimeout)
-		}
-	}()
+	defer stopTray()
 	go runTrayStatusLoop(trayCtx, trayApp, ctrl, console.ReminderEngine{
 		Store: console.NewFileReminderStore(in.Paths.ConsoleNotificationsFile),
 	})
@@ -330,17 +330,22 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		})
 	}
 
-	err = srv.Serve(ln)
-	if err == http.ErrServerClosed {
-		return nil
-	}
-	return err
+	return runMainLoop(
+		func(c context.Context) error { return trayApp.Run(c, trayActions) },
+		trayCtx,
+		func() error {
+			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+				return err
+			}
+			return nil
+		},
+	)
 }
 
 func newCompletedUpdater(p paths.Paths) *updater.Service {
 	return &updater.Service{
 		CurrentVersion: appversion.Version,
-		ManifestURL:    updater.DefaultManifestURL,
+		ManifestURL:    updater.DefaultManifestURLForPlatform(),
 		CacheDir:       p.UpdatesCacheDir,
 		State:          updater.NewStateStore(p.UpdateStateFile),
 	}
@@ -445,7 +450,7 @@ func completedSlaveManagerDeps(in completedServeInput) (slave.ManagerDeps, error
 	return slave.ManagerDeps{
 		Machines:  machines,
 		Registry:  slave.NewRegistry(in.Paths.SlavesFile, in.Paths.SlavesDir),
-		SlaveExe:  joinExe(in.InstallDir, "slave-agent.exe"),
+		SlaveExe:  joinExe(in.InstallDir, process.ExeName("slave-agent")),
 		ServerURL: "https://agent.cs.ac.cn",
 		CodexBin:  in.Paths.CodexExePath,
 		OpenAuthURL: func(url string) {
@@ -464,34 +469,6 @@ func completedComputerName() string {
 		}
 	}
 	return "local-computer"
-}
-
-const trayShutdownTimeout = 2 * time.Second
-
-func runTrayApp(ctx context.Context, app tray.App, actions tray.Actions) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := app.Run(ctx, actions); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("launcher: tray run: %v", err)
-		}
-	}()
-	return done
-}
-
-func stopTrayAndWait(cancel context.CancelFunc, done <-chan struct{}, timeout time.Duration) bool {
-	cancel()
-	if done == nil {
-		return true
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-done:
-		return true
-	case <-timer.C:
-		return false
-	}
 }
 
 func runTrayStatusLoop(ctx context.Context, app tray.App, ctrl trayConsoleController, reminders console.ReminderEngine) {
@@ -568,7 +545,7 @@ func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestra
 	}
 	loomDriverPath := ""
 	if in.InstallDir != "" {
-		loomDriverPath = joinExe(in.InstallDir, "driver-agent.exe")
+		loomDriverPath = joinExe(in.InstallDir, process.ExeName("driver-agent"))
 	}
 	loomConfigPath := ""
 	if in.Paths.UserHome != "" {
@@ -694,6 +671,11 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 	}
 	installDir = osDir(installDir)
 
+	codexManifest, err := codexManifestForDesktop(installDir)
+	if err != nil {
+		return fmt.Errorf("resolve codex manifest: %w", err)
+	}
+
 	deps := ui.Deps{
 		State:   store,
 		Secrets: sec,
@@ -716,16 +698,16 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		VSCodeExtDir:                      p.VSCodeExtDir,
 		EmbeddedVSIXPath:                  joinExe(installDir, "agentserver-app.vsix"),
 		CodexAbsPath:                      p.CodexExePath,
-		BundledCodexPath:                  joinExe(installDir, "codex.exe"),
-		CodexManifestPath:                 joinExe(installDir, "codex-manifest.json"),
-		LoomDriverPath:                    joinExe(installDir, "driver-agent.exe"),
+		BundledCodexPath:                  joinExe(installDir, process.ExeName("codex")),
+		CodexManifestPath:                 codexManifest,
+		LoomDriverPath:                    joinExe(installDir, process.ExeName("driver-agent")),
 		LoomConfigPath:                    filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml"),
-		LauncherExePath:                   joinExe(installDir, "launcher.exe"),
-		OpenFolderExePath:                 joinExe(installDir, "open-folder.exe"),
-		TokenRefresherExePath:             joinExe(installDir, "token-refresher.exe"),
+		LauncherExePath:                   joinExe(installDir, process.ExeName("launcher")),
+		OpenFolderExePath:                 joinExe(installDir, process.ExeName("open-folder")),
+		TokenRefresherExePath:             joinExe(installDir, process.ExeName("token-refresher")),
 		IconPath:                          preferredIconPath(installDir),
 		StartCompletedConsole: func(ctx context.Context) error {
-			return startCompletedConsole(ctx, joinExe(installDir, "launcher.exe"))
+			return startCompletedConsole(ctx, joinExe(installDir, process.ExeName("launcher")))
 		},
 	}
 
@@ -883,7 +865,7 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 	if p.UserHome == "" || s == nil || sec == nil || installDir == "" {
 		return nil
 	}
-	driverPath := joinExe(installDir, "driver-agent.exe")
+	driverPath := joinExe(installDir, process.ExeName("driver-agent"))
 	if _, err := os.Stat(driverPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1062,10 +1044,10 @@ func joinExe(dir, name string) string {
 }
 
 func preferredIconPath(installDir string) string {
-	matches, err := filepath.Glob(filepath.Join(installDir, "icon-*.ico"))
+	matches, err := filepath.Glob(filepath.Join(installDir, iconGlobSuffix))
 	if err == nil && len(matches) > 0 {
 		sort.Strings(matches)
 		return matches[len(matches)-1]
 	}
-	return joinExe(installDir, "icon.ico")
+	return joinExe(installDir, defaultIconSuffix)
 }

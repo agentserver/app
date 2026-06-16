@@ -44,10 +44,12 @@ func main() {
 	installModePath := ""
 	if exe, err := os.Executable(); err == nil {
 		installDir := filepath.Dir(exe)
-		launcherExe = filepath.Join(installDir, "launcher.exe")
-		tokenRefresherExe = filepath.Join(installDir, "token-refresher.exe")
+		launcherExe = filepath.Join(installDir, process.ExeName("launcher"))
+		tokenRefresherExe = filepath.Join(installDir, process.ExeName("token-refresher"))
 		embeddedVSIXPath = filepath.Join(installDir, "agentserver-app.vsix")
-		installModePath = installmode.PathForExecutable(exe)
+	}
+	if modePath, err := installmode.Path(); err == nil {
+		installModePath = modePath
 	}
 	_ = ensureConsoleBackground(context.Background(), consoleBackgroundDeps{
 		LauncherExe: launcherExe,

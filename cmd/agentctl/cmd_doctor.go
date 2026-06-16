@@ -17,7 +17,7 @@ func runDoctor() {
 		fmt.Fprintln(os.Stderr, "paths:", err)
 		os.Exit(1)
 	}
-	modePath, err := installmode.PathFromExecutable()
+	modePath, err := installmode.Path()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "install mode path:", err)
 		os.Exit(1)

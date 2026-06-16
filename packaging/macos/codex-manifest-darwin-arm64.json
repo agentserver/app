@@ -1,0 +1,20 @@
+{
+  "package": "@openai/codex",
+  "platform": "darwin-arm64",
+  "pinned_version": "0.139.0-darwin-arm64",
+  "strip_prefix": "vendor/aarch64-apple-darwin/",
+  "codex_exe": "bin/codex",
+  "required_files": [
+    "bin/codex",
+    "codex-path/rg"
+  ],
+  "pinned": {
+    "integrity": "sha512-o+0ZKWwgDFMMLO7rwinzO0PQsgK+Vme1pMN2GeAxsX29ZgGZcyPICfpJbeGSUO1mb2a36Skjx6nfdRnxMY0r7w==",
+    "shasum": "af6d80ac482aeca41c2a78347e8b391375aa3712",
+    "urls": [
+      "https://registry.npmmirror.com/@openai/codex/-/codex-0.139.0-darwin-arm64.tgz",
+      "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.139.0-darwin-arm64.tgz",
+      "https://registry.npmjs.org/@openai/codex/-/codex-0.139.0-darwin-arm64.tgz"
+    ]
+  }
+}

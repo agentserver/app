@@ -76,3 +76,10 @@ func PathFromExecutable() (string, error) {
 	}
 	return PathForExecutable(exe), nil
 }
+
+// PathForWritable returns the install-mode.json path inside a writable directory.
+// Use this on platforms where the executable's own directory is read-only (e.g. a
+// code-signed .app bundle on macOS). Windows/Linux keep using PathForExecutable.
+func PathForWritable(dir string) string {
+	return filepath.Join(dir, "install-mode.json")
+}
