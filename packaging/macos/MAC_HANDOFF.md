@@ -6,19 +6,21 @@
 
 ## 1. 依赖与 darwin CGo 编译（阻塞一切）
 
-- [ ] `go mod tidy` — 把 `fyne.io/systray` 从 `// indirect` 提升为 direct（Linux 无法做：该 import 在 `//go:build darwin` 文件里）。验证：`grep fyne.io/systray go.mod` 无 `// indirect`。
+- [x] `go mod tidy` — `fyne.io/systray` 已在合并 origin/master 时由 tidy 提升为 direct（不再 `// indirect`）。Mac 上再跑一次 tidy 确认。
 - [ ] `GOOS=darwin go vet ./cmd/launcher ./internal/tray` — 这两个 CGo/systray 包在 Linux 无法编译，Mac 上必须通过。修复任何编译错误（systray API 已核对 v1.12.2，理论无误）。
 - [ ] `GOOS=darwin go build ./...` — 全量 darwin 编译通过。
 
 ## 2. 填充资源（构建前）
 
-- [ ] **codex manifest 哈希** — `packaging/macos/codex-manifest-darwin-{arm64,amd64}.json` 各 6 个 `<<FILL>>` 字段：`pinned_version`、`pinned.integrity`（sha512-base64）、`pinned.shasum`（40-hex git blob sha1）、3 个 `pinned.urls[]` 镜像。用 `npm pack @openai/codex@<ver>` 取包，`shasum -a 512 … | xxd -r -p | base64` 算 integrity，`git hash-object` 算 shasum。每个 arch 一套。
-- [ ] **确认 Codex Desktop 下载 URL** — `internal/codexdesktop/install_darwin.go` 的 `darwinCodexDesktopURL`（当前是占位猜测，标了 spec §10）。发布前核对 OpenAI 真实 darwin 资产地址/格式（dmg/zip）。
+- [x] **codex manifest 哈希** — `packaging/macos/codex-manifest-darwin-{arm64,amd64}.json` 已填入 pin 到 `@openai/codex@0.139.0-darwin-{arm64,x64}` 的真实 integrity/shasum/urls（取自 npm 注册表元数据，vendor 前缀对照实际 tarball 校验）。amd64 文件名对应 npm 的 `darwin-x64`（与 linux-amd64.json 携带 `linux-x64` 同构）。升级 codex 版本时用同样方式刷新。
+- [ ] **确认 Codex Desktop 下载 URL** — `internal/codexdesktop/install_darwin.go` 的 `darwinCodexDesktopURL`（当前是占位猜测，标了 spec §10；安装后会做 codesign 校验）。发布前核对 OpenAI 真实 darwin 资产地址/格式（dmg/zip）。
 - [ ] **图标**：
   - `make macos-icon` → `packaging/macos/icon.icns`（`image/icon.png` 经 sips+iconutil）。
   - `cp image/icon.png packaging/macos/icon.png`（`package-macos.sh` 引用但脚本不生成）。
   - 提供 `packaging/macos/icon-template.png`（菜单栏 template image：黑+透明，~22px；`package-macos.sh` 引用）。
 - [ ] **Finder Quick Action** — 用 Automator 制作 `packaging/macos/用星池指挥官打开.workflow`（快速操作，接收「文件或文件夹」，运行 shell）。shell 内容见实现计划 Task 1.4 / 4.3（读 `~/.agentserver-app/open-folder-path.txt` 间接定位 open-folder，位置无关）。无脚本生成它，必须手工。
+
+> **Loom darwin 依赖缺口（已知）：** Loom v0.0.5 release 只发布 linux/windows 二进制，**没有 darwin 版**。`scripts/fetch-loom-darwin.sh` 会下载并按 release 的 `sha256sums.txt` 校验，当前无 darwin 资产时跳过并告警；`package-macos.sh` 把 `driver-agent`/`slave-agent` 视为可选。因此本机 slave 增启停功能在 macOS 暂不可用，直到 Loom 发布 darwin 构建。
 
 ## 3. 构建分发物
 
