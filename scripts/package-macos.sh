@@ -27,7 +27,15 @@ echo "==> [3/8] assemble .app layout"
 rm -rf "${STAGE}"
 mkdir -p "${MACOS_DIR}" "${RES_DIR}"
 install -m 0755 dist/macos/bin/{launcher,open-folder,token-refresher,agentctl,uninstall} "${MACOS_DIR}/"
-install -m 0755 dist/macos/bin/{driver-agent,slave-agent} "${MACOS_DIR}/"
+# driver-agent/slave-agent are optional: Loom v0.0.5 has no darwin build, so
+# local-slave features stay unavailable on macOS until a Loom darwin release.
+for bin in driver-agent slave-agent; do
+  if [[ -f "dist/macos/bin/$bin" ]]; then
+    install -m 0755 "dist/macos/bin/$bin" "${MACOS_DIR}/"
+  else
+    echo "  note: $bin not bundled (no darwin Loom build); local-slave features unavailable"
+  fi
+done
 cp packaging/macos/Info.plist "${STAGE}/${APP_INTERNAL}/Contents/Info.plist"
 cp packaging/macos/icon.icns "${RES_DIR}/icon.icns"
 cp packaging/macos/icon.png "${RES_DIR}/icon.png"
