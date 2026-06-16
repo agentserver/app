@@ -19,6 +19,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/process"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/shortcut"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
@@ -493,7 +494,7 @@ func pruneEmptyParents(start, stop string) {
 
 func stopRunningProcesses(ctx context.Context, opts Options) error {
 	var errs []error
-	slaveExe := appExePath(opts.AppDir, "slave-agent.exe")
+	slaveExe := appExePath(opts.AppDir, "slave-agent")
 	if opts.Paths.SlavesFile != "" && opts.Paths.SlavesDir != "" && slaveExe != "" {
 		reg := slave.NewRegistry(opts.Paths.SlavesFile, opts.Paths.SlavesDir)
 		slaves, err := reg.List()
@@ -515,7 +516,7 @@ func stopRunningProcesses(ctx context.Context, opts Options) error {
 		}
 	}
 	if opts.Paths.LocalAppDataRoot != "" {
-		if err := opts.StopInstallProcesses(ctx, opts.Paths.LocalAppDataRoot, []string{"codex.exe"}); err != nil {
+		if err := opts.StopInstallProcesses(ctx, opts.Paths.LocalAppDataRoot, []string{process.ExeName("codex")}); err != nil {
 			errs = append(errs, fmt.Errorf("stop local appdata processes: %w", err))
 		}
 	}
@@ -524,13 +525,13 @@ func stopRunningProcesses(ctx context.Context, opts Options) error {
 
 func installProcessNames() []string {
 	return []string{
-		"launcher.exe",
-		"onboarding-server.exe",
-		"open-folder.exe",
-		"slave-agent.exe",
-		"driver-agent.exe",
-		"token-refresher.exe",
-		"codex.exe",
+		process.ExeName("launcher"),
+		process.ExeName("onboarding-server"),
+		process.ExeName("open-folder"),
+		process.ExeName("slave-agent"),
+		process.ExeName("driver-agent"),
+		process.ExeName("token-refresher"),
+		process.ExeName("codex"),
 	}
 }
 
