@@ -1,7 +1,7 @@
 {
   "package": "@openai/codex",
-  "platform": "darwin-amd64",
-  "pinned_version": "<<FILL: e.g. 0.139.0-darwin-amd64 — compute from pinned npm package>>",
+  "platform": "darwin-x64",
+  "pinned_version": "0.139.0-darwin-x64",
   "strip_prefix": "vendor/x86_64-apple-darwin/",
   "codex_exe": "bin/codex",
   "required_files": [
@@ -9,12 +9,12 @@
     "codex-path/rg"
   ],
   "pinned": {
-    "integrity": "<<FILL: sha512-... base64 — npm integrity of pinned tgz>>",
-    "shasum": "<<FILL: 40-hex git blob sha1 of pinned tgz>>",
+    "integrity": "sha512-9gkBWzu6DB2rqU4DbpxD3DE5bofGpsK46Lp0h0I+bKWc2IIcxvSi8K2utKmBLoJCbKrn4JQu7dFNGRqEfENung==",
+    "shasum": "7414bf60c01fd2dde5e6d8e0383e36801289c7cd",
     "urls": [
-      "<<FILL: https://registry.npmmirror.com/@openai/codex/-/codex-<ver>.tgz>>",
-      "<<FILL: https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-<ver>.tgz>>",
-      "<<FILL: https://registry.npmjs.org/@openai/codex/-/codex-<ver>.tgz>>"
+      "https://registry.npmmirror.com/@openai/codex/-/codex-0.139.0-darwin-x64.tgz",
+      "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.139.0-darwin-x64.tgz",
+      "https://registry.npmjs.org/@openai/codex/-/codex-0.139.0-darwin-x64.tgz"
     ]
   }
 }
