@@ -25,6 +25,8 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
+	"github.com/agentserver/agentserver-pkg/internal/opencode"
+	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
@@ -1245,6 +1247,66 @@ func TestEnsureFrontendCodexDesktopSkipsVSCode(t *testing.T) {
 	}
 }
 
+func TestEnsureFrontendOpenCodeDesktop(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeOpenCodeDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	r := &realOrchestrator{d: Deps{
+		State: store,
+		OpenCodeDesktopEnsure: func(ctx context.Context) (opencodedesktop.Detected, error) {
+			called = true
+			return opencodedesktop.Detected{Installed: true, Path: `C:\OpenCode\OpenCode.exe`, Version: "1.2.3"}, nil
+		},
+	}}
+	if err := r.EnsureFrontend(context.Background(), nil); err != nil {
+		t.Fatalf("EnsureFrontend: %v", err)
+	}
+	if !called {
+		t.Fatal("OpenCode ensure was not called")
+	}
+	s, _ := store.Load()
+	if !s.Onboarding.HasCompleted("opencode_desktop_installed") {
+		t.Fatalf("opencode_desktop_installed not marked")
+	}
+	if !s.OpenCodeDesktop.Installed || s.OpenCodeDesktop.Path == "" || s.OpenCodeDesktop.Version != "1.2.3" {
+		t.Fatalf("OpenCodeDesktop state not recorded: %+v", s.OpenCodeDesktop)
+	}
+}
+
+func TestEnsureOpenCodeDesktopUsesRuntimeDownloadInstaller(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeOpenCodeDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var gotPath string
+	old := ensureOpenCodeDesktopInstalled
+	ensureOpenCodeDesktopInstalled = func(ctx context.Context, opts opencodedesktop.Options) (opencodedesktop.Detected, error) {
+		gotPath = opts.LocalInstallerPath
+		return opencodedesktop.Detected{Installed: true, Path: `C:\OpenCode\OpenCode.exe`, Version: "1.2.3"}, nil
+	}
+	t.Cleanup(func() { ensureOpenCodeDesktopInstalled = old })
+
+	r := NewRealOrchestrator(Deps{
+		State: store,
+	}).(*realOrchestrator)
+	if err := r.EnsureFrontend(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "" {
+		t.Fatalf("LocalInstallerPath = %q, want empty so installer downloads the latest OpenCode Desktop", gotPath)
+	}
+}
+
 func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("OPENAI_API_KEY", "old-openai-token")
@@ -1290,6 +1352,64 @@ func TestConfigureCodexDesktopWritesSharedConfigOnly(t *testing.T) {
 	s, _ := store.Load()
 	if !s.Onboarding.HasCompleted("codex_desktop_configured") {
 		t.Fatalf("codex_desktop_configured not marked")
+	}
+}
+
+func TestConfigureOpenCodeDesktopWritesOpenCodeConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(codex.LocalProxyAPIKeyEnv, "")
+	proxyToken := "desktop-local-proxy-token"
+	proxyTokenPath := filepath.Join(dir, ".agentserver-app", "proxy-token")
+	if err := os.MkdirAll(filepath.Dir(proxyTokenPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(proxyTokenPath, []byte(proxyToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeOpenCodeDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := &realOrchestrator{d: Deps{
+		State:               store,
+		CodexConfigPath:     filepath.Join(dir, ".codex", "config.toml"),
+		LocalProxyTokenPath: proxyTokenPath,
+		OpenCodeConfigPath:  filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+	}}
+	if err := r.ConfigureFrontend(context.Background()); err != nil {
+		t.Fatalf("ConfigureFrontend: %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, ".config", "opencode", "opencode.jsonc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"modelserver/gpt-5.5",
+		modelproxy.DefaultBaseURL,
+		"{env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}",
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("opencode config missing %q:\n%s", want, b)
+		}
+	}
+	if strings.Contains(string(b), "AGENTSERVER_CODEX_LOCAL_API_KEY") {
+		t.Fatalf("opencode config should not use Codex-specific env names:\n%s", b)
+	}
+	if strings.Contains(string(b), proxyToken) {
+		t.Fatalf("opencode config should not persist local proxy token:\n%s", b)
+	}
+	if got := os.Getenv(codex.LocalProxyAPIKeyEnv); got != proxyToken {
+		t.Fatalf("%s=%q, want proxy token", codex.LocalProxyAPIKeyEnv, got)
+	}
+	if got := os.Getenv(opencode.LocalProxyAPIKeyEnv); got != proxyToken {
+		t.Fatalf("%s=%q, want proxy token", opencode.LocalProxyAPIKeyEnv, got)
+	}
+	s, _ := store.Load()
+	if !s.Onboarding.HasCompleted("opencode_desktop_configured") {
+		t.Fatalf("opencode_desktop_configured not marked")
 	}
 }
 
@@ -1585,6 +1705,115 @@ func TestLaunchAndShutdownCodexDesktopWritesUILocaleBeforeOpen(t *testing.T) {
 
 	if err := r.LaunchAndShutdown(context.Background()); err != nil {
 		t.Fatalf("LaunchAndShutdown: %v", err)
+	}
+}
+
+func TestLaunchAndShutdownOpenCodeDesktopConfiguresLoomDriverBeforeOpen(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "")
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	for key, value := range map[string]string{
+		"agentserver_ws_api_key":   "sandbox-proxy-token",
+		"agentserver_tunnel_token": "tunnel-token",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeOpenCodeDesktop
+		s.Agentserver.SandboxID = "sb-1"
+		s.Agentserver.WorkspaceID = "ws-1"
+		s.Agentserver.WorkspaceName = "Readable workspace"
+		s.Agentserver.ShortID = "opn123"
+		s.OpenCodeDesktop.Installed = true
+		s.OpenCodeDesktop.Path = filepath.Join(dir, "OpenCode.exe")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driverExe := filepath.Join(dir, "install", "driver-agent.exe")
+	if err := os.MkdirAll(filepath.Dir(driverExe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(driverExe, []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-skills.tar.gz"), map[string]string{
+		"skills/multiagent/SKILL.md": "---\nname: multiagent\n---\nUse driver tools.\n",
+	})
+	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-superpower-skills.tar.gz"), map[string]string{
+		"using-superpowers/SKILL.md": "---\nname: using-superpowers\n---\nUse skills.\n",
+	})
+	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-codex-prompts.tar.gz"), map[string]string{
+		"prompts-codex/AGENTS.md": "# Multi-Agent Driver\n\nUse `role == \"slave\"`.\n",
+	})
+	loomConfig := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
+	var launched bool
+	r := &realOrchestrator{d: Deps{
+		State:              store,
+		Secrets:            sec,
+		CodexConfigPath:    filepath.Join(dir, ".codex", "config.toml"),
+		OpenCodeConfigPath: filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+		LoomDriverPath:     driverExe,
+		LoomConfigPath:     loomConfig,
+		OpenCodeDesktopLaunch: func(ctx context.Context, opts opencodedesktop.LaunchOptions) error {
+			launched = true
+			if opts.Config.Path != filepath.Join(dir, ".config", "opencode", "opencode.jsonc") {
+				return fmt.Errorf("OpenCode config path = %q", opts.Config.Path)
+			}
+			if opts.Config.APIKeyEnv != "AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY" {
+				return fmt.Errorf("OpenCode API key env = %q", opts.Config.APIKeyEnv)
+			}
+			if opts.Config.APIKey == "" {
+				return fmt.Errorf("OpenCode API key empty")
+			}
+			if _, err := os.Stat(loomConfig); err != nil {
+				return fmt.Errorf("loom driver config missing before launch: %w", err)
+			}
+			codexBytes, err := os.ReadFile(filepath.Join(dir, ".codex", "config.toml"))
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(string(codexBytes), `[mcp_servers.driver]`) {
+				return fmt.Errorf("codex mcp driver missing before launch:\n%s", codexBytes)
+			}
+			return nil
+		},
+	}}
+
+	if err := r.LaunchAndShutdown(context.Background()); err != nil {
+		t.Fatalf("LaunchAndShutdown: %v", err)
+	}
+	if !launched {
+		t.Fatal("OpenCode launch was not called")
+	}
+}
+
+func TestLaunchAndShutdownOpenCodeDesktopRequiresConfigPath(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeOpenCodeDesktop
+		s.OpenCodeDesktop.Installed = true
+		s.OpenCodeDesktop.Path = filepath.Join(dir, "OpenCode.exe")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := &realOrchestrator{d: Deps{
+		State:           store,
+		CodexConfigPath: filepath.Join(dir, ".codex", "config.toml"),
+		OpenCodeDesktopLaunch: func(ctx context.Context, opts opencodedesktop.LaunchOptions) error {
+			t.Fatal("OpenCode launch should not run without OpenCodeConfigPath")
+			return nil
+		},
+	}}
+
+	err := r.LaunchAndShutdown(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "OpenCodeConfigPath required") {
+		t.Fatalf("err=%v, want OpenCodeConfigPath required", err)
 	}
 }
 

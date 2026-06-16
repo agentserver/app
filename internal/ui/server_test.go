@@ -18,6 +18,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
+	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/updater"
 )
 
@@ -233,6 +234,16 @@ func TestServerStateIncludesFrontendMode(t *testing.T) {
 	}
 	if s.FrontendName != "Codex Desktop" {
 		t.Fatalf("FrontendName=%q", s.FrontendName)
+	}
+}
+
+func TestSanitizeStateOpenCodeDesktopFrontendName(t *testing.T) {
+	got := SanitizeState(&state.State{FrontendMode: state.FrontendModeOpenCodeDesktop})
+	if got.FrontendMode != "opencode_desktop" {
+		t.Fatalf("FrontendMode=%q", got.FrontendMode)
+	}
+	if got.FrontendName != "OpenCode Desktop" {
+		t.Fatalf("FrontendName=%q", got.FrontendName)
 	}
 }
 

@@ -2,9 +2,11 @@ package modelproxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -111,6 +113,319 @@ func TestProxyLoadsLatestAccessTokenForEveryRequest(t *testing.T) {
 		if gotPath[i] != wantPath[i] {
 			t.Fatalf("path[%d] = %q, want %q", i, gotPath[i], wantPath[i])
 		}
+	}
+}
+
+func TestProxyAddsResponsesInstructionsFromInputMessages(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	body := `{
+		"model": "gpt-5.5",
+		"input": [
+			{"role": "developer", "content": [{"type": "input_text", "text": "Answer in the user's language."}]},
+			{"role": "system", "content": "Keep answers concise."},
+			{"role": "user", "content": [{"type": "input_text", "text": "你好"}]}
+		]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	if got["instructions"] != "Answer in the user's language.\n\nKeep answers concise." {
+		t.Fatalf("instructions=%q", got["instructions"])
+	}
+	input, ok := got["input"].([]any)
+	if !ok {
+		t.Fatalf("input=%#v", got["input"])
+	}
+	if len(input) != 1 {
+		t.Fatalf("input should only contain user messages after system/developer promotion: %#v", got["input"])
+	}
+	user, _ := input[0].(map[string]any)
+	if user["role"] != "user" {
+		t.Fatalf("remaining input role=%v", user["role"])
+	}
+}
+
+func TestProxyAddsDefaultResponsesInstructionsWhenMissing(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	body := `{"model":"gpt-5.5","input":[{"role":"user","content":[{"type":"input_text","text":"你是谁？"}]}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	want := "You are a helpful coding assistant. Follow the user's instructions."
+	if got["instructions"] != want {
+		t.Fatalf("instructions=%q, want %q", got["instructions"], want)
+	}
+}
+
+func TestProxyPreservesResponsesMaxOutputTokensByDefault(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	body := `{"model":"gpt-5.5","max_output_tokens":4096,"input":[{"role":"user","content":"你好"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	if got["max_output_tokens"] != float64(4096) {
+		t.Fatalf("max_output_tokens = %#v, want preserved", got["max_output_tokens"])
+	}
+	if got["model"] != "gpt-5.5" {
+		t.Fatalf("model = %v", got["model"])
+	}
+	if got["instructions"] == "" {
+		t.Fatalf("instructions should still be normalized: %#v", got)
+	}
+}
+
+func TestProxyRemovesUnsupportedResponsesMaxOutputTokensForOpenCode(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if r.Header.Get("X-AgentServer-Client") != "" {
+			t.Fatalf("X-AgentServer-Client should not be forwarded upstream")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	body := `{"model":"gpt-5.5","max_output_tokens":4096,"input":[{"role":"user","content":"你好"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-AgentServer-Client", "opencode")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	if _, ok := got["max_output_tokens"]; ok {
+		t.Fatalf("max_output_tokens should be removed before upstream: %#v", got)
+	}
+}
+
+func TestProxyPreservesExistingResponsesInstructions(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	body := `{
+		"model": "gpt-5.5",
+		"instructions": "Already present.",
+		"input": [{"role": "developer", "content": "Do not use this."}]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	if got["instructions"] != "Already present." {
+		t.Fatalf("instructions=%q, want existing value", got["instructions"])
+	}
+}
+
+func TestProxyLeavesNonResponsesJSONBodyUnchanged(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read upstream body: %v", err)
+		}
+		got = string(b)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	body := `{"model":"gpt-5.5","messages":[{"role":"user","content":"你好"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer random-local-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	if got != body {
+		t.Fatalf("body changed:\ngot  %s\nwant %s", got, body)
+	}
+}
+
+func TestProxyForwardsAnthropicMessagesTokenAsBearerAndXAPIKey(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "modelserver-access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotAuth string
+	var gotAPIKey string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotAPIKey = r.Header.Get("X-Api-Key")
+		if gotAPIKey == "random-local-token" {
+			t.Fatal("local proxy token leaked upstream in X-Api-Key")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"glm-5.1","messages":[]}`))
+	req.Header.Set("X-Api-Key", "random-local-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	if gotAuth != "Bearer modelserver-access" {
+		t.Fatalf("Authorization = %q, want modelserver bearer", gotAuth)
+	}
+	if gotAPIKey != "modelserver-access" {
+		t.Fatalf("X-Api-Key = %q, want modelserver access token for Anthropic-compatible upstreams", gotAPIKey)
 	}
 }
 
@@ -254,6 +569,45 @@ func TestProxyStripsHopByHopAndProxyAuthorizationHeaders(t *testing.T) {
 	}
 	if got.Get("Authorization") != "Bearer access" {
 		t.Fatalf("upstream Authorization=%q, want modelserver access token", got.Get("Authorization"))
+	}
+}
+
+func TestProxyAcceptsLocalTokenFromAnthropicAPIKeyHeader(t *testing.T) {
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+
+	var got http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	handler, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL + "/v1",
+		LocalBearerToken: "random-local-token",
+	})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"glm-5.1","messages":[]}`))
+	req.Header.Set("X-Api-Key", "random-local-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusOK)
+	}
+	if got.Get("Authorization") != "Bearer access" {
+		t.Fatalf("upstream Authorization=%q, want modelserver access token", got.Get("Authorization"))
+	}
+	if got.Get("X-Api-Key") != "access" {
+		t.Fatalf("upstream X-Api-Key=%q, want modelserver access token", got.Get("X-Api-Key"))
 	}
 }
 

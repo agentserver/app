@@ -1,11 +1,15 @@
 package tray
 
-import "context"
+import (
+	"context"
+	"strings"
+)
 
 type State struct {
-	Tooltip  string
-	FiveHour string
-	SevenDay string
+	Tooltip           string
+	FiveHour          string
+	SevenDay          string
+	OpenFrontendLabel string
 }
 
 type Actions struct {
@@ -19,4 +23,11 @@ type App interface {
 	Run(context.Context, Actions) error
 	Update(State)
 	Notify(title, message string) error
+}
+
+func openFrontendMenuLabel(st State) string {
+	if label := strings.TrimSpace(st.OpenFrontendLabel); label != "" {
+		return label
+	}
+	return "启动 Codex Desktop"
 }

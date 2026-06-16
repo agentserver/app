@@ -461,10 +461,14 @@ func quotaWindows(in []modelserver.SubscriptionUsageWindow) []QuotaWindow {
 }
 
 func frontendName(mode state.FrontendMode) string {
-	if state.NormalizeFrontendMode(mode) == state.FrontendModeMinimalVSCode {
+	switch state.NormalizeFrontendMode(mode) {
+	case state.FrontendModeMinimalVSCode:
 		return "极简界面"
+	case state.FrontendModeOpenCodeDesktop:
+		return "OpenCode Desktop"
+	default:
+		return "Codex Desktop"
 	}
-	return "Codex Desktop"
 }
 
 func (c *Controller) agentserverWorkspaceID() string {

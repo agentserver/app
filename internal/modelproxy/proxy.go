@@ -2,14 +2,18 @@
 package modelproxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +29,8 @@ const (
 	HealthPath = "/agentserver/model-proxy/health"
 
 	MaxRequestBodyBytes = 32 << 20
+
+	defaultResponsesInstructions = "You are a helpful coding assistant. Follow the user's instructions."
 
 	maxHeaderBytes    = 64 << 10
 	readHeaderTimeout = 10 * time.Second
@@ -93,7 +99,7 @@ func NewHandler(opts Options) (http.Handler, error) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if !validLocalBearer(r.Header.Get("Authorization"), localBearerToken) {
+		if !validLocalRequestToken(r.Header, localBearerToken) {
 			http.Error(w, "local model proxy authorization required", http.StatusUnauthorized)
 			return
 		}
@@ -109,10 +115,165 @@ func NewHandler(opts Options) (http.Handler, error) {
 		r2 := r.Clone(r.Context())
 		r2.Header = r.Header.Clone()
 		stripHopByHopHeaders(r2.Header)
+		r2.Header.Del("X-Api-Key")
 		r2.Header.Set("Authorization", "Bearer "+token)
-		r2.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)
+		if isAnthropicMessagesRequest(r2) {
+			r2.Header.Set("X-Api-Key", token)
+		}
+		if err := normalizeResponsesInstructions(r2, http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes)); err != nil {
+			if errors.Is(err, errRequestBodyTooLarge) {
+				http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "request body unavailable", http.StatusBadRequest)
+			return
+		}
+		r2.Header.Del("X-AgentServer-Client")
 		proxy.ServeHTTP(w, r2)
 	}), nil
+}
+
+var errRequestBodyTooLarge = errors.New("modelproxy: request body too large")
+
+func normalizeResponsesInstructions(r *http.Request, body io.ReadCloser) error {
+	r.Body = body
+	if !shouldNormalizeResponsesInstructions(r) {
+		return nil
+	}
+	raw, err := io.ReadAll(body)
+	_ = body.Close()
+	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return errRequestBodyTooLarge
+		}
+		return err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		setRequestBody(r, raw)
+		return nil
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		setRequestBody(r, raw)
+		return nil
+	}
+	if instructions, _ := root["instructions"].(string); strings.TrimSpace(instructions) == "" {
+		var filtered any
+		var changed bool
+		instructions, filtered, changed = extractResponsesInstructions(root["input"])
+		if instructions == "" {
+			instructions = defaultResponsesInstructions
+		} else if changed {
+			root["input"] = filtered
+		}
+		root["instructions"] = instructions
+	}
+	if isOpenCodeRequest(r) {
+		delete(root, "max_output_tokens")
+	}
+	rewritten, err := json.Marshal(root)
+	if err != nil {
+		setRequestBody(r, raw)
+		return nil
+	}
+	setRequestBody(r, rewritten)
+	return nil
+}
+
+func shouldNormalizeResponsesInstructions(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	path := strings.TrimRight(r.URL.Path, "/")
+	if path != "/v1/responses" && path != "/responses" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "application/json")
+}
+
+func isOpenCodeRequest(r *http.Request) bool {
+	return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-AgentServer-Client")), "opencode")
+}
+
+func isAnthropicMessagesRequest(r *http.Request) bool {
+	path := strings.TrimRight(r.URL.Path, "/")
+	return path == "/v1/messages" || path == "/messages"
+}
+
+func extractResponsesInstructions(input any) (string, any, bool) {
+	messages, ok := input.([]any)
+	if !ok {
+		return "", input, false
+	}
+	var parts []string
+	filtered := make([]any, 0, len(messages))
+	changed := false
+	for _, item := range messages {
+		message, ok := item.(map[string]any)
+		if !ok {
+			filtered = append(filtered, item)
+			continue
+		}
+		role, _ := message["role"].(string)
+		switch strings.ToLower(strings.TrimSpace(role)) {
+		case "developer", "system":
+		default:
+			filtered = append(filtered, item)
+			continue
+		}
+		if text := strings.TrimSpace(extractTextContent(message["content"])); text != "" {
+			parts = append(parts, text)
+			changed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return strings.Join(parts, "\n\n"), filtered, changed
+}
+
+func extractTextContent(content any) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case []any:
+		var parts []string
+		for _, item := range value {
+			if text := strings.TrimSpace(extractContentPartText(item)); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n\n")
+	default:
+		return ""
+	}
+}
+
+func extractContentPartText(part any) string {
+	switch value := part.(type) {
+	case string:
+		return value
+	case map[string]any:
+		if text, _ := value["text"].(string); text != "" {
+			return text
+		}
+		if text, _ := value["content"].(string); text != "" {
+			return text
+		}
+		return ""
+	default:
+		return ""
+	}
+}
+
+func setRequestBody(r *http.Request, body []byte) {
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	r.Header.Set("Content-Length", strconv.Itoa(len(body)))
 }
 
 func stripHopByHopHeaders(h http.Header) {
@@ -134,6 +295,14 @@ func validLocalBearer(auth, token string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(parts[1]), []byte(token)) == 1
+}
+
+func validLocalRequestToken(h http.Header, token string) bool {
+	if validLocalBearer(h.Get("Authorization"), token) {
+		return true
+	}
+	apiKey := strings.TrimSpace(h.Get("X-Api-Key"))
+	return apiKey != "" && subtle.ConstantTimeCompare([]byte(apiKey), []byte(token)) == 1
 }
 
 func ListenAndServe(ctx context.Context, opts ServerOptions) error {

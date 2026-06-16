@@ -18,9 +18,12 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/codexruntime"
 	"github.com/agentserver/agentserver-pkg/internal/env"
 	"github.com/agentserver/agentserver-pkg/internal/loom"
+	"github.com/agentserver/agentserver-pkg/internal/modelaccess"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
+	"github.com/agentserver/agentserver-pkg/internal/opencode"
+	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/shortcut"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -36,6 +39,7 @@ type Deps struct {
 	MSOAuth                           oauth.AuthCodeConfig // PKCE (modelserver path)
 	ASOAuth                           oauth.Config         // device code (agentserver path)
 	CodexConfigPath                   string
+	LocalProxyTokenPath               string
 	CodexDesktopGlobalStatePath       string
 	CodexDesktopComputerUseConfigPath string
 	VSCodeUserDataDir                 string
@@ -53,6 +57,10 @@ type Deps struct {
 
 	CodexDesktopEnsure func(context.Context) (codexdesktop.Detected, error)
 	CodexDesktopOpen   func(string) error
+	OpenCodeConfigPath string
+
+	OpenCodeDesktopEnsure func(context.Context) (opencodedesktop.Detected, error)
+	OpenCodeDesktopLaunch func(context.Context, opencodedesktop.LaunchOptions) error
 
 	// OpenBrowser is invoked by the orchestrator after starting the PKCE
 	// listener. Optional in tests.
@@ -86,6 +94,8 @@ type realOrchestrator struct {
 	msToken     oauth.Token
 	asToken     oauth.Token
 }
+
+var ensureOpenCodeDesktopInstalled = opencodedesktop.EnsureInstalled
 
 func NewRealOrchestrator(d Deps) Orchestrator {
 	return &realOrchestrator{d: d}
@@ -315,6 +325,9 @@ func (r *realOrchestrator) EnsureFrontend(ctx context.Context, ch chan<- Progres
 	if mode == state.FrontendModeMinimalVSCode {
 		return r.EnsureVSCode(ctx, ch)
 	}
+	if mode == state.FrontendModeOpenCodeDesktop {
+		return r.EnsureOpenCodeDesktop(ctx, ch)
+	}
 	return r.EnsureCodexDesktop(ctx, ch)
 }
 
@@ -326,7 +339,37 @@ func (r *realOrchestrator) ConfigureFrontend(ctx context.Context) error {
 	if mode == state.FrontendModeMinimalVSCode {
 		return r.ConfigureVSCode(ctx)
 	}
+	if mode == state.FrontendModeOpenCodeDesktop {
+		return r.ConfigureOpenCodeDesktop(ctx)
+	}
 	return r.ConfigureCodexDesktop(ctx)
+}
+
+func (r *realOrchestrator) EnsureOpenCodeDesktop(ctx context.Context, ch chan<- ProgressEvent) error {
+	ensure := r.d.OpenCodeDesktopEnsure
+	if ensure == nil {
+		ensure = func(ctx context.Context) (opencodedesktop.Detected, error) {
+			return ensureOpenCodeDesktopInstalled(ctx, opencodedesktop.Options{})
+		}
+	}
+	if ch != nil {
+		ch <- ProgressEvent{Stage: "checking", Msg: "正在检查 OpenCode Desktop..."}
+	}
+	det, err := ensure(ctx)
+	if err != nil {
+		return err
+	}
+	if ch != nil {
+		ch <- ProgressEvent{Stage: "verified", Msg: "已检测到 OpenCode Desktop"}
+	}
+	return r.d.State.Update(func(s *state.State) error {
+		s.OpenCodeDesktop.Installed = true
+		s.OpenCodeDesktop.Path = det.Path
+		s.OpenCodeDesktop.Version = det.Version
+		s.OpenCodeDesktop.InstalledByUs = true
+		s.Onboarding.AddCompleted("opencode_desktop_installed")
+		return nil
+	})
 }
 
 func (r *realOrchestrator) EnsureCodexDesktop(ctx context.Context, ch chan<- ProgressEvent) error {
@@ -402,11 +445,15 @@ func (r *realOrchestrator) EnsureVSCode(ctx context.Context, ch chan<- ProgressE
 
 func (r *realOrchestrator) configureSharedCodex(ctx context.Context) error {
 	_ = ctx
-	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, codex.LegacyLocalProxyAPIKeyValue)); err != nil {
+	localProxyToken, err := r.localProxyBearerToken()
+	if err != nil {
 		return err
 	}
-	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
-	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	if err := codex.UpdateConfig(r.d.CodexConfigPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, localProxyToken)); err != nil {
+		return err
+	}
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
 	if r.d.TokenRefresherExePath != "" {
 		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 	}
@@ -414,6 +461,13 @@ func (r *realOrchestrator) configureSharedCodex(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (r *realOrchestrator) localProxyBearerToken() (string, error) {
+	if r.d.LocalProxyTokenPath == "" {
+		return codex.LegacyLocalProxyAPIKeyValue, nil
+	}
+	return modelaccess.EnsureLocalProxyToken(r.d.LocalProxyTokenPath)
 }
 
 func (r *realOrchestrator) configureLoomDriver() error {
@@ -523,6 +577,34 @@ func (r *realOrchestrator) ConfigureCodexDesktop(ctx context.Context) error {
 	}
 	return r.d.State.Update(func(s *state.State) error {
 		s.Onboarding.AddCompleted("codex_desktop_configured")
+		return nil
+	})
+}
+
+func (r *realOrchestrator) ConfigureOpenCodeDesktop(ctx context.Context) error {
+	if err := r.configureSharedCodex(ctx); err != nil {
+		return err
+	}
+	configPath := r.d.OpenCodeConfigPath
+	if configPath == "" {
+		return fmt.Errorf("ConfigureOpenCodeDesktop: OpenCodeConfigPath required")
+	}
+	localProxyToken, err := r.localProxyBearerToken()
+	if err != nil {
+		return err
+	}
+	if err := opencode.UpdateConfig(configPath, opencode.Settings{
+		BaseURL: modelproxy.DefaultBaseURL,
+		Model:   "gpt-5.5",
+	}); err != nil {
+		return err
+	}
+	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = env.PersistUserEnv(opencode.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
+	_ = os.Setenv(opencode.LocalProxyAPIKeyEnv, localProxyToken)
+	return r.d.State.Update(func(s *state.State) error {
+		s.Onboarding.AddCompleted("opencode_desktop_configured")
 		return nil
 	})
 }
@@ -708,6 +790,45 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 		return err
 	}
 	mode := state.NormalizeFrontendMode(s.FrontendMode)
+	if mode == state.FrontendModeOpenCodeDesktop {
+		if r.d.OpenCodeConfigPath == "" {
+			return fmt.Errorf("LaunchAndShutdown: OpenCodeConfigPath required")
+		}
+		if err := r.configureSharedCodex(ctx); err != nil {
+			return err
+		}
+		if err := opencode.UpdateConfig(r.d.OpenCodeConfigPath, opencode.Settings{
+			BaseURL: modelproxy.DefaultBaseURL,
+			Model:   "gpt-5.5",
+		}); err != nil {
+			return err
+		}
+		localProxyToken, err := r.localProxyBearerToken()
+		if err != nil {
+			return err
+		}
+		launch := r.d.OpenCodeDesktopLaunch
+		if launch == nil {
+			launch = func(ctx context.Context, opts opencodedesktop.LaunchOptions) error {
+				return opencodedesktop.Launch(ctx, opts)
+			}
+		}
+		if err := launch(ctx, opencodedesktop.LaunchOptions{Detected: opencodedesktop.Detected{
+			Installed: s.OpenCodeDesktop.Installed,
+			Path:      s.OpenCodeDesktop.Path,
+			Version:   s.OpenCodeDesktop.Version,
+		}, Config: opencodedesktop.ConfigEnv{
+			Path:      r.d.OpenCodeConfigPath,
+			APIKeyEnv: opencode.LocalProxyAPIKeyEnv,
+			APIKey:    localProxyToken,
+		}}); err != nil {
+			return fmt.Errorf("launch OpenCode Desktop: %w", err)
+		}
+		if r.d.Shutdown != nil {
+			r.d.Shutdown()
+		}
+		return nil
+	}
 	if mode == state.FrontendModeCodexDesktop {
 		if err := r.configureCodexDesktopLocale(); err != nil {
 			return err
@@ -727,8 +848,12 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 	if s.VSCode.Path == "" {
 		return fmt.Errorf("VS Code path unknown; was vscode_install completed?")
 	}
+	localProxyToken, err := r.localProxyBearerToken()
+	if err != nil {
+		return err
+	}
 	cmd := exec.Command(s.VSCode.Path, vscode.LaunchArgs(r.d.VSCodeUserDataDir, r.d.VSCodeExtDir)...)
-	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, codex.LegacyLocalProxyAPIKeyValue)
+	cmd.Env = vscode.UpsertEnv(os.Environ(), codex.LocalProxyAPIKeyEnv, localProxyToken)
 	if r.d.TokenRefresherExePath != "" {
 		_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 	}

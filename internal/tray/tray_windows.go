@@ -106,9 +106,10 @@ func New(iconPath string) App {
 	return &windowsApp{
 		iconPath: iconPath,
 		state: State{
-			Tooltip:  "星池指挥官\n额度暂不可用",
-			FiveHour: "5小时额度：暂不可用",
-			SevenDay: "7天额度：暂不可用",
+			Tooltip:           "星池指挥官\n额度暂不可用",
+			FiveHour:          "5小时额度：暂不可用",
+			SevenDay:          "7天额度：暂不可用",
+			OpenFrontendLabel: "启动 Codex Desktop",
 		},
 		ready:    make(chan struct{}),
 		shutdown: make(chan struct{}),
@@ -317,7 +318,7 @@ func (a *windowsApp) showMenu() {
 
 	state := a.currentState()
 	appendMenu(menu, mfString, idOpenDashboard, "打开控制台")
-	appendMenu(menu, mfString, idOpenFrontend, "启动 Codex Desktop / 启动极简界面")
+	appendMenu(menu, mfString, idOpenFrontend, openFrontendMenuLabel(state))
 	appendMenu(menu, mfString, idOpenSubscription, "打开订阅页")
 	appendMenu(menu, mfSeparator, 0, "")
 	appendMenu(menu, mfString|mfGrayed, 0, state.FiveHour)

@@ -4,7 +4,7 @@
 export interface ServerState {
   schema_version: number;
   install_id: string;
-  frontend_mode?: 'codex_desktop' | 'minimal_vscode';
+  frontend_mode?: 'codex_desktop' | 'opencode_desktop' | 'minimal_vscode';
   frontend_name?: string;
   onboarding_status: 'pending' | 'in_progress' | 'complete';
   completed_steps: string[] | null;
@@ -16,6 +16,9 @@ export interface ServerState {
   vscode_version?: string;
   codex_desktop_installed?: boolean;
   codex_desktop_version?: string;
+  opencode_desktop_installed?: boolean;
+  opencode_desktop_version?: string;
+  opencode_desktop_path?: string;
 }
 
 export interface StartStepResponse {
@@ -41,7 +44,7 @@ export interface ConsoleQuota {
 }
 
 export interface ConsoleState {
-  frontend_mode: 'codex_desktop' | 'minimal_vscode';
+  frontend_mode: 'codex_desktop' | 'opencode_desktop' | 'minimal_vscode';
   frontend_name: string;
   onboarding_status: string;
   modelserver: {

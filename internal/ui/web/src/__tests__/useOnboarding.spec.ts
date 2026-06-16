@@ -154,6 +154,27 @@ describe('useOnboarding', () => {
     expect(o.frontendName.value).toBe('Codex Desktop');
   });
 
+  it('initializes OpenCode Desktop steps from server mode', async () => {
+    vi.spyOn(api, 'getState').mockResolvedValue({
+      schema_version: 1,
+      install_id: 'x',
+      frontend_mode: 'opencode_desktop',
+      onboarding_status: 'pending',
+      completed_steps: ['modelserver_login', 'agentserver_login'],
+    });
+    const o = useOnboarding();
+    await o.init();
+    expect(o.steps.value.map(s => s.id)).toEqual([
+      'modelserver_login',
+      'agentserver_login',
+      'opencode_desktop_install',
+      'opencode_desktop_configure',
+      'finalize',
+    ]);
+    expect(o.current.value?.id).toBe('opencode_desktop_install');
+    expect(o.frontendName.value).toBe('OpenCode Desktop');
+  });
+
   it('refreshState merges new completed_steps without resetting runtime', async () => {
     const getStateSpy = vi.spyOn(api, 'getState');
     getStateSpy.mockResolvedValueOnce({

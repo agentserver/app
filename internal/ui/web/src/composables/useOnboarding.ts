@@ -66,7 +66,11 @@ export function useOnboarding(): OnboardingHandle {
     const currentIds = steps.value.map(s => s.id).join(',');
     const nextIds = nextDefs.map(s => s.id).join(',');
     frontendMode.value = nextMode;
-    frontendName.value = nameInput || (nextMode === 'minimal_vscode' ? '极简界面' : 'Codex Desktop');
+    frontendName.value = nameInput || (nextMode === 'minimal_vscode'
+      ? '极简界面'
+      : nextMode === 'opencode_desktop'
+        ? 'OpenCode Desktop'
+        : 'Codex Desktop');
     if (currentIds !== nextIds) {
       steps.value = nextDefs.map(s => ({ ...s, runtime: { status: 'pending' as StepStatus } }));
     }

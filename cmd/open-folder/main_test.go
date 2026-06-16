@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
+	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
@@ -121,6 +123,76 @@ func TestOpenFolderCodexDesktopWritesUILocaleBeforeLaunch(t *testing.T) {
 	}
 }
 
+func TestOpenFolderOpenCodeDesktopWritesConfigAndUsesFolderWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	proxyToken := "open-folder-local-proxy-token"
+	p := paths.Paths{
+		InstallRoot:        filepath.Join(dir, ".agentserver-app"),
+		CodexConfigFile:    filepath.Join(dir, ".codex", "config.toml"),
+		OpenCodeConfigFile: filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+	}
+	if err := os.MkdirAll(p.InstallRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p.InstallRoot, "proxy-token"), []byte(proxyToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var gotFolder string
+	err := openFolderOpenCodeDesktop(context.Background(), p, `C:\Project Folder`, opencodedesktop.Detected{
+		Installed: true,
+		Path:      `C:\OpenCode\OpenCode.exe`,
+	}, "", func(ctx context.Context, opts opencodedesktop.LaunchOptions) error {
+		gotFolder = opts.Folder
+		if opts.Detected.Path != `C:\OpenCode\OpenCode.exe` {
+			t.Fatalf("OpenCode path = %q", opts.Detected.Path)
+		}
+		if opts.Config.Path != p.OpenCodeConfigFile {
+			t.Fatalf("OpenCode config path = %q, want %q", opts.Config.Path, p.OpenCodeConfigFile)
+		}
+		if opts.Config.APIKeyEnv != "AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY" {
+			t.Fatalf("OpenCode API key env = %q", opts.Config.APIKeyEnv)
+		}
+		if opts.Config.APIKey != proxyToken {
+			t.Fatalf("OpenCode API key = %q, want proxy token", opts.Config.APIKey)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("openFolderOpenCodeDesktop: %v", err)
+	}
+	if gotFolder != `C:\Project Folder` {
+		t.Fatalf("Folder = %q", gotFolder)
+	}
+	if _, err := os.Stat(p.OpenCodeConfigFile); err != nil {
+		t.Fatalf("opencode config not written: %v", err)
+	}
+	b, readErr := os.ReadFile(p.CodexConfigFile)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, want := range []string{
+		`base_url = "` + modelproxy.DefaultBaseURL + `"`,
+		`experimental_bearer_token = "` + proxyToken + `"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %q in:\n%s", want, b)
+		}
+	}
+	ob, readOpenCodeErr := os.ReadFile(p.OpenCodeConfigFile)
+	if readOpenCodeErr != nil {
+		t.Fatal(readOpenCodeErr)
+	}
+	if strings.Contains(string(ob), proxyToken) {
+		t.Fatalf("opencode config should not persist local proxy token:\n%s", ob)
+	}
+	if strings.Contains(string(ob), "AGENTSERVER_CODEX_LOCAL_API_KEY") {
+		t.Fatalf("opencode config should not use Codex-specific env names:\n%s", ob)
+	}
+	if !strings.Contains(string(ob), "{env:AGENTSERVER_LOCAL_MODEL_PROXY_API_KEY}") {
+		t.Fatalf("opencode config should use env substitution:\n%s", ob)
+	}
+}
+
 func TestLoadOpenFolderStateSyncsInstallModeFile(t *testing.T) {
 	dir := t.TempDir()
 	p := paths.Paths{StateFile: filepath.Join(dir, "state.json")}
@@ -196,13 +268,35 @@ func TestEnsureConsoleDoesNotStartWhenHealthy(t *testing.T) {
 	}
 }
 
-func TestStartDetachedHidesConsoleWindow(t *testing.T) {
-	body, err := os.ReadFile("main.go")
+func TestStartDetachedPreparesHiddenDetachedCommand(t *testing.T) {
+	hideCalled := false
+	startCalled := false
+	err := startDetachedWithDeps("launcher.exe", []string{"--background"},
+		func(cmd *exec.Cmd) {
+			hideCalled = true
+			if cmd.Path != "launcher.exe" {
+				t.Fatalf("Path = %q", cmd.Path)
+			}
+			if len(cmd.Args) != 2 || cmd.Args[1] != "--background" {
+				t.Fatalf("Args = %#v", cmd.Args)
+			}
+		},
+		func(cmd *exec.Cmd) error {
+			startCalled = true
+			if cmd.Stdin != nil || cmd.Stdout != nil || cmd.Stderr != nil {
+				t.Fatalf("stdio should be detached: stdin=%v stdout=%v stderr=%v", cmd.Stdin, cmd.Stdout, cmd.Stderr)
+			}
+			return nil
+		},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(body), "process.HideWindow(cmd)") {
-		t.Fatalf("startDetached should hide the child console window:\n%s", body)
+	if !hideCalled {
+		t.Fatal("hide hook was not called")
+	}
+	if !startCalled {
+		t.Fatal("start hook was not called")
 	}
 }
 
