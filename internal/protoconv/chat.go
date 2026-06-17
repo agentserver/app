@@ -1,8 +1,11 @@
 package protoconv
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 )
 
@@ -172,4 +175,94 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// WriteChatStreamAsResponses reads a Chat Completions SSE stream from r and
+// writes the equivalent Responses SSE event sequence to w. Event sequence:
+// response.created -> output_item.added -> output_text.delta /
+// function_call_arguments.delta -> output_item.done -> response.completed.
+func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
+	flusher, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	writeEvent := func(event string, data any) {
+		b, _ := json.Marshal(data)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+
+	writeEvent("response.created", map[string]any{"type": "response.created"})
+
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	itemAdded := false
+	// tool-call argument buffers keyed by tool index -> {id, name, args}
+	toolBuf := map[int]map[string]string{}
+
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "[DONE]" {
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Role      string `json:"role"`
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue // skip malformed chunk
+		}
+		for _, ch := range chunk.Choices {
+			d := ch.Delta
+			if d.Content != "" {
+				if !itemAdded {
+					writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added"})
+					itemAdded = true
+				}
+				writeEvent("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "delta": d.Content})
+			}
+			for _, tc := range d.ToolCalls {
+				buf := toolBuf[tc.Index]
+				if buf == nil {
+					buf = map[string]string{"id": tc.ID, "name": tc.Function.Name}
+					toolBuf[tc.Index] = buf
+					writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added"})
+				}
+				if tc.Function.Arguments != "" {
+					writeEvent("response.function_call_arguments.delta", map[string]any{
+						"type":    "response.function_call_arguments.delta",
+						"item_id": buf["id"], "delta": tc.Function.Arguments,
+					})
+					buf["args"] += tc.Function.Arguments
+				}
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+
+	writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done"})
+	writeEvent("response.completed", map[string]any{"type": "response.completed", "response": map[string]any{"status": "completed"}})
+	return nil
 }

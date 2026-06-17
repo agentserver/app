@@ -1,0 +1,47 @@
+package protoconv
+
+import (
+	"bufio"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestChatStreamToResponses(t *testing.T) {
+	// Canned Chat Completions SSE: one text delta, one tool-call arg delta, finish.
+	const sse = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"run\",\"arguments\":\"{}\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	rec := httptest.NewRecorder()
+	r := strings.NewReader(sse)
+	err := WriteChatStreamAsResponses(r, rec)
+	if err != nil {
+		t.Fatalf("WriteChatStreamAsResponses: %v", err)
+	}
+
+	body := rec.Body.String()
+	mustContain := []string{
+		"event: response.created",
+		"event: response.output_item.added",
+		"event: response.output_text.delta",
+		`"hi"`,
+		"event: response.function_call_arguments.delta",
+		"event: response.completed",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("stream output missing %q\n--- got ---\n%s", want, body)
+		}
+	}
+	// every non-empty line must be a valid SSE frame (event:/data:)
+	sc := bufio.NewScanner(strings.NewReader(body))
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" || strings.HasPrefix(line, "event:") || strings.HasPrefix(line, "data:") {
+			continue
+		}
+		t.Errorf("unexpected SSE line: %q", line)
+	}
+}
