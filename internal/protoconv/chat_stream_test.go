@@ -2,6 +2,7 @@ package protoconv
 
 import (
 	"bufio"
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -43,5 +44,49 @@ func TestChatStreamToResponses(t *testing.T) {
 			continue
 		}
 		t.Errorf("unexpected SSE line: %q", line)
+	}
+}
+
+func TestChatStreamMultiItemBalanced(t *testing.T) {
+	const sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"a\",\"arguments\":\"{\\\"x\\\":1}\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"c2\",\"function\":{\"name\":\"b\",\"arguments\":\"{}\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	rec := httptest.NewRecorder()
+	if err := WriteChatStreamAsResponses(strings.NewReader(sse), rec); err != nil {
+		t.Fatal(err)
+	}
+	added, done, argWithItem := countItemEvents(rec.Body.String())
+	if added != done {
+		t.Errorf("added=%d done=%d (must balance);\n%s", added, done, rec.Body.String())
+	}
+	if added != 3 { // 1 message + 2 function calls
+		t.Errorf("added=%d, want 3", added)
+	}
+	if argWithItem < 2 {
+		t.Errorf("arg deltas with item_id = %d, want >=2", argWithItem)
+	}
+}
+
+func TestChatRequestFunctionCallOutputArray(t *testing.T) {
+	resp := map[string]any{
+		"model": "deepseek-v4-pro",
+		"input": []any{
+			map[string]any{"type": "function_call_output", "call_id": "c1",
+				"output": []any{map[string]any{"type": "output_text", "text": "result"}}},
+		},
+	}
+	body, _ := json.Marshal(resp)
+	gotBody, err := ChatRequestFromResponses(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.Unmarshal(gotBody, &got)
+	if len(got.Messages) != 1 || got.Messages[0]["content"] != "result" {
+		t.Errorf("array function_call_output dropped; messages=%v", got.Messages)
 	}
 }

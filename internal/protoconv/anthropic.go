@@ -73,7 +73,7 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 				})
 			case "function_call_output":
 				callID, _ := m["call_id"].(string)
-				output, _ := m["output"].(string)
+				output := flattenResponsesContent(m["output"])
 				messages = append(messages, map[string]any{
 					"role": "user",
 					"content": []any{map[string]any{
@@ -176,12 +176,12 @@ func AnthropicResponseToResponses(antBody []byte) ([]byte, error) {
 }
 
 // WriteAnthropicStreamAsResponses reads an Anthropic Messages SSE stream and
-// writes the Responses SSE event sequence.
+// writes the Responses SSE event sequence. Each content block (text or tool_use)
+// gets a balanced added/done pair; deltas carry item_id.
 func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 	flusher, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 
 	writeEvent := func(event string, data any) {
 		b, _ := json.Marshal(data)
@@ -194,16 +194,31 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	counter := 0
+	newID := func(prefix string) string { counter++; return fmt.Sprintf("%s_%d", prefix, counter) }
+
 	var event string
-	itemAdded := false
+	var curItemID string // id of the currently open content block; "" = none
+	curToolID := ""      // if the open block is tool_use, the tool id; else ""
+
+	closeCurrent := func() {
+		if curItemID == "" {
+			return
+		}
+		if curToolID != "" {
+			writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done", "item": map[string]any{"type": "function_call", "id": curToolID, "call_id": curToolID}})
+			curToolID = ""
+		} else {
+			writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done", "item": map[string]any{"type": "message", "id": curItemID}})
+		}
+		curItemID = ""
+	}
+
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "event:") {
 			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-			if (event == "content_block_start" || event == "message_start") && !itemAdded {
-				writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added"})
-				itemAdded = true
-			}
 			continue
 		}
 		if !strings.HasPrefix(line, "data:") {
@@ -215,22 +230,42 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 			continue
 		}
 		switch event {
+		case "content_block_start":
+			closeCurrent()
+			block, _ := msg["content_block"].(map[string]any)
+			switch block["type"] {
+			case "tool_use":
+				id, _ := block["id"].(string)
+				if id == "" {
+					id = newID("fc")
+				}
+				name, _ := block["name"].(string)
+				curItemID = id
+				curToolID = id
+				writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "item": map[string]any{"type": "function_call", "id": id, "call_id": id, "name": name}})
+			default: // text
+				curItemID = newID("msg")
+				writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "item": map[string]any{"type": "message", "id": curItemID}})
+			}
 		case "content_block_delta":
 			delta, _ := msg["delta"].(map[string]any)
-			if delta["type"] == "text_delta" {
+			if curItemID == "" {
+				continue
+			}
+			switch delta["type"] {
+			case "text_delta":
 				if text, _ := delta["text"].(string); text != "" {
-					writeEvent("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "delta": text})
+					writeEvent("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "item_id": curItemID, "delta": text})
 				}
-			}
-			if delta["type"] == "input_json_delta" {
+			case "input_json_delta":
 				if pj, _ := delta["partial_json"].(string); pj != "" {
-					writeEvent("response.function_call_arguments.delta", map[string]any{
-						"type": "response.function_call_arguments.delta", "delta": pj,
-					})
+					writeEvent("response.function_call_arguments.delta", map[string]any{"type": "response.function_call_arguments.delta", "item_id": curItemID, "delta": pj})
 				}
 			}
+		case "content_block_stop":
+			closeCurrent()
 		case "message_stop":
-			writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done"})
+			closeCurrent()
 			writeEvent("response.completed", map[string]any{"type": "response.completed", "response": map[string]any{"status": "completed"}})
 		}
 	}

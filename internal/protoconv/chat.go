@@ -67,7 +67,7 @@ func ChatRequestFromResponses(respBody []byte) ([]byte, error) {
 				})
 			case "function_call_output":
 				callID, _ := m["call_id"].(string)
-				output, _ := m["output"].(string)
+				output := flattenResponsesContent(m["output"])
 				messages = append(messages, map[string]any{
 					"role": "tool", "tool_call_id": callID, "content": output,
 				})
@@ -178,14 +178,12 @@ func firstNonEmpty(a, b string) string {
 }
 
 // WriteChatStreamAsResponses reads a Chat Completions SSE stream from r and
-// writes the equivalent Responses SSE event sequence to w. Event sequence:
-// response.created -> output_item.added -> output_text.delta /
-// function_call_arguments.delta -> output_item.done -> response.completed.
+// writes the equivalent Responses SSE event sequence to w. Each output item
+// (message, and each tool call) gets a balanced added/done pair; deltas carry item_id.
 func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 	flusher, _ := w.(http.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 
 	writeEvent := func(event string, data any) {
 		b, _ := json.Marshal(data)
@@ -194,14 +192,35 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 			flusher.Flush()
 		}
 	}
-
 	writeEvent("response.created", map[string]any{"type": "response.created"})
 
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	itemAdded := false
-	// tool-call argument buffers keyed by tool index -> {id, name, args}
-	toolBuf := map[int]map[string]string{}
+
+	counter := 0
+	newID := func(prefix string) string { counter++; return fmt.Sprintf("%s_%d", prefix, counter) }
+
+	var msgItemID string          // open message item; "" = none
+	toolItems := map[int]string{} // open tool-call index -> item id
+
+	closeMsg := func() {
+		if msgItemID != "" {
+			writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done", "item": map[string]any{"type": "message", "id": msgItemID}})
+			msgItemID = ""
+		}
+	}
+	closeTool := func(idx int) {
+		if id, ok := toolItems[idx]; ok {
+			writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done", "item": map[string]any{"type": "function_call", "id": id, "call_id": id}})
+			delete(toolItems, idx)
+		}
+	}
+	closeAll := func() {
+		closeMsg()
+		for idx := range toolItems {
+			closeTool(idx)
+		}
+	}
 
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -235,34 +254,34 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 		for _, ch := range chunk.Choices {
 			d := ch.Delta
 			if d.Content != "" {
-				if !itemAdded {
-					writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added"})
-					itemAdded = true
+				if msgItemID == "" {
+					msgItemID = newID("msg")
+					writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "item": map[string]any{"type": "message", "id": msgItemID}})
 				}
-				writeEvent("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "delta": d.Content})
+				writeEvent("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "item_id": msgItemID, "delta": d.Content})
 			}
 			for _, tc := range d.ToolCalls {
-				buf := toolBuf[tc.Index]
-				if buf == nil {
-					buf = map[string]string{"id": tc.ID, "name": tc.Function.Name}
-					toolBuf[tc.Index] = buf
-					writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added"})
+				if _, ok := toolItems[tc.Index]; !ok {
+					id := tc.ID
+					if id == "" {
+						id = newID("fc")
+					}
+					toolItems[tc.Index] = id
+					writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "item": map[string]any{"type": "function_call", "id": id, "call_id": id, "name": tc.Function.Name}})
 				}
 				if tc.Function.Arguments != "" {
-					writeEvent("response.function_call_arguments.delta", map[string]any{
-						"type":    "response.function_call_arguments.delta",
-						"item_id": buf["id"], "delta": tc.Function.Arguments,
-					})
-					buf["args"] += tc.Function.Arguments
+					writeEvent("response.function_call_arguments.delta", map[string]any{"type": "response.function_call_arguments.delta", "item_id": toolItems[tc.Index], "delta": tc.Function.Arguments})
 				}
+			}
+			if ch.FinishReason != "" {
+				closeAll()
 			}
 		}
 	}
+	closeAll()
 	if err := sc.Err(); err != nil {
 		return err
 	}
-
-	writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done"})
 	writeEvent("response.completed", map[string]any{"type": "response.completed", "response": map[string]any{"status": "completed"}})
 	return nil
 }
