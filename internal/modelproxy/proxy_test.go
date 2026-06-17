@@ -651,6 +651,44 @@ func TestProxyRequiresConfiguredLocalBearerToken(t *testing.T) {
 	}
 }
 
+func TestHandlerPassesThroughUnknownModel(t *testing.T) {
+	var gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL,
+		LocalBearerToken: "local",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	body := []byte(`{"model":"some-unknown-model","input":"hi"}`)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/responses", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer local")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+
+	if gotPath != "/v1/responses" {
+		t.Errorf("unknown model routed upstream to %q, want /v1/responses (pass-through)", gotPath)
+	}
+}
+
 func TestHandlerRoutesDeepseekToChatCompletions(t *testing.T) {
 	var gotPath, gotBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

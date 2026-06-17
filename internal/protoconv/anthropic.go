@@ -243,9 +243,12 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 				curItemID = id
 				curToolID = id
 				writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "item": map[string]any{"type": "function_call", "id": id, "call_id": id, "name": name}})
-			default: // text
+			case "text", "":
 				curItemID = newID("msg")
 				writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "item": map[string]any{"type": "message", "id": curItemID}})
+			default:
+				// thinking / server-tool / other deferred block types: ignore
+				// without opening an output item (reasoning parity is a follow-up).
 			}
 		case "content_block_delta":
 			delta, _ := msg["delta"].(map[string]any)
@@ -266,8 +269,9 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 			closeCurrent()
 		case "message_stop":
 			closeCurrent()
-			writeEvent("response.completed", map[string]any{"type": "response.completed", "response": map[string]any{"status": "completed"}})
 		}
 	}
+	closeCurrent()
+	writeEvent("response.completed", map[string]any{"type": "response.completed", "response": map[string]any{"status": "completed"}})
 	return scanner.Err()
 }
