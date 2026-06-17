@@ -124,3 +124,50 @@ func anthropicContentBlocks(content any) []any {
 	}
 	return []any{map[string]any{"type": "text", "text": ""}}
 }
+
+// AnthropicResponseToResponses assembles a complete (non-streaming) Anthropic
+// Messages response body into a Responses-shaped body.
+func AnthropicResponseToResponses(antBody []byte) ([]byte, error) {
+	var ant struct {
+		ID      string `json:"id"`
+		Model   string `json:"model"`
+		Content []struct {
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			ID    string          `json:"id"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
+		} `json:"content"`
+		Usage any `json:"usage"`
+	}
+	if err := json.Unmarshal(antBody, &ant); err != nil {
+		return nil, fmt.Errorf("protoconv: parse anthropic body: %w", err)
+	}
+
+	output := []any{}
+	for _, b := range ant.Content {
+		switch b.Type {
+		case "text":
+			if strings.TrimSpace(b.Text) != "" {
+				output = append(output, map[string]any{
+					"type": "message", "role": "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": b.Text}},
+				})
+			}
+		case "tool_use":
+			output = append(output, map[string]any{
+				"type": "function_call", "name": b.Name, "call_id": b.ID,
+				"arguments": string(b.Input),
+			})
+		}
+	}
+
+	resp := map[string]any{
+		"id":     ant.ID,
+		"model":  ant.Model,
+		"status": "completed",
+		"output": output,
+		"usage":  ant.Usage,
+	}
+	return json.Marshal(resp)
+}

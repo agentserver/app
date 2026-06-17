@@ -55,3 +55,35 @@ func TestAnthropicRequestFromResponses(t *testing.T) {
 		t.Errorf("tools = %v", tools)
 	}
 }
+
+func TestAnthropicResponseToResponses(t *testing.T) {
+	ant := map[string]any{
+		"id":    "msg_1",
+		"model": "glm-5.2[1m]",
+		"content": []any{
+			map[string]any{"type": "text", "text": "hello there"},
+			map[string]any{"type": "tool_use", "id": "c1", "name": "run", "input": map[string]any{}},
+		},
+		"usage": map[string]any{"input_tokens": 1, "output_tokens": 2},
+	}
+	body, _ := json.Marshal(ant)
+	out, err := AnthropicResponseToResponses(body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if got["status"] != "completed" {
+		t.Errorf("status = %v", got["status"])
+	}
+	output, _ := got["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("output len = %d, want 2", len(output))
+	}
+	if output[0].(map[string]any)["type"] != "message" {
+		t.Errorf("output[0] type = %v", output[0].(map[string]any)["type"])
+	}
+	if output[1].(map[string]any)["type"] != "function_call" {
+		t.Errorf("output[1] type = %v", output[1].(map[string]any)["type"])
+	}
+}
