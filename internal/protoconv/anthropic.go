@@ -1,8 +1,11 @@
 package protoconv
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 )
 
@@ -170,4 +173,66 @@ func AnthropicResponseToResponses(antBody []byte) ([]byte, error) {
 		"usage":  ant.Usage,
 	}
 	return json.Marshal(resp)
+}
+
+// WriteAnthropicStreamAsResponses reads an Anthropic Messages SSE stream and
+// writes the Responses SSE event sequence.
+func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
+	flusher, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	writeEvent := func(event string, data any) {
+		b, _ := json.Marshal(data)
+		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+	writeEvent("response.created", map[string]any{"type": "response.created"})
+
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	var event string
+	itemAdded := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "event:") {
+			event = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			if (event == "content_block_start" || event == "message_start") && !itemAdded {
+				writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added"})
+				itemAdded = true
+			}
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		var msg map[string]any
+		if err := json.Unmarshal([]byte(payload), &msg); err != nil {
+			continue
+		}
+		switch event {
+		case "content_block_delta":
+			delta, _ := msg["delta"].(map[string]any)
+			if delta["type"] == "text_delta" {
+				if text, _ := delta["text"].(string); text != "" {
+					writeEvent("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "delta": text})
+				}
+			}
+			if delta["type"] == "input_json_delta" {
+				if pj, _ := delta["partial_json"].(string); pj != "" {
+					writeEvent("response.function_call_arguments.delta", map[string]any{
+						"type": "response.function_call_arguments.delta", "delta": pj,
+					})
+				}
+			}
+		case "message_stop":
+			writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done"})
+			writeEvent("response.completed", map[string]any{"type": "response.completed", "response": map[string]any{"status": "completed"}})
+		}
+	}
+	return scanner.Err()
 }
