@@ -391,3 +391,25 @@ func writeCodexTestFile(t *testing.T, path, body string) {
 func boolPtr(v bool) *bool {
 	return &v
 }
+
+func TestSetModelRewritesOnlyModelField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := SetModel(path, "glm-5.2[1m]"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `model = "glm-5.2[1m]"`) {
+		t.Errorf("model field not set; got:\n%s", b)
+	}
+	// provider/wire_api must be present (not clobbered)
+	if !strings.Contains(string(b), `model_provider = "modelserver"`) {
+		t.Errorf("model_provider clobbered; got:\n%s", b)
+	}
+	if !strings.Contains(string(b), `wire_api = "responses"`) {
+		t.Errorf("wire_api clobbered; got:\n%s", b)
+	}
+}

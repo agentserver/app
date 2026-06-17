@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 )
 
 type Settings struct {
@@ -62,6 +64,15 @@ func ModelserverProxySettings(baseURL, bearerToken string) Settings {
 	s.EnvKey = ""
 	s.ExperimentalBearerToken = strings.TrimSpace(bearerToken)
 	return s
+}
+
+// SetModel rewrites only the model field of the Codex config at path, preserving
+// the provider, wire_api, sandbox, and all other settings. It seeds a valid
+// proxy-pointed config if the file does not yet exist.
+func SetModel(path, model string) error {
+	settings := ModelserverProxySettings(modelproxy.DefaultBaseURL, LegacyLocalProxyAPIKeyValue)
+	settings.Model = model
+	return UpdateConfig(path, settings)
 }
 
 const (
