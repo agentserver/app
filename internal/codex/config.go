@@ -67,12 +67,43 @@ func ModelserverProxySettings(baseURL, bearerToken string) Settings {
 }
 
 // SetModel rewrites only the model field of the Codex config at path, preserving
-// the provider, wire_api, sandbox, and all other settings. It seeds a valid
-// proxy-pointed config if the file does not yet exist.
+// the provider, base_url, experimental_bearer_token (incl. the per-user local-proxy
+// token used on Linux headless), wire_api, and all other settings. It seeds a
+// valid proxy-pointed config if the file does not yet exist.
 func SetModel(path, model string) error {
-	settings := ModelserverProxySettings(modelproxy.DefaultBaseURL, LegacyLocalProxyAPIKeyValue)
+	settings := existingModelserverSettings(path)
 	settings.Model = model
 	return UpdateConfig(path, settings)
+}
+
+// existingModelserverSettings returns the modelserver provider settings currently
+// in path, preserving base_url + experimental_bearer_token; defaults to the
+// legacy local-proxy token when the file or fields are absent.
+func existingModelserverSettings(path string) Settings {
+	settings := ModelserverProxySettings(modelproxy.DefaultBaseURL, LegacyLocalProxyAPIKeyValue)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return settings // file missing -> defaults
+	}
+	var root map[string]any
+	if _, err := toml.Decode(string(b), &root); err != nil {
+		return settings
+	}
+	providers, _ := root["model_providers"].(map[string]any)
+	if providers == nil {
+		return settings
+	}
+	provider, _ := providers["modelserver"].(map[string]any)
+	if provider == nil {
+		return settings
+	}
+	if base, ok := provider["base_url"].(string); ok && base != "" {
+		settings.BaseURL = base
+	}
+	if tok, ok := provider["experimental_bearer_token"].(string); ok && tok != "" {
+		settings.ExperimentalBearerToken = tok
+	}
+	return settings
 }
 
 const (

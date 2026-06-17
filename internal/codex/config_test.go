@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 )
 
 func TestUpdateConfig_Empty(t *testing.T) {
@@ -411,5 +413,29 @@ func TestSetModelRewritesOnlyModelField(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `wire_api = "responses"`) {
 		t.Errorf("wire_api clobbered; got:\n%s", b)
+	}
+}
+
+func TestSetModelPreservesExistingBearerToken(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// Linux headless writes a per-user random token into experimental_bearer_token.
+	seed := ModelserverProxySettings(modelproxy.DefaultBaseURL, "per-user-random-token")
+	if err := UpdateConfig(path, seed); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetModel(path, "deepseek-v4-pro"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	body := string(b)
+	if !strings.Contains(body, `model = "deepseek-v4-pro"`) {
+		t.Errorf("model not set; got:\n%s", body)
+	}
+	if !strings.Contains(body, `experimental_bearer_token = "per-user-random-token"`) {
+		t.Errorf("per-user bearer token was clobbered; got:\n%s", body)
+	}
+	if strings.Contains(body, `agentserver-local-proxy`) {
+		t.Errorf("legacy token leaked into config; got:\n%s", body)
 	}
 }
