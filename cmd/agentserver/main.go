@@ -13,11 +13,13 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/headless"
 	"github.com/agentserver/agentserver-pkg/internal/modelaccess"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
+	"github.com/agentserver/agentserver-pkg/internal/protoconv"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/terminalauth"
 	"golang.org/x/term"
@@ -32,6 +34,7 @@ type app struct {
 	switchWorkspace func(context.Context) error
 	serveDriverMCP  func(context.Context) error
 	runDaemon       func(context.Context) error
+	setModel        func(args []string) error
 }
 
 func main() {
@@ -165,6 +168,9 @@ func newApp() app {
 				Logf:            daemonLogf(proxyLogPath),
 			})
 		},
+		setModel: func(args []string) error {
+			return runAgentserverSetModel(args)
+		},
 	}
 }
 
@@ -190,6 +196,12 @@ func (a app) run(ctx context.Context, args []string) error {
 	}
 	if cmd == "model-proxy-daemon" {
 		return a.runDaemon(ctx)
+	}
+	if cmd == "set-model" {
+		if a.setModel == nil {
+			return fmt.Errorf("set-model unavailable: paths not initialized")
+		}
+		return a.setModel(args[1:])
 	}
 	switch cmd {
 	case "", "install-driver", "switch-workspace", "serve-driver-mcp":
@@ -228,6 +240,25 @@ func promptName(defaultName string) (string, error) {
 	return promptNameWithTerminal(os.Stdin, os.Stdout, defaultName, func() bool {
 		return term.IsTerminal(int(os.Stdin.Fd()))
 	})
+}
+
+func runAgentserverSetModel(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: agentserver set-model <name>; known models: %v", protoconv.KnownModels())
+	}
+	model := args[0]
+	if _, ok := protoconv.LookupRoute(model); !ok {
+		return fmt.Errorf("unknown model %q; known models: %v", model, protoconv.KnownModels())
+	}
+	p, err := paths.Default()
+	if err != nil {
+		return err
+	}
+	if err := codex.SetModel(p.CodexConfigFile, model); err != nil {
+		return err
+	}
+	fmt.Printf("model set to %s in %s\n", model, p.CodexConfigFile)
+	return nil
 }
 
 func promptNameWithTerminal(r io.Reader, w io.Writer, defaultName string, isTerminal func() bool) (string, error) {
