@@ -96,3 +96,57 @@ func TestChatRequestMapsItems(t *testing.T) {
 		t.Errorf("missing tool message for c1, got %v", tool)
 	}
 }
+
+func TestChatResponseToResponses(t *testing.T) {
+	chat := map[string]any{
+		"id":    "chat_1",
+		"model": "deepseek-v4-pro",
+		"choices": []any{map[string]any{
+			"message": map[string]any{
+				"role":    "assistant",
+				"content": "hello there",
+				"tool_calls": []any{map[string]any{
+					"id": "c1", "type": "function",
+					"function": map[string]any{"name": "run", "arguments": "{}"},
+				}},
+			},
+			"finish_reason": "tool_calls",
+		}},
+		"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 2},
+	}
+	body, _ := json.Marshal(chat)
+
+	out, err := ChatResponseToResponses(body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+
+	if got["model"] != "deepseek-v4-pro" {
+		t.Errorf("model = %v", got["model"])
+	}
+	if got["status"] != "completed" {
+		t.Errorf("status = %v, want completed", got["status"])
+	}
+	output, _ := got["output"].([]any)
+	if len(output) < 2 {
+		t.Fatalf("output items = %d, want >=2 (message + function_call)", len(output))
+	}
+	first := output[0].(map[string]any)
+	if first["type"] != "message" {
+		t.Errorf("first output type = %v, want message", first["type"])
+	}
+	var foundFn bool
+	for _, it := range output {
+		if m, ok := it.(map[string]any); ok && m["type"] == "function_call" {
+			foundFn = true
+			if m["name"] != "run" || m["call_id"] != "c1" {
+				t.Errorf("function_call = %v", m)
+			}
+		}
+	}
+	if !foundFn {
+		t.Errorf("no function_call item in output")
+	}
+}

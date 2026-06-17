@@ -114,3 +114,62 @@ func flattenResponsesContent(content any) string {
 		return ""
 	}
 }
+
+// ChatResponseToResponses assembles a complete (non-streaming) Chat
+// Completions response body into a Responses-shaped body.
+func ChatResponseToResponses(chatBody []byte) ([]byte, error) {
+	var chat struct {
+		ID      string `json:"id"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Role      string `json:"role"`
+				Content   string `json:"content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage any `json:"usage"`
+	}
+	if err := json.Unmarshal(chatBody, &chat); err != nil {
+		return nil, fmt.Errorf("protoconv: parse chat body: %w", err)
+	}
+
+	output := []any{}
+	for _, ch := range chat.Choices {
+		m := ch.Message
+		if strings.TrimSpace(m.Content) != "" {
+			output = append(output, map[string]any{
+				"type": "message", "role": firstNonEmpty(m.Role, "assistant"),
+				"content": []any{map[string]any{"type": "output_text", "text": m.Content}},
+			})
+		}
+		for _, tc := range m.ToolCalls {
+			output = append(output, map[string]any{
+				"type": "function_call", "name": tc.Function.Name,
+				"arguments": tc.Function.Arguments, "call_id": tc.ID,
+			})
+		}
+	}
+
+	resp := map[string]any{
+		"id":     chat.ID,
+		"model":  chat.Model,
+		"status": "completed",
+		"output": output,
+		"usage":  chat.Usage,
+	}
+	return json.Marshal(resp)
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
