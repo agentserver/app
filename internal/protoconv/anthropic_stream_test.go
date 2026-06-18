@@ -8,7 +8,7 @@ import (
 )
 
 func TestAnthropicStreamToResponses(t *testing.T) {
-	const sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"glm-5.2[1m]\"}}\n\n" +
+	const sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"glm-5.2\"}}\n\n" +
 		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
 		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
 		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
@@ -105,7 +105,7 @@ func TestAnthropicStreamThinkingBlockOpensNoItem(t *testing.T) {
 
 func TestAnthropicRequestFunctionCallOutputArray(t *testing.T) {
 	resp := map[string]any{
-		"model": "glm-5.2[1m]",
+		"model": "glm-5.2",
 		"input": []any{
 			map[string]any{"type": "function_call_output", "call_id": "c1",
 				"output": []any{map[string]any{"type": "output_text", "text": "result"}}},

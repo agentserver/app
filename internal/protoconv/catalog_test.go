@@ -10,7 +10,7 @@ func TestLookupRoute(t *testing.T) {
 	}{
 		{"gpt-5.5", WireResponses, true},
 		{"deepseek-v4-pro", WireChat, true},
-		{"glm-5.2[1m]", WireAnthropic, true},
+		{"glm-5.2", WireAnthropic, true},
 		{"does-not-exist", "", false},
 	}
 	for _, c := range cases {
@@ -27,7 +27,7 @@ func TestLookupRoute(t *testing.T) {
 
 func TestKnownModels(t *testing.T) {
 	got := KnownModels()
-	want := map[string]bool{"gpt-5.5": true, "deepseek-v4-pro": true, "glm-5.2[1m]": true}
+	want := map[string]bool{"gpt-5.5": true, "deepseek-v4-pro": true, "glm-5.2": true}
 	if len(got) != len(want) {
 		t.Fatalf("KnownModels() = %v, want %d entries", got, len(want))
 	}

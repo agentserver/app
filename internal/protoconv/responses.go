@@ -1,6 +1,6 @@
 // Package protoconv translates Codex's OpenAI Responses API requests to and
 // from the wire protocols the model gateway exposes for non-OpenAI models
-// (Chat Completions for deepseek-v4-pro, Anthropic Messages for glm-5.2[1m]).
+// (Chat Completions for deepseek-v4-pro, Anthropic Messages for glm-5.2).
 package protoconv
 
 // Wire names the upstream protocol a model is served through.

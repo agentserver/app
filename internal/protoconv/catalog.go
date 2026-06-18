@@ -6,7 +6,10 @@ package protoconv
 var catalog = []Route{
 	{Model: "gpt-5.5", Wire: WireResponses},
 	{Model: "deepseek-v4-pro", Wire: WireChat},
-	{Model: "glm-5.2[1m]", Wire: WireAnthropic},
+	// The gateway's Anthropic /v1/messages endpoint exposes the GLM model as
+	// "glm-5.2" (the "[1m]" label is not a model on this gateway and is rejected
+	// with HTTP 400). GLM is served only via Anthropic Messages, not Chat.
+	{Model: "glm-5.2", Wire: WireAnthropic},
 }
 
 // LookupRoute returns the route for a model name and whether it is known.

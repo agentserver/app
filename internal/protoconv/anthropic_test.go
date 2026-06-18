@@ -7,7 +7,7 @@ import (
 
 func TestAnthropicRequestFromResponses(t *testing.T) {
 	resp := map[string]any{
-		"model":        "glm-5.2[1m]",
+		"model":        "glm-5.2",
 		"instructions": "be brief",
 		"input": []any{
 			map[string]any{"type": "message", "role": "user",
@@ -27,7 +27,7 @@ func TestAnthropicRequestFromResponses(t *testing.T) {
 	var got map[string]any
 	_ = json.Unmarshal(gotBody, &got)
 
-	if got["model"] != "glm-5.2[1m]" {
+	if got["model"] != "glm-5.2" {
 		t.Errorf("model = %v", got["model"])
 	}
 	if got["system"] != "be brief" {
@@ -59,7 +59,7 @@ func TestAnthropicRequestFromResponses(t *testing.T) {
 func TestAnthropicResponseToResponses(t *testing.T) {
 	ant := map[string]any{
 		"id":    "msg_1",
-		"model": "glm-5.2[1m]",
+		"model": "glm-5.2",
 		"content": []any{
 			map[string]any{"type": "text", "text": "hello there"},
 			map[string]any{"type": "tool_use", "id": "c1", "name": "run", "input": map[string]any{}},

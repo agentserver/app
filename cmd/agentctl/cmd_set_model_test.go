@@ -13,7 +13,7 @@ func TestValidateModelSelection(t *testing.T) {
 	}{
 		{"gpt-5.5", true},
 		{"deepseek-v4-pro", true},
-		{"glm-5.2[1m]", true},
+		{"glm-5.2", true},
 		{"bogus-model", false},
 		{"", false},
 	}
