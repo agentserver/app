@@ -25,6 +25,14 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 		"stream": root["stream"],
 	}
 
+	// Anthropic Messages API requires max_tokens. Map it from the Responses
+	// request's max_output_tokens when present, else default.
+	maxTokens := 8192
+	if mot, ok := root["max_output_tokens"].(float64); ok && mot > 0 {
+		maxTokens = int(mot)
+	}
+	out["max_tokens"] = maxTokens
+
 	// system: instructions + any developer/system input messages
 	systemParts := []string{}
 	if instr, _ := root["instructions"].(string); strings.TrimSpace(instr) != "" {

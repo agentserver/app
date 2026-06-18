@@ -30,6 +30,9 @@ func TestAnthropicRequestFromResponses(t *testing.T) {
 	if got["model"] != "glm-5.2" {
 		t.Errorf("model = %v", got["model"])
 	}
+	if mt, ok := got["max_tokens"].(float64); !ok || mt != 8192 {
+		t.Errorf("max_tokens = %v, want 8192 (default)", got["max_tokens"])
+	}
 	if got["system"] != "be brief" {
 		t.Errorf("system = %v, want instructions", got["system"])
 	}
