@@ -41,6 +41,12 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 
 	messages := []any{}
 	switch in := root["input"].(type) {
+	case string:
+		// Responses API permits a bare string as a single user message.
+		messages = append(messages, map[string]any{
+			"role":    "user",
+			"content": []any{map[string]any{"type": "text", "text": in}},
+		})
 	case []any:
 		for _, item := range in {
 			m, ok := item.(map[string]any)

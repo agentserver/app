@@ -59,6 +59,30 @@ func TestAnthropicRequestFromResponses(t *testing.T) {
 	}
 }
 
+func TestAnthropicRequestFromResponses_StringInput(t *testing.T) {
+	// Responses API permits a bare string as `input`; ensure it becomes a single user message.
+	resp := map[string]any{"model": "glm-5.2", "input": "reply OK", "stream": true}
+	body, _ := json.Marshal(resp)
+	gotBody, err := AnthropicRequestFromResponses(body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(gotBody, &got)
+	msgs, _ := got["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages len = %d, want 1", len(msgs))
+	}
+	m := msgs[0].(map[string]any)
+	if m["role"] != "user" {
+		t.Errorf("role = %v, want user", m["role"])
+	}
+	blocks, _ := m["content"].([]any)
+	if len(blocks) != 1 || blocks[0].(map[string]any)["text"] != "reply OK" {
+		t.Errorf("content = %v", blocks)
+	}
+}
+
 func TestAnthropicResponseToResponses(t *testing.T) {
 	ant := map[string]any{
 		"id":    "msg_1",
