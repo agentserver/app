@@ -294,6 +294,13 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
+			// Drain any trailing bytes (blank lines, usage chunks) so the
+			// underlying http.Response.Body reaches EOF before Close().
+			// Otherwise net/http resets the TCP connection and the upstream
+			// gateway sees an abnormal disconnect — its turn state never
+			// transitions out of in_progress, leaving the modelserver dashboard
+			// showing "processing" forever even though Codex displayed the reply.
+			_, _ = io.Copy(io.Discard, r)
 			break
 		}
 		var chunk struct {
