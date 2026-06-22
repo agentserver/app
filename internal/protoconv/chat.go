@@ -199,7 +199,10 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 	newID := func(prefix string) string { counter++; return fmt.Sprintf("%s_%d", prefix, counter) }
 
 	var msgItemID string          // open message item; "" = none
+	var msgTextBuf strings.Builder
 	toolItems := map[int]string{} // open tool-call index -> item id
+	toolNames := map[int]string{}
+	toolArgs := map[int]*strings.Builder{}
 
 	// Upstream response identity, captured from the first chunk. Codex's
 	// Responses parser fails ("missing field `id`") without these.
@@ -223,14 +226,40 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 
 	closeMsg := func() {
 		if msgItemID != "" {
-			writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done", "item": map[string]any{"type": "message", "id": msgItemID}})
+			// Codex's ResponseItem::Message requires {role, content:[{type,text}]}.
+			writeEvent("response.output_item.done", map[string]any{
+				"type": "response.output_item.done",
+				"item": map[string]any{
+					"type":    "message",
+					"id":      msgItemID,
+					"role":    "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": msgTextBuf.String()}},
+				},
+			})
 			msgItemID = ""
+			msgTextBuf.Reset()
 		}
 	}
 	closeTool := func(idx int) {
 		if id, ok := toolItems[idx]; ok {
-			writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done", "item": map[string]any{"type": "function_call", "id": id, "call_id": id}})
+			// Codex's ResponseItem::FunctionCall requires {name, arguments, call_id}.
+			args := ""
+			if buf, ok := toolArgs[idx]; ok && buf != nil {
+				args = buf.String()
+			}
+			writeEvent("response.output_item.done", map[string]any{
+				"type": "response.output_item.done",
+				"item": map[string]any{
+					"type":      "function_call",
+					"id":        id,
+					"call_id":   id,
+					"name":      toolNames[idx],
+					"arguments": args,
+				},
+			})
 			delete(toolItems, idx)
+			delete(toolNames, idx)
+			delete(toolArgs, idx)
 		}
 	}
 	closeAll := func() {
@@ -283,8 +312,17 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 			if d.Content != "" {
 				if msgItemID == "" {
 					msgItemID = newID("msg")
-					writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "item": map[string]any{"type": "message", "id": msgItemID}})
+					writeEvent("response.output_item.added", map[string]any{
+						"type": "response.output_item.added",
+						"item": map[string]any{
+							"type":    "message",
+							"id":      msgItemID,
+							"role":    "assistant",
+							"content": []any{},
+						},
+					})
 				}
+				msgTextBuf.WriteString(d.Content)
 				writeEvent("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "item_id": msgItemID, "delta": d.Content})
 			}
 			for _, tc := range d.ToolCalls {
@@ -294,9 +332,26 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 						id = newID("fc")
 					}
 					toolItems[tc.Index] = id
-					writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "item": map[string]any{"type": "function_call", "id": id, "call_id": id, "name": tc.Function.Name}})
+					toolNames[tc.Index] = tc.Function.Name
+					toolArgs[tc.Index] = &strings.Builder{}
+					writeEvent("response.output_item.added", map[string]any{
+						"type": "response.output_item.added",
+						"item": map[string]any{
+							"type":      "function_call",
+							"id":        id,
+							"call_id":   id,
+							"name":      tc.Function.Name,
+							"arguments": "",
+						},
+					})
+				}
+				if tc.Function.Name != "" && toolNames[tc.Index] == "" {
+					toolNames[tc.Index] = tc.Function.Name
 				}
 				if tc.Function.Arguments != "" {
+					if buf := toolArgs[tc.Index]; buf != nil {
+						buf.WriteString(tc.Function.Arguments)
+					}
 					writeEvent("response.function_call_arguments.delta", map[string]any{"type": "response.function_call_arguments.delta", "item_id": toolItems[tc.Index], "delta": tc.Function.Arguments})
 				}
 			}

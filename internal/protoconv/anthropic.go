@@ -213,6 +213,9 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 	var event string
 	var curItemID string // id of the currently open content block; "" = none
 	curToolID := ""      // if the open block is tool_use, the tool id; else ""
+	curToolName := ""    // function name carried from content_block_start
+	var textBuf strings.Builder
+	var argsBuf strings.Builder
 
 	// Upstream response identity, captured from message_start. Codex's
 	// Responses parser rejects the stream with "missing field `id`" if these
@@ -240,10 +243,32 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 			return
 		}
 		if curToolID != "" {
-			writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done", "item": map[string]any{"type": "function_call", "id": curToolID, "call_id": curToolID}})
+			// Codex's ResponseItem::FunctionCall requires {name, arguments, call_id}.
+			writeEvent("response.output_item.done", map[string]any{
+				"type": "response.output_item.done",
+				"item": map[string]any{
+					"type":      "function_call",
+					"id":        curToolID,
+					"call_id":   curToolID,
+					"name":      curToolName,
+					"arguments": argsBuf.String(),
+				},
+			})
 			curToolID = ""
+			curToolName = ""
+			argsBuf.Reset()
 		} else {
-			writeEvent("response.output_item.done", map[string]any{"type": "response.output_item.done", "item": map[string]any{"type": "message", "id": curItemID}})
+			// Codex's ResponseItem::Message requires {role, content:[{type,text}]}.
+			writeEvent("response.output_item.done", map[string]any{
+				"type": "response.output_item.done",
+				"item": map[string]any{
+					"type":    "message",
+					"id":      curItemID,
+					"role":    "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": textBuf.String()}},
+				},
+			})
+			textBuf.Reset()
 		}
 		curItemID = ""
 	}
@@ -287,10 +312,28 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 				name, _ := block["name"].(string)
 				curItemID = id
 				curToolID = id
-				writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "item": map[string]any{"type": "function_call", "id": id, "call_id": id, "name": name}})
+				curToolName = name
+				writeEvent("response.output_item.added", map[string]any{
+					"type": "response.output_item.added",
+					"item": map[string]any{
+						"type":      "function_call",
+						"id":        id,
+						"call_id":   id,
+						"name":      name,
+						"arguments": "",
+					},
+				})
 			case "text", "":
 				curItemID = newID("msg")
-				writeEvent("response.output_item.added", map[string]any{"type": "response.output_item.added", "item": map[string]any{"type": "message", "id": curItemID}})
+				writeEvent("response.output_item.added", map[string]any{
+					"type": "response.output_item.added",
+					"item": map[string]any{
+						"type":    "message",
+						"id":      curItemID,
+						"role":    "assistant",
+						"content": []any{},
+					},
+				})
 			default:
 				// thinking / server-tool / other deferred block types: ignore
 				// without opening an output item (reasoning parity is a follow-up).
@@ -303,10 +346,12 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 			switch delta["type"] {
 			case "text_delta":
 				if text, _ := delta["text"].(string); text != "" {
+					textBuf.WriteString(text)
 					writeEvent("response.output_text.delta", map[string]any{"type": "response.output_text.delta", "item_id": curItemID, "delta": text})
 				}
 			case "input_json_delta":
 				if pj, _ := delta["partial_json"].(string); pj != "" {
+					argsBuf.WriteString(pj)
 					writeEvent("response.function_call_arguments.delta", map[string]any{"type": "response.function_call_arguments.delta", "item_id": curItemID, "delta": pj})
 				}
 			}

@@ -33,6 +33,67 @@ func TestAnthropicStreamToResponses(t *testing.T) {
 	}
 }
 
+// Regression: Codex's ResponseItem::Message requires {role, content:[…]} and
+// ResponseItem::FunctionCall requires {name, arguments, call_id}. If we omit
+// any of these, the parser silently drops the item — text never reaches the
+// UI even though the SSE stream looks "complete". Accumulate deltas and emit
+// fully-shaped items on output_item.done.
+func TestAnthropicStreamItemShapesAreCodexParseable(t *testing.T) {
+	const sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_x\",\"model\":\"glm-5.2\"}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello \"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"world\"}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"c1\",\"name\":\"run\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"k\\\":1}\"}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	rec := httptest.NewRecorder()
+	if err := WriteAnthropicStreamAsResponses(strings.NewReader(sse), rec); err != nil {
+		t.Fatal(err)
+	}
+	// Pull every output_item.done frame and assert it has Codex-required fields.
+	body := rec.Body.String()
+	var doneItems []map[string]any
+	for _, frame := range strings.Split(body, "\n\n") {
+		if !strings.Contains(frame, "event: response.output_item.done") {
+			continue
+		}
+		dataIdx := strings.Index(frame, "data:")
+		if dataIdx < 0 {
+			continue
+		}
+		var ev struct {
+			Item map[string]any `json:"item"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(frame[dataIdx+len("data:"):])), &ev); err != nil {
+			t.Fatalf("malformed done frame %q: %v", frame, err)
+		}
+		doneItems = append(doneItems, ev.Item)
+	}
+	if len(doneItems) != 2 {
+		t.Fatalf("want 2 output_item.done frames (message+tool), got %d:\n%s", len(doneItems), body)
+	}
+	// message item
+	msg := doneItems[0]
+	if msg["type"] != "message" || msg["role"] != "assistant" {
+		t.Errorf("message item bad shape: %v", msg)
+	}
+	content, _ := msg["content"].([]any)
+	if len(content) != 1 {
+		t.Fatalf("message content len=%d, want 1: %v", len(content), msg)
+	}
+	cp := content[0].(map[string]any)
+	if cp["type"] != "output_text" || cp["text"] != "Hello world" {
+		t.Errorf("message content bad: %v", cp)
+	}
+	// function_call item
+	fc := doneItems[1]
+	if fc["type"] != "function_call" || fc["name"] != "run" || fc["call_id"] != "c1" || fc["arguments"] != `{"k":1}` {
+		t.Errorf("function_call item bad shape: %v", fc)
+	}
+}
+
 // Regression: Codex Responses parser fails with
 //
 //	"stream disconnected before completion: failed to parse ResponseCompleted: missing field `id`"

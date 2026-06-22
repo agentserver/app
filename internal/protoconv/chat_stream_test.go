@@ -47,6 +47,51 @@ func TestChatStreamToResponses(t *testing.T) {
 	}
 }
 
+// Regression: mirror of the Anthropic shape test. Codex parser silently
+// drops items that don't match ResponseItem.
+func TestChatStreamItemShapesAreCodexParseable(t *testing.T) {
+	const sse = "data: {\"id\":\"x\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"Hi \"}}]}\n\n" +
+		"data: {\"id\":\"x\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"delta\":{\"content\":\"there\"}}]}\n\n" +
+		"data: {\"id\":\"x\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"run\",\"arguments\":\"{\\\"k\\\":\"}}]}}]}\n\n" +
+		"data: {\"id\":\"x\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]}}]}\n\n" +
+		"data: {\"id\":\"x\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	rec := httptest.NewRecorder()
+	if err := WriteChatStreamAsResponses(strings.NewReader(sse), rec); err != nil {
+		t.Fatal(err)
+	}
+	body := rec.Body.String()
+	var doneItems []map[string]any
+	for _, frame := range strings.Split(body, "\n\n") {
+		if !strings.Contains(frame, "event: response.output_item.done") {
+			continue
+		}
+		dataIdx := strings.Index(frame, "data:")
+		var ev struct {
+			Item map[string]any `json:"item"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(frame[dataIdx+len("data:"):])), &ev); err != nil {
+			t.Fatalf("malformed done frame: %v", err)
+		}
+		doneItems = append(doneItems, ev.Item)
+	}
+	if len(doneItems) != 2 {
+		t.Fatalf("want 2 done items (msg+tool), got %d:\n%s", len(doneItems), body)
+	}
+	msg := doneItems[0]
+	if msg["role"] != "assistant" {
+		t.Errorf("msg missing role:assistant: %v", msg)
+	}
+	content := msg["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["text"] != "Hi there" {
+		t.Errorf("msg content not accumulated: %v", content)
+	}
+	fc := doneItems[1]
+	if fc["name"] != "run" || fc["arguments"] != `{"k":1}` || fc["call_id"] != "c1" {
+		t.Errorf("function_call missing fields: %v", fc)
+	}
+}
+
 // Regression: matches the Anthropic-side test. Codex parser requires id on
 // response.completed; the Chat SSE format carries it on each chunk's top-level
 // `id`. Pick up the first non-empty one we see.
