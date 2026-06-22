@@ -28,11 +28,16 @@ func ChatRequestFromResponses(respBody []byte) ([]byte, error) {
 		out["reasoning"] = r
 	}
 
-	messages := []any{}
+	// Chat Completions only allows roles {system, assistant, user, tool, function}.
+	// The Responses API uses "developer" for prompt-author instructions; merge
+	// those (and any inline system messages) into a single leading system
+	// message — same behavior as the Anthropic converter.
+	systemParts := []string{}
 	if instr, _ := root["instructions"].(string); strings.TrimSpace(instr) != "" {
-		messages = append(messages, map[string]any{"role": "system", "content": instr})
+		systemParts = append(systemParts, instr)
 	}
 
+	messages := []any{}
 	switch in := root["input"].(type) {
 	case string:
 		if strings.TrimSpace(in) != "" {
@@ -47,6 +52,13 @@ func ChatRequestFromResponses(respBody []byte) ([]byte, error) {
 			switch m["type"] {
 			case "message":
 				role, _ := m["role"].(string)
+				switch strings.ToLower(role) {
+				case "system", "developer":
+					if t := flattenResponsesContent(m["content"]); t != "" {
+						systemParts = append(systemParts, t)
+					}
+					continue
+				}
 				if role == "" {
 					role = "user"
 				}
@@ -93,6 +105,12 @@ func ChatRequestFromResponses(respBody []byte) ([]byte, error) {
 		out["tools"] = conv
 	}
 
+	if len(systemParts) > 0 {
+		// Prepend a single merged system message.
+		messages = append([]any{
+			map[string]any{"role": "system", "content": strings.Join(systemParts, "\n\n")},
+		}, messages...)
+	}
 	out["messages"] = messages
 	return json.Marshal(out)
 }

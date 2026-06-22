@@ -2,6 +2,7 @@ package protoconv
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -44,6 +45,54 @@ func TestChatRequestFromResponses(t *testing.T) {
 	fn := tools[0].(map[string]any)["function"].(map[string]any)
 	if fn["name"] != "run" {
 		t.Errorf("tool function name = %v, want run", fn["name"])
+	}
+}
+
+// Regression: Codex sends `developer` role for prompt-author instructions, but
+// Chat Completions only accepts {system, assistant, user, tool, function} —
+// DeepSeek rejects it with "developer is not one of [...]". Merge developer +
+// inline system messages into a single leading system message (mirrors the
+// Anthropic converter).
+func TestChatRequestMergesDeveloperIntoSystem(t *testing.T) {
+	resp := map[string]any{
+		"model":        "deepseek-v4-pro",
+		"instructions": "be brief",
+		"input": []any{
+			map[string]any{"type": "message", "role": "developer",
+				"content": []any{map[string]any{"type": "input_text", "text": "use Chinese"}}},
+			map[string]any{"type": "message", "role": "system",
+				"content": []any{map[string]any{"type": "input_text", "text": "extra rule"}}},
+			map[string]any{"type": "message", "role": "user",
+				"content": []any{map[string]any{"type": "input_text", "text": "hi"}}},
+		},
+	}
+	body, _ := json.Marshal(resp)
+	gotBody, err := ChatRequestFromResponses(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(gotBody, &got)
+	msgs, _ := got["messages"].([]any)
+	if len(msgs) != 2 {
+		t.Fatalf("messages len = %d, want 2 (system+user); got %+v", len(msgs), msgs)
+	}
+	sys := msgs[0].(map[string]any)
+	if sys["role"] != "system" {
+		t.Errorf("msg[0] role = %v, want system", sys["role"])
+	}
+	for _, want := range []string{"be brief", "use Chinese", "extra rule"} {
+		if c, _ := sys["content"].(string); !strings.Contains(c, want) {
+			t.Errorf("system content missing %q; got %q", want, c)
+		}
+	}
+	if u := msgs[1].(map[string]any); u["role"] != "user" || u["content"] != "hi" {
+		t.Errorf("msg[1] = %v, want user/hi", u)
+	}
+	for _, m := range msgs {
+		if r := m.(map[string]any)["role"]; r == "developer" {
+			t.Errorf("developer role leaked into Chat messages: %v", m)
+		}
 	}
 }
 
