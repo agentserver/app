@@ -33,6 +33,54 @@ func TestAnthropicStreamToResponses(t *testing.T) {
 	}
 }
 
+// Regression: Codex Responses parser fails with
+//
+//	"stream disconnected before completion: failed to parse ResponseCompleted: missing field `id`"
+//
+// unless response.created and response.completed both carry the upstream
+// response id (and model). Pull them out of Anthropic's message_start.
+func TestAnthropicStreamCarriesResponseIDAndModel(t *testing.T) {
+	const sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_abc123\",\"model\":\"glm-5.2\"}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	rec := httptest.NewRecorder()
+	if err := WriteAnthropicStreamAsResponses(strings.NewReader(sse), rec); err != nil {
+		t.Fatal(err)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`"id":"msg_abc123"`,
+		`"model":"glm-5.2"`,
+		`"status":"in_progress"`,
+		`"status":"completed"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q\n--- got ---\n%s", want, body)
+		}
+	}
+	// Both response.created and response.completed must contain id+model.
+	for _, ev := range []string{"response.created", "response.completed"} {
+		idx := strings.Index(body, "event: "+ev)
+		if idx < 0 {
+			t.Errorf("event %s missing\n%s", ev, body)
+			continue
+		}
+		end := strings.Index(body[idx:], "\n\n")
+		if end < 0 {
+			t.Errorf("event %s frame truncated\n%s", ev, body)
+			continue
+		}
+		frame := body[idx : idx+end]
+		if !strings.Contains(frame, `"id":"msg_abc123"`) {
+			t.Errorf("event %s missing id:\n%s", ev, frame)
+		}
+		if !strings.Contains(frame, `"model":"glm-5.2"`) {
+			t.Errorf("event %s missing model:\n%s", ev, frame)
+		}
+	}
+}
+
 func TestAnthropicStreamMultiItemBalanced(t *testing.T) {
 	const sse = "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
 		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +

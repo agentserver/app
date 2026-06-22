@@ -204,8 +204,6 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 			flusher.Flush()
 		}
 	}
-	writeEvent("response.created", map[string]any{"type": "response.created"})
-
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
@@ -215,6 +213,27 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 	var event string
 	var curItemID string // id of the currently open content block; "" = none
 	curToolID := ""      // if the open block is tool_use, the tool id; else ""
+
+	// Upstream response identity, captured from message_start. Codex's
+	// Responses parser rejects the stream with "missing field `id`" if these
+	// are absent from response.created/response.completed.
+	respID := ""
+	respModel := ""
+	createdEmitted := false
+	emitCreated := func() {
+		if createdEmitted {
+			return
+		}
+		createdEmitted = true
+		writeEvent("response.created", map[string]any{
+			"type": "response.created",
+			"response": map[string]any{
+				"id":     respID,
+				"model":  respModel,
+				"status": "in_progress",
+			},
+		})
+	}
 
 	closeCurrent := func() {
 		if curItemID == "" {
@@ -244,7 +263,19 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 			continue
 		}
 		switch event {
+		case "message_start":
+			if m, _ := msg["message"].(map[string]any); m != nil {
+				if id, _ := m["id"].(string); id != "" {
+					respID = id
+				}
+				if mdl, _ := m["model"].(string); mdl != "" {
+					respModel = mdl
+				}
+			}
+			emitCreated()
 		case "content_block_start":
+			emitCreated() // some gateways omit message_start; ensure created fires before any item
+
 			closeCurrent()
 			block, _ := msg["content_block"].(map[string]any)
 			switch block["type"] {
@@ -286,6 +317,14 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 		}
 	}
 	closeCurrent()
-	writeEvent("response.completed", map[string]any{"type": "response.completed", "response": map[string]any{"status": "completed"}})
+	emitCreated() // edge case: empty stream — still emit a well-formed pair
+	writeEvent("response.completed", map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":     respID,
+			"model":  respModel,
+			"status": "completed",
+		},
+	})
 	return scanner.Err()
 }

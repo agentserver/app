@@ -47,6 +47,35 @@ func TestChatStreamToResponses(t *testing.T) {
 	}
 }
 
+// Regression: matches the Anthropic-side test. Codex parser requires id on
+// response.completed; the Chat SSE format carries it on each chunk's top-level
+// `id`. Pick up the first non-empty one we see.
+func TestChatStreamCarriesResponseIDAndModel(t *testing.T) {
+	const sse = "data: {\"id\":\"chatcmpl-xyz\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"}}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-xyz\",\"model\":\"deepseek-v4-pro\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	rec := httptest.NewRecorder()
+	if err := WriteChatStreamAsResponses(strings.NewReader(sse), rec); err != nil {
+		t.Fatal(err)
+	}
+	body := rec.Body.String()
+	for _, ev := range []string{"response.created", "response.completed"} {
+		idx := strings.Index(body, "event: "+ev)
+		if idx < 0 {
+			t.Errorf("event %s missing\n%s", ev, body)
+			continue
+		}
+		end := strings.Index(body[idx:], "\n\n")
+		frame := body[idx : idx+end]
+		if !strings.Contains(frame, `"id":"chatcmpl-xyz"`) {
+			t.Errorf("event %s missing id:\n%s", ev, frame)
+		}
+		if !strings.Contains(frame, `"model":"deepseek-v4-pro"`) {
+			t.Errorf("event %s missing model:\n%s", ev, frame)
+		}
+	}
+}
+
 func TestChatStreamMultiItemBalanced(t *testing.T) {
 	const sse = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"a\",\"arguments\":\"{\\\"x\\\":1}\"}}]}}]}\n\n" +

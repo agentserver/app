@@ -192,8 +192,6 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 			flusher.Flush()
 		}
 	}
-	writeEvent("response.created", map[string]any{"type": "response.created"})
-
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
@@ -202,6 +200,26 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 
 	var msgItemID string          // open message item; "" = none
 	toolItems := map[int]string{} // open tool-call index -> item id
+
+	// Upstream response identity, captured from the first chunk. Codex's
+	// Responses parser fails ("missing field `id`") without these.
+	respID := ""
+	respModel := ""
+	createdEmitted := false
+	emitCreated := func() {
+		if createdEmitted {
+			return
+		}
+		createdEmitted = true
+		writeEvent("response.created", map[string]any{
+			"type": "response.created",
+			"response": map[string]any{
+				"id":     respID,
+				"model":  respModel,
+				"status": "in_progress",
+			},
+		})
+	}
 
 	closeMsg := func() {
 		if msgItemID != "" {
@@ -232,6 +250,8 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 			break
 		}
 		var chunk struct {
+			ID      string `json:"id"`
+			Model   string `json:"model"`
 			Choices []struct {
 				Delta struct {
 					Role      string `json:"role"`
@@ -251,6 +271,13 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
 			continue // skip malformed chunk
 		}
+		if respID == "" && chunk.ID != "" {
+			respID = chunk.ID
+		}
+		if respModel == "" && chunk.Model != "" {
+			respModel = chunk.Model
+		}
+		emitCreated()
 		for _, ch := range chunk.Choices {
 			d := ch.Delta
 			if d.Content != "" {
@@ -282,6 +309,14 @@ func WriteChatStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 	if err := sc.Err(); err != nil {
 		return err
 	}
-	writeEvent("response.completed", map[string]any{"type": "response.completed", "response": map[string]any{"status": "completed"}})
+	emitCreated() // edge case: empty stream
+	writeEvent("response.completed", map[string]any{
+		"type": "response.completed",
+		"response": map[string]any{
+			"id":     respID,
+			"model":  respModel,
+			"status": "completed",
+		},
+	})
 	return nil
 }
