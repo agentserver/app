@@ -58,8 +58,13 @@ const (
 	LegacyLocalProxyAPIKeyValue = "agentserver-local-proxy"
 )
 
+// ModelserverProxySettings returns Settings that point Codex at the local
+// model proxy. It leaves Model unset so UpdateConfig preserves whatever the
+// user previously selected (via agentctl/agentserver set-model). When no
+// config.toml exists yet, UpdateConfig falls back to the default model.
 func ModelserverProxySettings(baseURL, bearerToken string) Settings {
 	s := ModelserverSettings()
+	s.Model = "" // provider-only update; do not clobber user-selected model
 	s.BaseURL = baseURL
 	s.EnvKey = ""
 	s.ExperimentalBearerToken = strings.TrimSpace(bearerToken)
@@ -139,8 +144,14 @@ func UpdateConfig(path string, s Settings) error {
 	}
 
 	root["model_provider"] = s.Provider
+	// Caller-supplied Model always wins. If the caller omits it (provider-only
+	// update from the launcher), preserve whatever the user previously
+	// selected; only seed a default when the field is missing entirely (first
+	// write).
 	if s.Model != "" {
 		root["model"] = s.Model
+	} else if _, ok := root["model"].(string); !ok {
+		root["model"] = ModelserverSettings().Model
 	}
 	root["model_reasoning_effort"] = defaultString(s.ModelReasoningEffort, defaultModelReasoningEffort)
 	root["approvals_reviewer"] = defaultString(s.ApprovalsReviewer, defaultApprovalsReviewer)

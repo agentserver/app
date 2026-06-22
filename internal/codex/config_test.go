@@ -416,6 +416,38 @@ func TestSetModelRewritesOnlyModelField(t *testing.T) {
 	}
 }
 
+// Regression: the launcher calls ModelserverProxySettings + UpdateConfig every
+// time the desktop app starts. It must NOT clobber the user's set-model choice
+// back to the compiled-in default — Codex Desktop would then immediately reset
+// glm-5.2 / deepseek-v4-pro to gpt-5.5 on every restart.
+func TestUpdateConfig_ProviderOnlyPreservesUserModel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// Initial provisioning (first write): default model lands.
+	if err := UpdateConfig(path, ModelserverProxySettings(modelproxy.DefaultBaseURL, "tok")); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), `model = "gpt-5.5"`) {
+		t.Fatalf("first-write default missing:\n%s", b)
+	}
+	// User picks glm-5.2.
+	if err := SetModel(path, "glm-5.2"); err != nil {
+		t.Fatal(err)
+	}
+	// Launcher fires again on next desktop start — must preserve glm-5.2.
+	if err := UpdateConfig(path, ModelserverProxySettings(modelproxy.DefaultBaseURL, "tok")); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(path)
+	if !strings.Contains(string(b), `model = "glm-5.2"`) {
+		t.Fatalf("launcher restart clobbered user model selection:\n%s", b)
+	}
+	if strings.Contains(string(b), `model = "gpt-5.5"`) {
+		t.Fatalf("default model leaked back in:\n%s", b)
+	}
+}
+
 func TestSetModelPreservesExistingBearerToken(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
