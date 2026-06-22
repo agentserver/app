@@ -394,6 +394,32 @@ func boolPtr(v bool) *bool {
 	return &v
 }
 
+func TestCurrentModelMissingFileReturnsDefault(t *testing.T) {
+	dir := t.TempDir()
+	got, err := CurrentModel(filepath.Join(dir, "nope.toml"))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != ModelserverSettings().Model {
+		t.Errorf("CurrentModel = %q, want default %q", got, ModelserverSettings().Model)
+	}
+}
+
+func TestCurrentModelReturnsConfiguredValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := SetModel(path, "glm-5.2"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := CurrentModel(path)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "glm-5.2" {
+		t.Errorf("CurrentModel = %q, want glm-5.2", got)
+	}
+}
+
 func TestSetModelRewritesOnlyModelField(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")

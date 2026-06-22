@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -250,6 +251,60 @@ func TestControllerStateProvidesProjectsURLWhenProjectIDMissing(t *testing.T) {
 	}
 	if got.SubscriptionURL != "https://code.cs.ac.cn/projects" {
 		t.Fatalf("SubscriptionURL=%q", got.SubscriptionURL)
+	}
+}
+
+func TestControllerStateExposesModelCatalogAndCurrent(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "state.json")
+	store := state.NewStore(storePath)
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	codexConfig := filepath.Join(dir, "codex.toml")
+	// Seed with glm-5.2 so we see the picker reflect a non-default selection.
+	if err := os.WriteFile(codexConfig, []byte("model = \"glm-5.2\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := NewController(Deps{State: store, Secrets: newTestSecrets(), CodexConfigFile: codexConfig})
+	got, err := c.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CurrentModel != "glm-5.2" {
+		t.Errorf("CurrentModel = %q, want glm-5.2", got.CurrentModel)
+	}
+	if len(got.AvailableModels) != 3 {
+		t.Fatalf("AvailableModels len = %d, want 3", len(got.AvailableModels))
+	}
+	wantDisplay := map[string]string{
+		"gpt-5.5":         "GPT-5.5",
+		"deepseek-v4-pro": "DeepSeek v4 Pro",
+		"glm-5.2":         "智谱 GLM-5.2",
+	}
+	for _, opt := range got.AvailableModels {
+		if wantDisplay[opt.Name] != opt.DisplayName {
+			t.Errorf("AvailableModels %q display = %q, want %q", opt.Name, opt.DisplayName, wantDisplay[opt.Name])
+		}
+	}
+}
+
+func TestControllerSetCodexModelRejectsUnknownAndPersistsKnown(t *testing.T) {
+	dir := t.TempDir()
+	codexConfig := filepath.Join(dir, "codex.toml")
+	c := NewController(Deps{State: state.NewStore(filepath.Join(dir, "state.json")), CodexConfigFile: codexConfig})
+	if err := c.SetCodexModel(context.Background(), "does-not-exist"); err == nil {
+		t.Fatal("SetCodexModel(unknown) should fail")
+	}
+	if err := c.SetCodexModel(context.Background(), "glm-5.2"); err != nil {
+		t.Fatalf("SetCodexModel(glm-5.2): %v", err)
+	}
+	b, _ := os.ReadFile(codexConfig)
+	if want := `model = "glm-5.2"`; !strings.Contains(string(b), want) {
+		t.Errorf("config missing %q:\n%s", want, b)
 	}
 }
 

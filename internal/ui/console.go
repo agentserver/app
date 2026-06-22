@@ -23,6 +23,7 @@ type ConsoleController interface {
 	OpenFrontend(context.Context) error
 	OpenSubscription(context.Context) error
 	LogoutModelserver(context.Context) error
+	SetCodexModel(context.Context, string) error
 	Quit(context.Context) error
 	UpdateState(context.Context) (updater.State, error)
 	CheckUpdate(context.Context, bool) (updater.State, error)
@@ -63,6 +64,9 @@ func (noopConsoleController) OpenFrontend(context.Context) error     { return ni
 func (noopConsoleController) OpenSubscription(context.Context) error { return nil }
 func (noopConsoleController) LogoutModelserver(context.Context) error {
 	return nil
+}
+func (noopConsoleController) SetCodexModel(context.Context, string) error {
+	return errors.New("console: model switch unavailable")
 }
 func (noopConsoleController) Quit(context.Context) error { return nil }
 func (noopConsoleController) UpdateState(context.Context) (updater.State, error) {

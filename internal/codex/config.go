@@ -71,6 +71,29 @@ func ModelserverProxySettings(baseURL, bearerToken string) Settings {
 	return s
 }
 
+// CurrentModel returns the model field from the Codex config at path.
+// Returns the default (ModelserverSettings().Model, i.e. "gpt-5.5") if the file
+// is missing, unparseable, or has no model field. Pure read; never writes or
+// backs up.
+func CurrentModel(path string) (string, error) {
+	def := ModelserverSettings().Model
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return def, nil
+		}
+		return def, fmt.Errorf("read codex config: %w", err)
+	}
+	var root map[string]any
+	if _, err := toml.Decode(string(b), &root); err != nil {
+		return def, fmt.Errorf("parse codex config: %w", err)
+	}
+	if m, ok := root["model"].(string); ok && m != "" {
+		return m, nil
+	}
+	return def, nil
+}
+
 // SetModel rewrites only the model field of the Codex config at path, preserving
 // the provider, base_url, experimental_bearer_token (incl. the per-user local-proxy
 // token used on Linux headless), wire_api, and all other settings. It seeds a

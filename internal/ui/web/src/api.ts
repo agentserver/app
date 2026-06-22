@@ -43,6 +43,11 @@ export interface ConsoleQuota {
   resets_at?: string;
 }
 
+export interface ConsoleModelOption {
+  name: string;
+  display_name?: string;
+}
+
 export interface ConsoleState {
   frontend_mode: 'codex_desktop' | 'opencode_desktop' | 'minimal_vscode';
   frontend_name: string;
@@ -62,6 +67,8 @@ export interface ConsoleState {
   quotas: ConsoleQuota[];
   quota_error?: string;
   subscription_url?: string;
+  current_model?: string;
+  available_models?: ConsoleModelOption[];
   last_refreshed_at?: string;
 }
 
@@ -218,6 +225,13 @@ export const openConsoleSubscription = () =>
 
 export const logoutConsoleModelserver = () =>
   request<{ state: 'logged_out' }>('/api/console/logout-modelserver', withConsoleToken({ method: 'POST' }));
+
+export const setConsoleModel = (model: string) =>
+  request<{ state: 'set'; model: string }>('/api/console/model', withConsoleToken({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
+  }));
 
 export const getConsoleSlaves = () =>
   request<ConsoleSlavesResponse>('/api/console/slaves');

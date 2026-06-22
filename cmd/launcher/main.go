@@ -231,6 +231,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		Slaves:                   slaveManager,
 		Updates:                  updates,
 		PendingSlaveRestartsPath: in.Paths.PendingSlaveRestartsFile,
+		CodexConfigFile:          in.Paths.CodexConfigFile,
 		ModelserverWebBaseURL:    "https://code.cs.ac.cn",
 		RefreshModelserverToken: func(ctx context.Context) error {
 			_, err := tokenrefresh.RefreshOnce(ctx, tokenrefresh.Options{

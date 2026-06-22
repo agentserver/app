@@ -19,4 +19,7 @@ const (
 type Route struct {
 	Model string
 	Wire  Wire
+	// DisplayName is the human-readable label for the UI model picker. Empty
+	// means "fall back to Model". The wire-side model name remains Model.
+	DisplayName string
 }

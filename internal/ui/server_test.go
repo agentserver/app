@@ -740,6 +740,44 @@ func TestServerConsoleLogoutModelserverEndpoint(t *testing.T) {
 	}
 }
 
+func TestServerConsoleSetModelEndpoint(t *testing.T) {
+	cc := &fakeConsoleController{}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/api/console/model", "application/json", strings.NewReader(`{"model":"glm-5.2"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body["model"] != "glm-5.2" || body["state"] != "set" {
+		t.Fatalf("body=%+v", body)
+	}
+	if cc.setModelCalled != "glm-5.2" {
+		t.Fatalf("SetCodexModel not called with glm-5.2, got %q", cc.setModelCalled)
+	}
+}
+
+func TestServerConsoleSetModelRejectsEmpty(t *testing.T) {
+	cc := &fakeConsoleController{}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+	resp, err := http.Post(srv.URL+"/api/console/model", "application/json", strings.NewReader(`{"model":""}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("status=%d, want 400", resp.StatusCode)
+	}
+}
+
 func TestServerConsoleSlavesEndpointReturnsMachineAndSlaves(t *testing.T) {
 	cc := &fakeConsoleController{
 		machine: slave.Machine{MachineID: "machine-1", ComputerName: "PC"},
@@ -1355,6 +1393,8 @@ type fakeConsoleController struct {
 	installedManifest    updater.Manifest
 	installUpdateState   updater.State
 	installUpdateErr     error
+	setModelCalled       string
+	setModelErr          error
 }
 
 func (f *fakeConsoleController) State(context.Context) (console.State, error) {
@@ -1382,6 +1422,10 @@ func (f *fakeConsoleController) SelectFolder(context.Context) (string, error) {
 func (f *fakeConsoleController) LogoutModelserver(context.Context) error {
 	f.loggedOutModelserver = true
 	return nil
+}
+func (f *fakeConsoleController) SetCodexModel(_ context.Context, model string) error {
+	f.setModelCalled = model
+	return f.setModelErr
 }
 func (f *fakeConsoleController) Quit(context.Context) error {
 	f.quit = true

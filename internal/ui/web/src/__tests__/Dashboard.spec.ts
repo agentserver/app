@@ -16,6 +16,12 @@ function consoleState(): api.ConsoleState {
       { window: '5h', percentage: 58, remaining_percentage: 42 },
       { window: '7d', percentage: 22, remaining_percentage: 78 },
     ],
+    current_model: 'gpt-5.5',
+    available_models: [
+      { name: 'gpt-5.5', display_name: 'GPT-5.5' },
+      { name: 'deepseek-v4-pro', display_name: 'DeepSeek v4 Pro' },
+      { name: 'glm-5.2', display_name: '智谱 GLM-5.2' },
+    ],
     last_refreshed_at: '2026-06-07T12:00:00Z',
   };
 }
@@ -68,6 +74,35 @@ describe('Dashboard', () => {
     vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate());
   });
   afterEach(() => vi.useRealTimers());
+
+  it('renders the model selector with the current model preselected', async () => {
+    mockConsoleState();
+    const w = mount(Dashboard);
+    await flushPromises();
+    expect(w.text()).toContain('Codex 模型');
+    expect(w.text()).toContain('GPT-5.5');
+    expect(w.text()).toContain('智谱 GLM-5.2');
+    expect(w.text()).toContain('DeepSeek v4 Pro');
+  });
+
+  it('switches the model via the picker and refreshes state', async () => {
+    mockConsoleState();
+    const setSpy = vi.spyOn(api, 'setConsoleModel').mockResolvedValue({ state: 'set', model: 'glm-5.2' });
+    const refreshSpy = vi.spyOn(api, 'refreshConsoleState').mockResolvedValue({
+      ...consoleState(),
+      current_model: 'glm-5.2',
+    });
+    const w = mount(Dashboard);
+    await flushPromises();
+    // Find the underlying radio input whose value is glm-5.2 and click it.
+    const inputs = w.findAll('.el-radio input');
+    const glmInput = inputs.find(i => i.attributes('value') === 'glm-5.2');
+    expect(glmInput?.exists()).toBe(true);
+    await glmInput!.setValue();
+    await flushPromises();
+    expect(setSpy).toHaveBeenCalledWith('glm-5.2');
+    expect(refreshSpy).toHaveBeenCalled();
+  });
 
   it('loads and renders console update state on mount', async () => {
     const getUpdateSpy = vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
