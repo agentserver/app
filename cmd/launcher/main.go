@@ -231,6 +231,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		Slaves:                   slaveManager,
 		Updates:                  updates,
 		PendingSlaveRestartsPath: in.Paths.PendingSlaveRestartsFile,
+		CodexConfigFile:          in.Paths.CodexConfigFile,
 		ModelserverWebBaseURL:    "https://code.cs.ac.cn",
 		RefreshModelserverToken: func(ctx context.Context) error {
 			_, err := tokenrefresh.RefreshOnce(ctx, tokenrefresh.Options{
@@ -806,8 +807,9 @@ func launchCompletedOpenCodeDesktop(ctx context.Context, s *state.State, p paths
 	if err != nil {
 		return err
 	}
+	// See launchCompletedCodexDesktop for why this is tolerant of failure.
 	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, localProxyToken)); err != nil {
-		return err
+		log.Printf("launcher: update codex config (continuing): %v", err)
 	}
 	if p.OpenCodeConfigFile != "" {
 		if err := opencode.UpdateConfig(p.OpenCodeConfigFile, opencode.Settings{
@@ -858,8 +860,15 @@ func launchCompletedCodexDesktop(ctx context.Context, s *state.State, p paths.Pa
 	if err != nil {
 		return err
 	}
+	// UpdateConfig writes config.toml atomically (write tmp, rename). If Codex
+	// Desktop is already running it holds a read handle and Windows rejects
+	// the rename with ERROR_ACCESS_DENIED. That's a benign no-op for "open
+	// frontend" — the running Codex won't reload the file anyway — so log and
+	// continue rather than fail the launch. First-time startup (Codex not
+	// running, file unlocked) still writes normally; codex.SetModel (user
+	// switching models) is invoked when Codex isn't holding the file open.
 	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, localProxyToken)); err != nil {
-		return err
+		log.Printf("launcher: update codex config (continuing): %v", err)
 	}
 	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
 	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)
@@ -1028,8 +1037,13 @@ func execVSCode(codeExe string, p paths.Paths, folder string, sec secrets.Store,
 	if err != nil {
 		return err
 	}
+	// Unlike Codex/OpenCode Desktop, VS Code does NOT hold the codex config
+	// open, so the rename-while-locked race that justifies tolerating
+	// UpdateConfig failures in those paths doesn't apply here. We need a
+	// fresh codex config before VS Code starts (the Codex extension reads it
+	// at session creation), so propagate the error.
 	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, localProxyToken)); err != nil {
-		return err
+		return fmt.Errorf("update codex config before launching VS Code: %w", err)
 	}
 	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
 	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)

@@ -77,6 +77,7 @@ func NewServerWithConsoleToken(o Orchestrator, c ConsoleController, token string
 	mux.HandleFunc("/api/console/open-frontend", s.handleConsoleOpenFrontend)
 	mux.HandleFunc("/api/console/open-subscription", s.handleConsoleOpenSubscription)
 	mux.HandleFunc("/api/console/logout-modelserver", s.handleConsoleLogoutModelserver)
+	mux.HandleFunc("/api/console/model", s.handleConsoleSetModel)
 	mux.HandleFunc("/api/console/quit", s.handleConsoleQuit)
 	mux.HandleFunc("/api/console/select-folder", s.handleConsoleSelectFolder)
 	mux.HandleFunc("/api/console/slaves", s.handleConsoleSlaves)
@@ -627,6 +628,32 @@ func (s *server) handleConsoleLogoutModelserver(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, 200, map[string]string{"state": "logged_out"})
+}
+
+func (s *server) handleConsoleSetModel(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	if !s.requireTrustedConsoleMutation(w, r) {
+		return
+	}
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4*1024)).Decode(&body); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	model := strings.TrimSpace(body.Model)
+	if model == "" {
+		writeErr(w, 400, errors.New("model required"))
+		return
+	}
+	if err := s.c.SetCodexModel(r.Context(), model); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"state": "set", "model": model})
 }
 
 func (s *server) handleConsoleQuit(w http.ResponseWriter, r *http.Request) {

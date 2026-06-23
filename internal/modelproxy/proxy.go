@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/protoconv"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 )
@@ -126,6 +127,10 @@ func NewHandler(opts Options) (http.Handler, error) {
 				return
 			}
 			http.Error(w, "request body unavailable", http.StatusBadRequest)
+			return
+		}
+		if converted, path, convBody, ok := convertIfCatalogued(r2); ok {
+			serveConverted(r2.Context(), opts, upstream, converted, path, convBody, w)
 			return
 		}
 		r2.Header.Del("X-AgentServer-Client")
@@ -274,6 +279,125 @@ func setRequestBody(r *http.Request, body []byte) {
 		return io.NopCloser(bytes.NewReader(body)), nil
 	}
 	r.Header.Set("Content-Length", strconv.Itoa(len(body)))
+}
+
+// convertIfCatalogued reads the request body; if the model is a converted one
+// it returns the converted upstream body + path. It always restores r.Body so
+// the pass-through reverse proxy still works for non-converted requests.
+func convertIfCatalogued(r *http.Request) (wire protoconv.Wire, path string, convBody []byte, ok bool) {
+	if r.Method != http.MethodPost {
+		return "", "", nil, false
+	}
+	trimmed := strings.TrimRight(r.URL.Path, "/")
+	if trimmed != "/v1/responses" && trimmed != "/responses" {
+		return "", "", nil, false
+	}
+	raw, err := io.ReadAll(r.Body)
+	r.Body.Close()
+	if err != nil {
+		// restore what we can and bail to pass-through
+		setRequestBody(r, raw)
+		return "", "", nil, false
+	}
+	setRequestBody(r, raw) // restore for the pass-through path
+	var peek struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(raw, &peek); err != nil {
+		return "", "", nil, false
+	}
+	route, found := protoconv.LookupRoute(peek.Model)
+	if !found || route.Wire == protoconv.WireResponses {
+		return "", "", nil, false
+	}
+	switch route.Wire {
+	case protoconv.WireChat:
+		body, err := protoconv.ChatRequestFromResponses(raw)
+		if err != nil {
+			return "", "", nil, false
+		}
+		return route.Wire, protoconv.ChatUpstreamPath, body, true
+	case protoconv.WireAnthropic:
+		body, err := protoconv.AnthropicRequestFromResponses(raw)
+		if err != nil {
+			return "", "", nil, false
+		}
+		return route.Wire, protoconv.AnthropicUpstreamPath, body, true
+	}
+	return "", "", nil, false
+}
+
+// serveConverted POSTs the converted body upstream and writes the translated
+// Responses response (streaming-aware) back to the client.
+func serveConverted(ctx context.Context, opts Options, upstream *url.URL, wire protoconv.Wire, path string, convBody []byte, w http.ResponseWriter) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			http.Error(w, "model proxy conversion error", http.StatusBadGateway)
+		}
+	}()
+
+	token, err := opts.Secrets.Get(tokenrefresh.AccessTokenKey)
+	if err != nil || token == "" {
+		http.Error(w, "modelserver login required", http.StatusUnauthorized)
+		return
+	}
+	stream := bytes.Contains(convBody, []byte(`"stream":true`))
+	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream.Scheme+"://"+upstream.Host+path, bytes.NewReader(convBody))
+	if err != nil {
+		http.Error(w, "model proxy upstream request", http.StatusBadGateway)
+		return
+	}
+	upReq.Header.Set("Content-Type", "application/json")
+	upReq.Header.Set("Authorization", "Bearer "+token)
+	if wire == protoconv.WireAnthropic {
+		upReq.Header.Set("X-Api-Key", token)
+	}
+	client := &http.Client{}
+	if opts.Transport != nil {
+		client.Transport = opts.Transport
+	}
+	resp, err := client.Do(upReq)
+	if err != nil {
+		http.Error(w, "model proxy upstream error", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		for k, vs := range resp.Header {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+		return
+	}
+
+	switch {
+	case wire == protoconv.WireChat && stream:
+		_ = protoconv.WriteChatStreamAsResponses(resp.Body, w)
+	case wire == protoconv.WireChat:
+		b, _ := io.ReadAll(resp.Body)
+		out, err := protoconv.ChatResponseToResponses(b)
+		if err != nil {
+			http.Error(w, "model proxy conversion error", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(out)
+	case wire == protoconv.WireAnthropic && stream:
+		_ = protoconv.WriteAnthropicStreamAsResponses(resp.Body, w)
+	case wire == protoconv.WireAnthropic:
+		b, _ := io.ReadAll(resp.Body)
+		out, err := protoconv.AnthropicResponseToResponses(b)
+		if err != nil {
+			http.Error(w, "model proxy conversion error", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(out)
+	}
 }
 
 func stripHopByHopHeaders(h http.Header) {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { FolderOpened } from '@element-plus/icons-vue';
-import { ElMessageBox } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import * as api from '../api';
 import QuotaCard from './QuotaCard.vue';
 
@@ -18,6 +18,8 @@ const installingUpdate = ref(false);
 const opening = ref(false);
 const openingSubscription = ref(false);
 const loggingOutModelserver = ref(false);
+const switchingModel = ref(false);
+const modelSwitchError = ref('');
 const reconnectingModelserver = ref(false);
 const reconnectStatus = ref('');
 const reconnectOauthUrl = ref('');
@@ -48,6 +50,7 @@ const visibleErrors = computed(() => [
   { key: 'frontend', message: frontendError.value },
   { key: 'subscription', message: subscriptionError.value },
   { key: 'logout-modelserver', message: logoutModelserverError.value },
+  { key: 'model-switch', message: modelSwitchError.value },
   { key: 'reconnect', message: reconnectError.value },
   { key: 'agentserver-reconnect', message: agentserverReconnectError.value },
   { key: 'slave', message: slaveError.value },
@@ -260,6 +263,26 @@ async function openSubscription() {
     subscriptionError.value = errorMessage(e);
   } finally {
     openingSubscription.value = false;
+  }
+}
+
+async function switchModel(model: string) {
+  if (switchingModel.value || !model) return;
+  if (model === state.value?.current_model) return;
+  const option = state.value?.available_models?.find(m => m.name === model);
+  const label = option?.display_name || model;
+  switchingModel.value = true;
+  modelSwitchError.value = '';
+  try {
+    await api.setConsoleModel(model);
+    state.value = await api.refreshConsoleState();
+    ElMessage.success(`已切换到 ${label}。新建 Codex 对话生效（旧对话保持原模型）。`);
+  } catch (e) {
+    modelSwitchError.value = errorMessage(e);
+    // Refresh to undo optimistic radio selection.
+    try { state.value = await api.refreshConsoleState(); } catch { /* ignore */ }
+  } finally {
+    switchingModel.value = false;
   }
 }
 
@@ -613,6 +636,31 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <section
+      v-if="state?.frontend_mode === 'codex_desktop' && (state?.available_models?.length || 0) > 0"
+      class="model-panel"
+    >
+      <div class="section-head">
+        <h2>Codex 模型</h2>
+        <p>选择 Codex Desktop 默认使用的大模型。切换后新建对话生效；旧对话保持原模型。</p>
+      </div>
+      <el-radio-group
+        :model-value="state?.current_model"
+        :disabled="switchingModel"
+        @change="(val: string | number | boolean | undefined) => switchModel(String(val ?? ''))"
+      >
+        <el-radio
+          v-for="opt in state?.available_models || []"
+          :key="opt.name"
+          :value="opt.name"
+          :label="opt.name"
+          border
+        >
+          {{ opt.display_name || opt.name }}
+        </el-radio>
+      </el-radio-group>
+    </section>
+
     <section class="update-panel">
       <div class="section-head">
         <h2>星池指挥官更新</h2>
@@ -851,6 +899,7 @@ onBeforeUnmount(() => {
   font-size: 15px;
 }
 
+.model-panel,
 .update-panel,
 .slave-panel {
   display: flex;

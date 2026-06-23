@@ -3,6 +3,7 @@ package modelproxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -647,5 +648,93 @@ func TestProxyRequiresConfiguredLocalBearerToken(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("NewHandler returned nil error without LocalBearerToken")
+	}
+}
+
+func TestHandlerPassesThroughUnknownModel(t *testing.T) {
+	var gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL,
+		LocalBearerToken: "local",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	body := []byte(`{"model":"some-unknown-model","input":"hi"}`)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/responses", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer local")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+
+	if gotPath != "/v1/responses" {
+		t.Errorf("unknown model routed upstream to %q, want /v1/responses (pass-through)", gotPath)
+	}
+}
+
+func TestHandlerRoutesDeepseekToChatCompletions(t *testing.T) {
+	var gotPath, gotBody string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"x","model":"deepseek-v4-pro","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{}}`)
+	}))
+	defer upstream.Close()
+
+	sec := newTestSecrets()
+	if err := sec.Set(tokenrefresh.AccessTokenKey, "access"); err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHandler(Options{
+		Secrets:          sec,
+		UpstreamBaseURL:  upstream.URL,
+		LocalBearerToken: "local",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	body := []byte(`{"model":"deepseek-v4-pro","input":"hi","stream":false}`)
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/responses", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer local")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("upstream path = %q, want /v1/chat/completions", gotPath)
+	}
+	var sent map[string]any
+	_ = json.Unmarshal([]byte(gotBody), &sent)
+	if sent["model"] != "deepseek-v4-pro" {
+		t.Errorf("upstream body model = %v", sent["model"])
+	}
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	if out["status"] != "completed" {
+		t.Errorf("client status = %v, want completed", out["status"])
 	}
 }

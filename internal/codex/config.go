@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 )
 
 type Settings struct {
@@ -56,12 +58,94 @@ const (
 	LegacyLocalProxyAPIKeyValue = "agentserver-local-proxy"
 )
 
+// ModelserverProxySettings returns Settings that point Codex at the local
+// model proxy. It leaves Model unset so UpdateConfig preserves whatever the
+// user previously selected (via agentctl/agentserver set-model). When no
+// config.toml exists yet, UpdateConfig falls back to the default model.
 func ModelserverProxySettings(baseURL, bearerToken string) Settings {
 	s := ModelserverSettings()
+	s.Model = "" // provider-only update; do not clobber user-selected model
 	s.BaseURL = baseURL
 	s.EnvKey = ""
 	s.ExperimentalBearerToken = strings.TrimSpace(bearerToken)
 	return s
+}
+
+// CurrentModel returns the model field from the Codex config at path.
+// Returns the default (ModelserverSettings().Model, i.e. "gpt-5.5") if the file
+// is missing, unparseable, or has no model field. Pure read; never writes or
+// backs up.
+func CurrentModel(path string) (string, error) {
+	def := ModelserverSettings().Model
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return def, nil
+		}
+		return def, fmt.Errorf("read codex config: %w", err)
+	}
+	var root map[string]any
+	if _, err := toml.Decode(string(b), &root); err != nil {
+		return def, fmt.Errorf("parse codex config: %w", err)
+	}
+	if m, ok := root["model"].(string); ok && m != "" {
+		return m, nil
+	}
+	return def, nil
+}
+
+// SetModel rewrites only the model field of the Codex config at path. Every
+// other field — provider, base_url, env_key, experimental_bearer_token,
+// wire_api, MCP servers, unrelated top-level keys — is left untouched. If the
+// file does not exist yet, it is seeded with the proxy-style default config
+// (modelserver provider, local proxy URL, legacy bearer token) and then the
+// requested model is set.
+//
+// Important: this MUST NOT go through UpdateConfig. UpdateConfig is a
+// provider-rewrite operation that assumes the caller owns the full provider
+// block — in particular, an empty Settings.EnvKey instructs it to delete
+// env_key. Routing SetModel through UpdateConfig would silently convert a
+// direct env_key-based provider config into a proxy bearer-token config.
+func SetModel(path, model string) error {
+	if model == "" {
+		return errors.New("model required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir codex dir: %w", err)
+	}
+
+	root := map[string]any{}
+	b, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if _, err := toml.Decode(string(b), &root); err != nil {
+			return fmt.Errorf("parse existing config.toml: %w", err)
+		}
+		if err := writeConfigBackup(path, b); err != nil {
+			return fmt.Errorf("backup config.toml: %w", err)
+		}
+	case errors.Is(err, os.ErrNotExist):
+		// Seed from defaults so a first-time SetModel produces a working file.
+		seed := ModelserverProxySettings(modelproxy.DefaultBaseURL, LegacyLocalProxyAPIKeyValue)
+		if err := UpdateConfig(path, seed); err != nil {
+			return err
+		}
+		if b, err := os.ReadFile(path); err == nil {
+			if _, err := toml.Decode(string(b), &root); err != nil {
+				return fmt.Errorf("parse seeded config.toml: %w", err)
+			}
+		}
+	default:
+		return fmt.Errorf("read codex config: %w", err)
+	}
+
+	root["model"] = model
+
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
+		return fmt.Errorf("marshal config.toml: %w", err)
+	}
+	return writeConfigFile(path, buf.Bytes())
 }
 
 const (
@@ -97,8 +181,14 @@ func UpdateConfig(path string, s Settings) error {
 	}
 
 	root["model_provider"] = s.Provider
+	// Caller-supplied Model always wins. If the caller omits it (provider-only
+	// update from the launcher), preserve whatever the user previously
+	// selected; only seed a default when the field is missing entirely (first
+	// write).
 	if s.Model != "" {
 		root["model"] = s.Model
+	} else if _, ok := root["model"].(string); !ok {
+		root["model"] = ModelserverSettings().Model
 	}
 	root["model_reasoning_effort"] = defaultString(s.ModelReasoningEffort, defaultModelReasoningEffort)
 	root["approvals_reviewer"] = defaultString(s.ApprovalsReviewer, defaultApprovalsReviewer)
@@ -333,11 +423,32 @@ func writeConfigFile(path string, body []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := renameWithRetry(tmpPath, path); err != nil {
 		return err
 	}
 	tmpPath = ""
 	return os.Chmod(path, 0o600)
+}
+
+// renameWithRetry retries os.Rename a few times on Windows when the
+// destination is briefly locked by a reader (e.g. Codex Desktop holding
+// config.toml open as it polls). Linux returns immediately; only Windows
+// sees this transient ERROR_ACCESS_DENIED. Total wait ≤ ~250ms before giving up.
+func renameWithRetry(src, dst string) error {
+	const attempts = 6
+	delays := []time.Duration{0, 20 * time.Millisecond, 40 * time.Millisecond, 60 * time.Millisecond, 60 * time.Millisecond, 80 * time.Millisecond}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if d := delays[i]; d > 0 {
+			time.Sleep(d)
+		}
+		if err := os.Rename(src, dst); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
 }
 
 func pruneConfigBackups(path string) error {

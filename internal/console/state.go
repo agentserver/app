@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
+	"github.com/agentserver/agentserver-pkg/internal/codex"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
+	"github.com/agentserver/agentserver-pkg/internal/protoconv"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -27,6 +29,7 @@ type Deps struct {
 	Slaves                   *slave.Manager
 	Updates                  *updater.Service
 	PendingSlaveRestartsPath string
+	CodexConfigFile          string
 	ModelserverWebBaseURL    string
 	RefreshModelserverToken  func(context.Context) error
 	OpenFrontend             func(context.Context) error
@@ -50,7 +53,15 @@ type State struct {
 	Quotas           []QuotaWindow   `json:"quotas"`
 	QuotaError       string          `json:"quota_error,omitempty"`
 	SubscriptionURL  string          `json:"subscription_url,omitempty"`
+	CurrentModel     string          `json:"current_model,omitempty"`
+	AvailableModels  []ModelOption   `json:"available_models,omitempty"`
 	LastRefreshedAt  string          `json:"last_refreshed_at"`
+}
+
+// ModelOption is one entry in the UI model picker.
+type ModelOption struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 type ModelserverView struct {
@@ -111,6 +122,7 @@ func (c *Controller) State(ctx context.Context) (State, error) {
 		LastRefreshedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	out.SubscriptionURL = modelserverSubscriptionURL(c.d.ModelserverWebBaseURL, out.Modelserver.ProjectID)
+	c.applyCodexModelState(&out)
 
 	msToken := c.secret(tokenrefresh.AccessTokenKey)
 	preRefreshErr := c.refreshExpiredModelserverToken(ctx, st, msToken)
@@ -195,6 +207,36 @@ func (c *Controller) SelectFolder(ctx context.Context) (string, error) {
 		return "", errors.New("console: folder picker unavailable")
 	}
 	return c.d.SelectFolder(ctx)
+}
+
+// SetCodexModel rewrites the model field of the user's codex config to the
+// given name. The name must appear in the protoconv catalog.
+func (c *Controller) SetCodexModel(_ context.Context, model string) error {
+	if c.d.CodexConfigFile == "" {
+		return errors.New("console: codex config path not configured")
+	}
+	if _, ok := protoconv.LookupRoute(model); !ok {
+		return errors.New("console: unknown model")
+	}
+	return codex.SetModel(c.d.CodexConfigFile, model)
+}
+
+// applyCodexModelState fills CurrentModel + AvailableModels on out. Best-effort:
+// errors are swallowed (the UI just shows defaults) so a missing config file
+// doesn't break the rest of the dashboard.
+func (c *Controller) applyCodexModelState(out *State) {
+	for _, r := range protoconv.Catalog() {
+		out.AvailableModels = append(out.AvailableModels, ModelOption{
+			Name:        r.Model,
+			DisplayName: r.DisplayName,
+		})
+	}
+	if c.d.CodexConfigFile == "" {
+		return
+	}
+	if m, err := codex.CurrentModel(c.d.CodexConfigFile); err == nil {
+		out.CurrentModel = m
+	}
 }
 
 func (c *Controller) RestartSlave(ctx context.Context, id string) (slave.Slave, error) {

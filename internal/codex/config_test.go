@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 )
 
 func TestUpdateConfig_Empty(t *testing.T) {
@@ -390,4 +392,196 @@ func writeCodexTestFile(t *testing.T, path, body string) {
 
 func boolPtr(v bool) *bool {
 	return &v
+}
+
+func TestCurrentModelMissingFileReturnsDefault(t *testing.T) {
+	dir := t.TempDir()
+	got, err := CurrentModel(filepath.Join(dir, "nope.toml"))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != ModelserverSettings().Model {
+		t.Errorf("CurrentModel = %q, want default %q", got, ModelserverSettings().Model)
+	}
+}
+
+func TestCurrentModelReturnsConfiguredValue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := SetModel(path, "glm-5.2"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := CurrentModel(path)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "glm-5.2" {
+		t.Errorf("CurrentModel = %q, want glm-5.2", got)
+	}
+}
+
+// Regression: Windows sometimes returns ERROR_ACCESS_DENIED on rename when
+// another process (Codex Desktop polling config.toml) briefly holds a read
+// handle. The rename helper retries a few times to ride out the lock.
+func TestRenameWithRetrySucceedsAfterTransientFailure(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := renameWithRetry(src, dst); err != nil {
+		t.Fatalf("renameWithRetry on a clean dst should succeed: %v", err)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatalf("dst missing after rename: %v", err)
+	}
+}
+
+func TestSetModelRewritesOnlyModelField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := SetModel(path, "glm-5.2[1m]"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `model = "glm-5.2[1m]"`) {
+		t.Errorf("model field not set; got:\n%s", b)
+	}
+	// provider/wire_api must be present (not clobbered)
+	if !strings.Contains(string(b), `model_provider = "modelserver"`) {
+		t.Errorf("model_provider clobbered; got:\n%s", b)
+	}
+	if !strings.Contains(string(b), `wire_api = "responses"`) {
+		t.Errorf("wire_api clobbered; got:\n%s", b)
+	}
+}
+
+// Regression: the launcher calls ModelserverProxySettings + UpdateConfig every
+// time the desktop app starts. It must NOT clobber the user's set-model choice
+// back to the compiled-in default — Codex Desktop would then immediately reset
+// glm-5.2 / deepseek-v4-pro to gpt-5.5 on every restart.
+func TestUpdateConfig_ProviderOnlyPreservesUserModel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// Initial provisioning (first write): default model lands.
+	if err := UpdateConfig(path, ModelserverProxySettings(modelproxy.DefaultBaseURL, "tok")); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), `model = "gpt-5.5"`) {
+		t.Fatalf("first-write default missing:\n%s", b)
+	}
+	// User picks glm-5.2.
+	if err := SetModel(path, "glm-5.2"); err != nil {
+		t.Fatal(err)
+	}
+	// Launcher fires again on next desktop start — must preserve glm-5.2.
+	if err := UpdateConfig(path, ModelserverProxySettings(modelproxy.DefaultBaseURL, "tok")); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(path)
+	if !strings.Contains(string(b), `model = "glm-5.2"`) {
+		t.Fatalf("launcher restart clobbered user model selection:\n%s", b)
+	}
+	if strings.Contains(string(b), `model = "gpt-5.5"`) {
+		t.Fatalf("default model leaked back in:\n%s", b)
+	}
+}
+
+// Regression (PR #12 review P1): SetModel previously read the config, dropped
+// every field except base_url + experimental_bearer_token, then handed the
+// stripped Settings to UpdateConfig — which deletes env_key when Settings.EnvKey
+// is empty. A valid direct-provider config (env_key = "OPENAI_API_KEY", no
+// bearer token) silently became a proxy config (no env_key, legacy bearer
+// token), breaking auth on the next Codex start. SetModel must leave the
+// existing provider block intact.
+func TestSetModelPreservesDirectProviderEnvKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeCodexTestFile(t, path, strings.Join([]string{
+		`model = "gpt-4o"`,
+		`model_provider = "modelserver"`,
+		``,
+		`[model_providers.modelserver]`,
+		`name = "modelserver"`,
+		`base_url = "https://api.openai.com/v1"`,
+		`env_key = "OPENAI_API_KEY"`,
+		`wire_api = "responses"`,
+		``,
+	}, "\n"))
+
+	if err := SetModel(path, "glm-5.2"); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(path)
+	got := string(body)
+	for _, want := range []string{
+		`model = "glm-5.2"`,
+		`env_key = "OPENAI_API_KEY"`,
+		`base_url = "https://api.openai.com/v1"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("SetModel clobbered direct config; missing %q in:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{
+		`experimental_bearer_token`,
+		LegacyLocalProxyAPIKeyValue,
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("SetModel leaked proxy-mode field %q into direct config:\n%s", unwanted, got)
+		}
+	}
+}
+
+// Regression: SetModel on a non-existent file should still produce a working
+// proxy-style config seeded with sane defaults (this is what `agentctl
+// set-model` on a brand-new headless install hits).
+func TestSetModelOnMissingFileSeedsProxyConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := SetModel(path, "glm-5.2"); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(path)
+	got := string(body)
+	for _, want := range []string{
+		`model = "glm-5.2"`,
+		`model_provider = "modelserver"`,
+		`base_url = "http://127.0.0.1:53452/v1"`,
+		`experimental_bearer_token = "agentserver-local-proxy"`,
+		`wire_api = "responses"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in seeded config:\n%s", want, got)
+		}
+	}
+}
+
+func TestSetModelPreservesExistingBearerToken(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// Linux headless writes a per-user random token into experimental_bearer_token.
+	seed := ModelserverProxySettings(modelproxy.DefaultBaseURL, "per-user-random-token")
+	if err := UpdateConfig(path, seed); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetModel(path, "deepseek-v4-pro"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	body := string(b)
+	if !strings.Contains(body, `model = "deepseek-v4-pro"`) {
+		t.Errorf("model not set; got:\n%s", body)
+	}
+	if !strings.Contains(body, `experimental_bearer_token = "per-user-random-token"`) {
+		t.Errorf("per-user bearer token was clobbered; got:\n%s", body)
+	}
+	if strings.Contains(body, `agentserver-local-proxy`) {
+		t.Errorf("legacy token leaked into config; got:\n%s", body)
+	}
 }
