@@ -394,24 +394,6 @@ func boolPtr(v bool) *bool {
 	return &v
 }
 
-func TestUpdateConfig_WritesModelCatalogJSONWhenSet(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.toml")
-	s := ModelserverProxySettings(modelproxy.DefaultBaseURL, "tok")
-	s.ModelCatalogJSON = `C:\Users\Administrator\.codex\agentserver_model_catalog.json`
-	if err := UpdateConfig(path, s); err != nil {
-		t.Fatal(err)
-	}
-	b, _ := os.ReadFile(path)
-	// TOML escapes backslashes — match the literal field name and tail.
-	if !strings.Contains(string(b), "model_catalog_json") {
-		t.Errorf("config missing model_catalog_json:\n%s", b)
-	}
-	if !strings.Contains(string(b), `agentserver_model_catalog.json`) {
-		t.Errorf("config missing catalog filename:\n%s", b)
-	}
-}
-
 func TestCurrentModelMissingFileReturnsDefault(t *testing.T) {
 	dir := t.TempDir()
 	got, err := CurrentModel(filepath.Join(dir, "nope.toml"))

@@ -860,24 +860,14 @@ func launchCompletedCodexDesktop(ctx context.Context, s *state.State, p paths.Pa
 	if err != nil {
 		return err
 	}
-	// Write the model catalog Codex Desktop's picker reads (so GLM/DeepSeek
-	// appear by display name instead of "自定义"). Best-effort: failure here
-	// only loses the named-picker affordance — model selection still works
-	// from our own console UI, and Codex falls back to its bundled catalog.
-	settings := codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, localProxyToken)
-	if p.CodexModelCatalogFile != "" {
-		if err := codexdesktop.WriteModelCatalog(p.CodexModelCatalogFile); err != nil {
-			log.Printf("launcher: write codex model catalog (continuing): %v", err)
-		} else {
-			settings.ModelCatalogJSON = p.CodexModelCatalogFile
-		}
-	}
 	// UpdateConfig writes config.toml atomically (write tmp, rename). If Codex
 	// Desktop is already running it holds a read handle and Windows rejects
 	// the rename with ERROR_ACCESS_DENIED. That's a benign no-op for "open
 	// frontend" — the running Codex won't reload the file anyway — so log and
-	// continue rather than fail the launch.
-	if err := codex.UpdateConfig(p.CodexConfigFile, settings); err != nil {
+	// continue rather than fail the launch. First-time startup (Codex not
+	// running, file unlocked) still writes normally; codex.SetModel (user
+	// switching models) is invoked when Codex isn't holding the file open.
+	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, localProxyToken)); err != nil {
 		log.Printf("launcher: update codex config (continuing): %v", err)
 	}
 	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)

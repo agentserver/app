@@ -32,7 +32,6 @@ type Paths struct {
 	// Codex config
 	CodexDir                          string
 	CodexConfigFile                   string
-	CodexModelCatalogFile             string
 	CodexDesktopGlobalStateFile       string
 	CodexDesktopComputerUseConfigFile string
 
@@ -69,7 +68,6 @@ func Default() (Paths, error) {
 		OpenCodeConfigFile:                filepath.Join(openCodeConfigDir, "opencode.jsonc"),
 		CodexDir:                          codex,
 		CodexConfigFile:                   filepath.Join(codex, "config.toml"),
-		CodexModelCatalogFile:             filepath.Join(codex, "agentserver_model_catalog.json"),
 		CodexDesktopGlobalStateFile:       filepath.Join(codex, ".codex-global-state.json"),
 		CodexDesktopComputerUseConfigFile: filepath.Join(codex, "computer-use", "config.json"),
 	}
