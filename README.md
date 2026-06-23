@@ -25,8 +25,14 @@
   - 在无桌面服务器上直接运行当前目录作为 slave。
   - `agentserver install-driver` 可把 driver MCP 挂入当前用户的 Codex CLI。
   - 通过 device code 和二维码完成 `code.cs.ac.cn` / `agent.cs.ac.cn` 登录。
-- 共享模型访问路径
-  - 本地代理负责把 Codex / Codex Desktop 请求转发到 `https://code.ai.cs.ac.cn/v1`。
+- 共享模型访问路径 + 多模型路由
+  - 本地代理把 Codex / Codex Desktop 的 Responses API 请求转发到 ModelServer 网关
+    `https://code.ai.cs.ac.cn/v1`，并按模型在代理内做协议转换：`gpt-5.5` 直通
+    Responses，`glm-5.2` 转为 Anthropic Messages，`deepseek-v4-pro` 转为 Chat
+    Completions —— 客户端始终只说一种协议，第三方模型不需要单独配置。
+  - 默认模型可在「星池指挥官」控制台的模型选择卡切换，或用
+    `agentctl set-model <name>` / `agentserver set-model <name>` 直接改 `~/.codex/config.toml`；
+    新建的 Codex 对话立即生效（旧对话沿用创建时锁定的模型）。
   - 后台 refresher 维护短期 access token，避免长进程因为 token 刷新而失效。
 
 ## 背后系统分工
