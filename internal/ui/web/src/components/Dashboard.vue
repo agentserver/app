@@ -642,7 +642,7 @@ onBeforeUnmount(() => {
     >
       <div class="section-head">
         <h2>Codex 模型</h2>
-        <p>选择 Codex Desktop 默认使用的大模型。切换后新建对话生效；旧对话保持原模型。</p>
+        <p>选择 Codex Desktop 默认使用的大模型。切换后新建对话生效；旧对话保持原模型。新对话时也可直接在 Codex 自身的模型选择器中切换。</p>
       </div>
       <el-radio-group
         :model-value="state?.current_model"

@@ -29,6 +29,11 @@ type Settings struct {
 	EnvKey                  string // e.g. "OPENAI_API_KEY"
 	ExperimentalBearerToken string // e.g. "agentserver-local-proxy"
 	WireAPI                 string // e.g. "responses"
+	// ModelCatalogJSON, when non-empty, is written to the top-level
+	// `model_catalog_json` field of config.toml. Codex Desktop's picker reads
+	// this file to enumerate selectable models. Leave empty to leave the
+	// existing field (if any) untouched.
+	ModelCatalogJSON string
 }
 
 type MCPServer struct {
@@ -167,6 +172,9 @@ func UpdateConfig(path string, s Settings) error {
 	}
 
 	root["model_provider"] = s.Provider
+	if s.ModelCatalogJSON != "" {
+		root["model_catalog_json"] = s.ModelCatalogJSON
+	}
 	// Caller-supplied Model always wins. If the caller omits it (provider-only
 	// update from the launcher), preserve whatever the user previously
 	// selected; only seed a default when the field is missing entirely (first
