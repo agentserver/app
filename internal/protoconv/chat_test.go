@@ -48,6 +48,35 @@ func TestChatRequestFromResponses(t *testing.T) {
 	}
 }
 
+// Regression (PR #12 review P5): the Responses API's top-level `reasoning`
+// object is not a valid Chat Completions field — DeepSeek uses `thinking:
+// {type, reasoning_effort}`, Anthropic uses `thinking: {type,
+// budget_tokens}`, OpenAI Chat doesn't have it. Forwarding the Responses
+// object (or its null) is at best meaningless, at worst trips upstream
+// validators. Drop it in the Chat converter.
+func TestChatRequest_DropsReasoningField(t *testing.T) {
+	cases := []map[string]any{
+		// reasoning present as object (Codex's real wire shape)
+		{"model": "deepseek-v4-pro", "input": "hi", "reasoning": map[string]any{"effort": "high", "summary": "auto"}},
+		// reasoning present as null (the actual bug reviewer flagged)
+		{"model": "deepseek-v4-pro", "input": "hi", "reasoning": nil},
+		// reasoning absent (sanity baseline)
+		{"model": "deepseek-v4-pro", "input": "hi"},
+	}
+	for _, c := range cases {
+		body, _ := json.Marshal(c)
+		got, err := ChatRequestFromResponses(body)
+		if err != nil {
+			t.Fatalf("source %#v: %v", c, err)
+		}
+		var m map[string]any
+		_ = json.Unmarshal(got, &m)
+		if _, present := m["reasoning"]; present {
+			t.Errorf("reasoning leaked into Chat body for source %#v:\n%s", c, got)
+		}
+	}
+}
+
 // Regression (PR #12 review P4): Codex 0.142 sends parallel_tool_calls and
 // tool_choice; both must reach the upstream Chat endpoint. Function tools'
 // strict flag must also survive translation.

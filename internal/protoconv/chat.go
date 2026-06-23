@@ -30,9 +30,13 @@ func ChatRequestFromResponses(respBody []byte) ([]byte, error) {
 	if s, ok := root["stream"].(bool); ok {
 		out["stream"] = s
 	}
-	if r, ok := root["reasoning"]; ok {
-		out["reasoning"] = r
-	}
+	// `reasoning` is a Responses-API field. Chat Completions does NOT have a
+	// top-level `reasoning` field — DeepSeek uses `thinking: {type,
+	// reasoning_effort}`, Anthropic uses `thinking: {type, budget_tokens}`,
+	// and OpenAI Chat just doesn't support it. Forwarding the Responses-shaped
+	// object verbatim (or its null) at minimum sends a meaningless field, and
+	// at worst trips strict validators ("reasoning": null was rejected by
+	// some upstreams). Proper per-upstream mapping is a deferred feature.
 	// Forward tool-control fields when Codex sets them. Codex 0.142 sends
 	// parallel_tool_calls (driven by ModelInfo.supports_parallel_tool_calls)
 	// and tool_choice; dropping either lets the upstream silently disregard
