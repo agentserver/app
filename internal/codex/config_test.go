@@ -420,6 +420,24 @@ func TestCurrentModelReturnsConfiguredValue(t *testing.T) {
 	}
 }
 
+// Regression: Windows sometimes returns ERROR_ACCESS_DENIED on rename when
+// another process (Codex Desktop polling config.toml) briefly holds a read
+// handle. The rename helper retries a few times to ride out the lock.
+func TestRenameWithRetrySucceedsAfterTransientFailure(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := renameWithRetry(src, dst); err != nil {
+		t.Fatalf("renameWithRetry on a clean dst should succeed: %v", err)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatalf("dst missing after rename: %v", err)
+	}
+}
+
 func TestSetModelRewritesOnlyModelField(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")

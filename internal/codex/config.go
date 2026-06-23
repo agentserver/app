@@ -409,11 +409,32 @@ func writeConfigFile(path string, body []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := renameWithRetry(tmpPath, path); err != nil {
 		return err
 	}
 	tmpPath = ""
 	return os.Chmod(path, 0o600)
+}
+
+// renameWithRetry retries os.Rename a few times on Windows when the
+// destination is briefly locked by a reader (e.g. Codex Desktop holding
+// config.toml open as it polls). Linux returns immediately; only Windows
+// sees this transient ERROR_ACCESS_DENIED. Total wait ≤ ~250ms before giving up.
+func renameWithRetry(src, dst string) error {
+	const attempts = 6
+	delays := []time.Duration{0, 20 * time.Millisecond, 40 * time.Millisecond, 60 * time.Millisecond, 60 * time.Millisecond, 80 * time.Millisecond}
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		if d := delays[i]; d > 0 {
+			time.Sleep(d)
+		}
+		if err := os.Rename(src, dst); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
 }
 
 func pruneConfigBackups(path string) error {
