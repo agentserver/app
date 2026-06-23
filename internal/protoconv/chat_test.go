@@ -48,6 +48,86 @@ func TestChatRequestFromResponses(t *testing.T) {
 	}
 }
 
+// Regression (PR #12 review P4): Codex 0.142 sends parallel_tool_calls and
+// tool_choice; both must reach the upstream Chat endpoint. Function tools'
+// strict flag must also survive translation.
+func TestChatRequest_ForwardsToolControlFields(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{
+		"model":               "deepseek-v4-pro",
+		"input":               "hi",
+		"parallel_tool_calls": false,
+		"tool_choice":         "required",
+		"tools": []any{map[string]any{
+			"type": "function", "name": "run", "description": "d",
+			"parameters": map[string]any{"type": "object"},
+			"strict":     true,
+		}},
+	})
+	got, err := ChatRequestFromResponses(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(got, &m)
+	if v, _ := m["parallel_tool_calls"].(bool); v {
+		t.Errorf("parallel_tool_calls = %v, want false", v)
+	}
+	if v, ok := m["parallel_tool_calls"]; !ok {
+		t.Errorf("parallel_tool_calls dropped, want forwarded: %#v", v)
+	}
+	if v, _ := m["tool_choice"].(string); v != "required" {
+		t.Errorf("tool_choice = %v, want \"required\"", m["tool_choice"])
+	}
+	tools := m["tools"].([]any)
+	fn := tools[0].(map[string]any)["function"].(map[string]any)
+	if v, _ := fn["strict"].(bool); !v {
+		t.Errorf("function.strict = %v, want true (preserved)", v)
+	}
+}
+
+func TestChatRequest_OmitsToolControlsWhenSourceOmitsThem(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{
+		"model": "deepseek-v4-pro",
+		"input": "hi",
+		"tools": []any{map[string]any{
+			"type": "function", "name": "run", "description": "d",
+			"parameters": map[string]any{"type": "object"},
+		}},
+	})
+	got, err := ChatRequestFromResponses(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(got, &m)
+	if _, present := m["parallel_tool_calls"]; present {
+		t.Errorf("parallel_tool_calls should be absent when source omits it")
+	}
+	if _, present := m["tool_choice"]; present {
+		t.Errorf("tool_choice should be absent when source omits it")
+	}
+	tools := m["tools"].([]any)
+	fn := tools[0].(map[string]any)["function"].(map[string]any)
+	if _, present := fn["strict"]; present {
+		t.Errorf("function.strict should be absent when source omits it")
+	}
+}
+
+// Regression (PR #12 review P2): omitting `stream` from the source body should
+// not produce `"stream": null` (rejected by upstream Chat validators).
+func TestChatRequest_OmitsStreamWhenSourceOmitsIt(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{"model": "deepseek-v4-pro", "input": "hi"})
+	got, err := ChatRequestFromResponses(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(got, &m)
+	if v, present := m["stream"]; present {
+		t.Errorf("stream should be absent when source omits it; got %#v", v)
+	}
+}
+
 // Regression: Codex sends `developer` role for prompt-author instructions, but
 // Chat Completions only accepts {system, assistant, user, tool, function} —
 // DeepSeek rejects it with "developer is not one of [...]". Merge developer +

@@ -59,6 +59,21 @@ func TestAnthropicRequestFromResponses(t *testing.T) {
 	}
 }
 
+// Regression (PR #12 review P2): omitting `stream` should not produce
+// `"stream": null` on the wire.
+func TestAnthropicRequest_OmitsStreamWhenSourceOmitsIt(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{"model": "glm-5.2", "input": "hi"})
+	got, err := AnthropicRequestFromResponses(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(got, &m)
+	if v, present := m["stream"]; present {
+		t.Errorf("stream should be absent when source omits it; got %#v", v)
+	}
+}
+
 func TestAnthropicRequestFromResponses_StringInput(t *testing.T) {
 	// Responses API permits a bare string as `input`; ensure it becomes a single user message.
 	resp := map[string]any{"model": "glm-5.2", "input": "reply OK", "stream": true}

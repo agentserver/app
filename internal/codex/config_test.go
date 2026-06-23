@@ -492,6 +492,76 @@ func TestUpdateConfig_ProviderOnlyPreservesUserModel(t *testing.T) {
 	}
 }
 
+// Regression (PR #12 review P1): SetModel previously read the config, dropped
+// every field except base_url + experimental_bearer_token, then handed the
+// stripped Settings to UpdateConfig — which deletes env_key when Settings.EnvKey
+// is empty. A valid direct-provider config (env_key = "OPENAI_API_KEY", no
+// bearer token) silently became a proxy config (no env_key, legacy bearer
+// token), breaking auth on the next Codex start. SetModel must leave the
+// existing provider block intact.
+func TestSetModelPreservesDirectProviderEnvKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	writeCodexTestFile(t, path, strings.Join([]string{
+		`model = "gpt-4o"`,
+		`model_provider = "modelserver"`,
+		``,
+		`[model_providers.modelserver]`,
+		`name = "modelserver"`,
+		`base_url = "https://api.openai.com/v1"`,
+		`env_key = "OPENAI_API_KEY"`,
+		`wire_api = "responses"`,
+		``,
+	}, "\n"))
+
+	if err := SetModel(path, "glm-5.2"); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(path)
+	got := string(body)
+	for _, want := range []string{
+		`model = "glm-5.2"`,
+		`env_key = "OPENAI_API_KEY"`,
+		`base_url = "https://api.openai.com/v1"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("SetModel clobbered direct config; missing %q in:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{
+		`experimental_bearer_token`,
+		LegacyLocalProxyAPIKeyValue,
+	} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("SetModel leaked proxy-mode field %q into direct config:\n%s", unwanted, got)
+		}
+	}
+}
+
+// Regression: SetModel on a non-existent file should still produce a working
+// proxy-style config seeded with sane defaults (this is what `agentctl
+// set-model` on a brand-new headless install hits).
+func TestSetModelOnMissingFileSeedsProxyConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := SetModel(path, "glm-5.2"); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := os.ReadFile(path)
+	got := string(body)
+	for _, want := range []string{
+		`model = "glm-5.2"`,
+		`model_provider = "modelserver"`,
+		`base_url = "http://127.0.0.1:53452/v1"`,
+		`experimental_bearer_token = "agentserver-local-proxy"`,
+		`wire_api = "responses"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in seeded config:\n%s", want, got)
+		}
+	}
+}
+
 func TestSetModelPreservesExistingBearerToken(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")

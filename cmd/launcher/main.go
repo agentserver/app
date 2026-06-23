@@ -1037,9 +1037,13 @@ func execVSCode(codeExe string, p paths.Paths, folder string, sec secrets.Store,
 	if err != nil {
 		return err
 	}
-	// See launchCompletedCodexDesktop for why this is tolerant of failure.
+	// Unlike Codex/OpenCode Desktop, VS Code does NOT hold the codex config
+	// open, so the rename-while-locked race that justifies tolerating
+	// UpdateConfig failures in those paths doesn't apply here. We need a
+	// fresh codex config before VS Code starts (the Codex extension reads it
+	// at session creation), so propagate the error.
 	if err := codex.UpdateConfig(p.CodexConfigFile, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, localProxyToken)); err != nil {
-		log.Printf("launcher: update codex config (continuing): %v", err)
+		return fmt.Errorf("update codex config before launching VS Code: %w", err)
 	}
 	_ = env.PersistUserEnv(codex.LocalProxyAPIKeyEnv, localProxyToken)
 	_ = os.Setenv(codex.LocalProxyAPIKeyEnv, localProxyToken)

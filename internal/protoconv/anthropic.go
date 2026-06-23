@@ -21,9 +21,22 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 	}
 
 	out := map[string]any{
-		"model":  root["model"],
-		"stream": root["stream"],
+		"model": root["model"],
 	}
+	// Only forward stream when it's actually a bool in the source request;
+	// see chat.go for the same omission rationale.
+	if s, ok := root["stream"].(bool); ok {
+		out["stream"] = s
+	}
+	// Anthropic Messages exposes a top-level `tool_choice` object with a
+	// different shape than Codex's Responses string ({"type":"auto"|"any"|"tool"}).
+	// Without a safe shape mapping we deliberately drop it; tool_choice is
+	// rarely set by Codex 0.142 (default behavior leaves it unset, which is
+	// equivalent to {"type":"auto"} on the Anthropic side).
+	//
+	// parallel_tool_calls is not part of the Anthropic Messages API — Anthropic
+	// controls parallel tool calls server-side per model — so we also do not
+	// forward it here. Both omissions are intentional.
 
 	// Anthropic Messages API requires max_tokens. Map it from the Responses
 	// request's max_output_tokens when present, else default.

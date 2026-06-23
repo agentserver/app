@@ -21,11 +21,27 @@ func ChatRequestFromResponses(respBody []byte) ([]byte, error) {
 	}
 
 	out := map[string]any{
-		"model":  root["model"],
-		"stream": root["stream"],
+		"model": root["model"],
+	}
+	// Only forward stream when it's actually a bool in the source request.
+	// Codex Desktop always sets it, but other Codex clients (exec, review,
+	// app-server probes) may omit it. Sending `"stream": null` makes upstream
+	// validators reject the request.
+	if s, ok := root["stream"].(bool); ok {
+		out["stream"] = s
 	}
 	if r, ok := root["reasoning"]; ok {
 		out["reasoning"] = r
+	}
+	// Forward tool-control fields when Codex sets them. Codex 0.142 sends
+	// parallel_tool_calls (driven by ModelInfo.supports_parallel_tool_calls)
+	// and tool_choice; dropping either lets the upstream silently disregard
+	// the client's intent.
+	if v, ok := root["parallel_tool_calls"].(bool); ok {
+		out["parallel_tool_calls"] = v
+	}
+	if v, ok := root["tool_choice"]; ok && v != nil {
+		out["tool_choice"] = v
 	}
 
 	// Chat Completions only allows roles {system, assistant, user, tool, function}.
@@ -96,11 +112,17 @@ func ChatRequestFromResponses(respBody []byte) ([]byte, error) {
 			if !ok || tm["type"] != "function" {
 				continue
 			}
-			conv = append(conv, map[string]any{"type": "function", "function": map[string]any{
+			fn := map[string]any{
 				"name":        tm["name"],
 				"description": tm["description"],
 				"parameters":  tm["parameters"],
-			}})
+			}
+			// Preserve `strict` when Codex requests structured-output
+			// enforcement on this tool.
+			if v, ok := tm["strict"].(bool); ok {
+				fn["strict"] = v
+			}
+			conv = append(conv, map[string]any{"type": "function", "function": fn})
 		}
 		out["tools"] = conv
 	}
