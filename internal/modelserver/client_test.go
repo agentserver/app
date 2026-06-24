@@ -2,7 +2,6 @@ package modelserver
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -98,13 +97,86 @@ func TestPickOrCreateProject_FoundDefault(t *testing.T) {
 	}
 }
 
-func TestProjectIDFromTokenReadsHydraExtClaim(t *testing.T) {
-	token := jwtWithClaims(t, map[string]any{
-		"ext": map[string]any{"project_id": "proj-ext"},
-	})
-	got, ok := ProjectIDFromToken(token)
-	if !ok || got != "proj-ext" {
-		t.Fatalf("ProjectIDFromToken=%q,%v want proj-ext,true", got, ok)
+// Profile hits /api/oauth/profile and returns the account + project bound to
+// the access token (modelserver PR #63). Verifies both the active-subscription
+// shape (subscription_created_at, project_type populated) and the
+// free-tier shape (omit those fields).
+func TestProfileReadsAccountAndProject(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/oauth/profile" {
+			t.Fatalf("got %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer AT" {
+			t.Fatalf("auth %q", got)
+		}
+		_, _ = w.Write([]byte(`{
+			"account": {
+				"uuid": "user_01",
+				"email": "alice@example.com",
+				"display_name": "Alice",
+				"created_at": "2024-03-15T10:00:00Z"
+			},
+			"project": {
+				"uuid": "proj_01",
+				"project_type": "max",
+				"rate_limit_tier": "max_5x",
+				"seat_tier": "max_5x",
+				"has_extra_usage_enabled": true,
+				"billing_type": "stripe",
+				"cc_onboarding_flags": {},
+				"subscription_created_at": "2025-01-01T00:00:00Z"
+			}
+		}`))
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.URL).Profile(context.Background(), "AT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Account.UUID != "user_01" || got.Account.Email != "alice@example.com" {
+		t.Errorf("account = %+v", got.Account)
+	}
+	if got.Project.UUID != "proj_01" || got.Project.ProjectType != "max" {
+		t.Errorf("project = %+v", got.Project)
+	}
+	if !got.Project.HasExtraUsageEnabled {
+		t.Errorf("has_extra_usage_enabled should be true")
+	}
+	if got.Project.SubscriptionCreatedAt != "2025-01-01T00:00:00Z" {
+		t.Errorf("subscription_created_at = %q", got.Project.SubscriptionCreatedAt)
+	}
+}
+
+func TestProfileFreeTierOmitsOptionalFields(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"account": {"uuid": "u", "email": "", "display_name": "", "created_at": ""},
+			"project": {
+				"uuid": "p", "rate_limit_tier": null, "seat_tier": null,
+				"has_extra_usage_enabled": false, "billing_type": null,
+				"cc_onboarding_flags": {}
+			}
+		}`))
+	}))
+	defer srv.Close()
+	got, err := New(srv.URL).Profile(context.Background(), "AT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Project.UUID != "p" || got.Project.ProjectType != "" || got.Project.SubscriptionCreatedAt != "" {
+		t.Errorf("free-tier project = %+v", got.Project)
+	}
+}
+
+func TestProfilePropagatesNon2xxAsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "oauth token required", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	_, err := New(srv.URL).Profile(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "status 401") {
+		t.Fatalf("err = %v, want status 401", err)
 	}
 }
 
@@ -197,12 +269,3 @@ func TestErrorResponseDoesNotEchoBody(t *testing.T) {
 	}
 }
 
-func jwtWithClaims(t *testing.T, claims map[string]any) string {
-	t.Helper()
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
-	payload, err := json.Marshal(claims)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
-}

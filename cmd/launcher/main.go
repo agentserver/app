@@ -579,6 +579,7 @@ func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestra
 		State:                             in.State,
 		Secrets:                           in.Secrets,
 		MS:                                modelserver.New("https://codeapi.cs.ac.cn"),
+		MSProxy:                           modelserver.New("https://code.ai.cs.ac.cn"),
 		AS:                                agentserver.New(asBaseURL),
 		MSOAuth:                           in.MSOAuth,
 		ASOAuth:                           asOAuth,
@@ -704,6 +705,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		// "invalid character '<' looking for beginning of value". This is the
 		// SAME host PKCE uses (msOAuth.Endpoint above).
 		MS:                                modelserver.New("https://codeapi.cs.ac.cn"),
+		MSProxy:                           modelserver.New("https://code.ai.cs.ac.cn"),
 		AS:                                agentserver.New("https://agent.cs.ac.cn"),
 		MSOAuth:                           msOAuth,
 		ASOAuth:                           asOAuth,

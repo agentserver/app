@@ -96,6 +96,17 @@ func (c *Client) CreateAPIKey(ctx context.Context, token, projectID, name string
 	return wrap.Data, nil
 }
 
+// Profile returns the account + project bound to the given OAuth access
+// token. Hits GET /api/oauth/profile on the proxy gateway (modelserver
+// PR #63). The endpoint is OAuth-only — passing an API key gets 401.
+func (c *Client) Profile(ctx context.Context, accessToken string) (Profile, error) {
+	var p Profile
+	if err := c.do(ctx, http.MethodGet, "/api/oauth/profile", accessToken, nil, &p); err != nil {
+		return Profile{}, err
+	}
+	return p, nil
+}
+
 // PickOrCreateProject finds a project named `name`; if none, creates it.
 func (c *Client) PickOrCreateProject(ctx context.Context, token, name string) (Project, error) {
 	ps, err := c.ListProjects(ctx, token)

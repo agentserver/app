@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -682,19 +681,34 @@ func TestPollModelserverLoginCompletesWhenProjectLookupUnavailable(t *testing.T)
 	}
 }
 
-func TestPollModelserverLoginUsesProjectIDClaimWhenAdminProjectsRejectsHydraToken(t *testing.T) {
+// PollModelserverLogin now reads project_id via the OAuth profile endpoint
+// (modelserver PR #63) on the proxy gateway, instead of decoding the access
+// token locally. This works for both opaque and JWT tokens — no client-side
+// JWT parsing required.
+func TestPollModelserverLoginReadsProjectIDFromProfileEndpoint(t *testing.T) {
 	port := freeUIPort(t)
-	accessToken := jwtWithMSProject(t, "proj-claim")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"access_token":%q,"refresh_token":"fake-rt","token_type":"Bearer","expires_in":3600}`, accessToken)
+		_, _ = w.Write([]byte(`{"access_token":"opaque-at","refresh_token":"fake-rt","token_type":"Bearer","expires_in":3600}`))
 	})
 	mux.HandleFunc("/api/v1/projects", func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("/api/v1/projects should not be called when token has project_id")
+		t.Fatalf("/api/v1/projects must not be called on the admin host during login")
 	})
 	fake := httptest.NewServer(mux)
 	defer fake.Close()
+
+	profileCalls := 0
+	proxyMux := http.NewServeMux()
+	proxyMux.HandleFunc("/api/oauth/profile", func(w http.ResponseWriter, r *http.Request) {
+		profileCalls++
+		if got := r.Header.Get("Authorization"); got != "Bearer opaque-at" {
+			t.Fatalf("profile auth = %q, want Bearer opaque-at", got)
+		}
+		_, _ = w.Write([]byte(`{"account":{"uuid":"u1","email":"","display_name":"","created_at":""},"project":{"uuid":"proj-from-profile","rate_limit_tier":null,"seat_tier":null,"has_extra_usage_enabled":false,"billing_type":null,"cc_onboarding_flags":{}}}`))
+	})
+	proxyFake := httptest.NewServer(proxyMux)
+	defer proxyFake.Close()
 
 	dir := t.TempDir()
 	store := state.NewStore(filepath.Join(dir, "state.json"))
@@ -702,6 +716,7 @@ func TestPollModelserverLoginUsesProjectIDClaimWhenAdminProjectsRejectsHydraToke
 		State:   store,
 		Secrets: secrets.New(filepath.Join(dir, "secrets.json")),
 		MS:      modelserver.New(fake.URL),
+		MSProxy: modelserver.New(proxyFake.URL),
 		MSOAuth: oauth.AuthCodeConfig{
 			Endpoint: fake.URL, AuthPath: "/oauth2/auth", TokenPath: "/oauth2/token",
 			ClientID: "client-x", CallbackPath: "/oauth/modelserver/callback",
@@ -720,22 +735,68 @@ func TestPollModelserverLoginUsesProjectIDClaimWhenAdminProjectsRejectsHydraToke
 		t.Fatal(err)
 	}
 	s, _ := store.Load()
-	if s.Modelserver.ProjectID != "proj-claim" {
-		t.Fatalf("project id=%q, want proj-claim", s.Modelserver.ProjectID)
+	if s.Modelserver.ProjectID != "proj-from-profile" {
+		t.Fatalf("project id=%q, want proj-from-profile", s.Modelserver.ProjectID)
+	}
+	if profileCalls != 1 {
+		t.Fatalf("profile endpoint called %d times, want 1", profileCalls)
 	}
 	if !s.Onboarding.HasCompleted("modelserver_login") {
-		t.Fatal("modelserver_login should complete when token has project_id")
+		t.Fatal("modelserver_login should complete")
 	}
 }
 
-func jwtWithMSProject(t *testing.T, projectID string) string {
-	t.Helper()
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
-	payload, err := json.Marshal(map[string]string{"project_id": projectID})
-	if err != nil {
+// Login must NOT fail if /api/oauth/profile is temporarily unavailable —
+// project_id is best-effort. The user can still use the proxy (which forwards
+// the token directly without needing project_id).
+func TestPollModelserverLoginToleratesProfileEndpointFailure(t *testing.T) {
+	port := freeUIPort(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth2/token", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"opaque-at","refresh_token":"fake-rt","token_type":"Bearer","expires_in":3600}`))
+	})
+	fake := httptest.NewServer(mux)
+	defer fake.Close()
+
+	proxyMux := http.NewServeMux()
+	proxyMux.HandleFunc("/api/oauth/profile", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "endpoint not deployed yet", http.StatusNotFound)
+	})
+	proxyFake := httptest.NewServer(proxyMux)
+	defer proxyFake.Close()
+
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	r := &realOrchestrator{d: Deps{
+		State:   store,
+		Secrets: secrets.New(filepath.Join(dir, "secrets.json")),
+		MS:      modelserver.New(fake.URL),
+		MSProxy: modelserver.New(proxyFake.URL),
+		MSOAuth: oauth.AuthCodeConfig{
+			Endpoint: fake.URL, AuthPath: "/oauth2/auth", TokenPath: "/oauth2/token",
+			ClientID: "client-x", CallbackPath: "/oauth/modelserver/callback",
+			Ports: []int{port}, LoginTimeout: 3 * time.Second,
+		},
+		OpenBrowser: func(string) {},
+	}}
+	if _, err := r.LoginModelserver(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return header + "." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_, _ = http.Get(fmt.Sprintf("http://127.0.0.1:%d/oauth/modelserver/callback?code=x&state=%s", port, r.msSession.State))
+	}()
+	if _, err := r.PollModelserverLogin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := store.Load()
+	if s.Modelserver.ProjectID != "" {
+		t.Fatalf("project id=%q, want empty when profile endpoint fails", s.Modelserver.ProjectID)
+	}
+	if !s.Onboarding.HasCompleted("modelserver_login") {
+		t.Fatal("modelserver_login should still complete when profile fails")
+	}
 }
 
 func TestPollAgentserverLoginRegistersAgentAndStoresWorkspaceName(t *testing.T) {

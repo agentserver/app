@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +36,10 @@ type Deps struct {
 	State                             *state.Store
 	Secrets                           secrets.Store
 	MS                                *modelserver.Client
+	// MSProxy is the modelserver client pointed at the proxy gateway
+	// (code.ai.cs.ac.cn). The OAuth profile endpoint (PR #63) lives there,
+	// not on the admin API host MS targets (codeapi.cs.ac.cn).
+	MSProxy                           *modelserver.Client
 	AS                                *agentserver.Client
 	MSOAuth                           oauth.AuthCodeConfig // PKCE (modelserver path)
 	ASOAuth                           oauth.Config         // device code (agentserver path)
@@ -189,7 +194,22 @@ func (r *realOrchestrator) PollModelserverLogin(ctx context.Context) (modelserve
 			r.cleanupMS()
 			return modelserver.APIKey{}, err
 		}
-		projectID, _ := modelserver.ProjectIDFromToken(tok.AccessToken)
+		// Fetch project_id from the OAuth profile endpoint (modelserver PR #63).
+		// Works for both opaque and JWT access tokens — no local decoding.
+		// Best-effort: if the gateway is briefly unreachable or the endpoint
+		// hasn't been deployed yet, persist an empty project_id rather than
+		// failing the entire login (callers tolerate "" — the proxy uses the
+		// token directly, not project_id; quota fetching surfaces its own
+		// error message in the UI when project_id is empty).
+		var projectID string
+		if r.d.MSProxy != nil {
+			profile, perr := r.d.MSProxy.Profile(ctx, tok.AccessToken)
+			if perr != nil {
+				log.Printf("modelserver: profile fetch failed (continuing without project_id): %v", perr)
+			} else {
+				projectID = profile.Project.UUID
+			}
+		}
 		if r.d.TokenRefresherExePath != "" {
 			_ = tokenrefresh.StartDaemon(r.d.TokenRefresherExePath)
 		}
