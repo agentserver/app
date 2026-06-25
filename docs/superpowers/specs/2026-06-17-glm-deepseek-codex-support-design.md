@@ -110,9 +110,9 @@ Request (Responses → Anthropic Messages):
   - `message` → `{role, content:[{type:"text", text}]}`.
   - `function_call` → assistant message with `content:[{type:"tool_use", id, name, input}]`.
   - `function_call_output` → `{role:"user", content:[{type:"tool_result", tool_use_id, content}]}`.
-  - `reasoning` → `{type:"thinking",...}` where supported, else dropped.
+  - `reasoning` input item → dropped in v1 (the top-level `reasoning.effort` is mapped separately, below); carrying prior reasoning *content* as Anthropic thinking blocks is still deferred.
 - `tools[]` (function) → `tools:[{name,description,input_schema}]`.
-- `reasoning.effort` → Anthropic `thinking:{type:"enabled"}` mapping where applicable. `stream` honored.
+- `reasoning.effort` → Anthropic `thinking:{type:"enabled",budget_tokens:N}` (implemented in `protoconv.anthropicThinking`; budget is a fraction of `max_tokens` keyed off effort: `xhigh`→80%, `max`/`ultra`→90%, `high`→65%, `medium`→45%, `low`→25%; clamped `>1024` and `<max_tokens`). `stream` honored.
 
 Response (Anthropic Messages → Responses): non-stream maps Anthropic content blocks to Responses `output` items (`text` → message item, `tool_use` → function_call item). Stream consumes Anthropic events (`message_start`, `content_block_start`, `content_block_delta` of `text_delta`/`input_json_delta`, `content_block_stop`, `message_delta`, `message_stop`) and emits the same Responses event sequence as Converter A.
 
@@ -134,13 +134,13 @@ Response (Anthropic Messages → Responses): non-stream maps Anthropic content b
 ## Risks & Open Items
 
 - **Streaming correctness is the main risk, doubled across two converters.** Mitigated by (a) non-stream first, (b) referencing cc-switch / llama-swap's event sequencing and test vectors, (c) validating the exact sequence with the real Codex client. Converter B (Anthropic content-block streaming) is the harder of the two.
-- **Scope intentionally bounded for v1:** file/audio content parts and full reasoning-content parity are deferred (#7) — text + tool calls + streaming covers the core Codex coding loop.
-- **Reasoning parity:** DeepSeek/GLM reasoning fields differ across providers; carry reasoning where supported, degrade gracefully otherwise.
+- **Scope intentionally bounded for v1:** file/audio content parts and reasoning *content* parity (carrying prior reasoning blocks across turns) are deferred (#7) — text + tool calls + streaming covers the core Codex coding loop. Reasoning *effort* → thinking-budget mapping is implemented for the Anthropic (GLM) converter.
+- **Reasoning parity:** reasoning *effort* is mapped for GLM (→ `thinking` budget); reasoning *content* (prior thinking blocks) and DeepSeek's `reasoning_effort` forwarding remain deferred — fields differ across providers, carry where supported, degrade gracefully otherwise.
 - The gateway's exact `/v1/chat/completions` and `/v1/messages` error shapes will be confirmed against real traffic during implementation.
 
 ## Out of Scope / Future
 
 - A shared `internal/modelcatalog` unified across opencode + protoconv (don't touch opencode's working code in v1).
 - More GLM/DeepSeek variants beyond the three released models.
-- File/audio/reasoning parity beyond the v1 text+tools+streaming core.
+- File/audio content and reasoning *content* parity beyond the v1 text+tools+streaming core (reasoning *effort*→thinking is implemented for GLM).
 - A model-picker in the tray/console UI (the catalog + `set-model` CLI are the v1 surface).

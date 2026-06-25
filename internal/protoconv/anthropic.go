@@ -46,6 +46,16 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 	}
 	out["max_tokens"] = maxTokens
 
+	// Map the Responses API's top-level `reasoning.effort` to the Anthropic
+	// Messages `thinking` field. Codex's wire shape is `reasoning:{effort,...}`;
+	// Anthropic uses `thinking:{type:"enabled",budget_tokens:N}` (standard
+	// extended-thinking contract). `none`/`minimal` disable thinking. The
+	// budget is clamped to the Anthropic limits: > 1024 and strictly below
+	// max_tokens (Anthropic rejects budget_tokens >= max_tokens).
+	if thinking, ok := anthropicThinking(root["reasoning"], maxTokens); ok {
+		out["thinking"] = thinking
+	}
+
 	// system: instructions + any developer/system input messages
 	systemParts := []string{}
 	if instr, _ := root["instructions"].(string); strings.TrimSpace(instr) != "" {
@@ -134,6 +144,61 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 	}
 	out["messages"] = messages
 	return json.Marshal(out)
+}
+
+// anthropicThinking maps the Responses API `reasoning` object to Anthropic's
+// `thinking` field. Returns the field value and ok=true when extended thinking
+// should be enabled; ok=false (omit the field) when reasoning is absent, null,
+// or set to a disabling effort.
+//
+// Codex's wire shape is `reasoning:{effort:"low"|"medium"|"high"|"xhigh"|
+// "max"|...}` (the `ultra` config level is rewritten to "max" by Codex before
+// sending). `effort` drives Anthropic's thinking budget: higher effort = larger
+// budget_tokens. `none`/`minimal` disable thinking.
+//
+// Anthropic requires budget_tokens > 1024 and strictly < max_tokens. The
+// budget is derived as a fraction of max_tokens per effort level and clamped
+// to those bounds.
+func anthropicThinking(reasoning any, maxTokens int) (map[string]any, bool) {
+	rmap, ok := reasoning.(map[string]any)
+	if !ok {
+		// reasoning absent or null: do not enable thinking.
+		return nil, false
+	}
+	effort, _ := rmap["effort"].(string)
+	switch effort {
+	case "", "none", "minimal":
+		return nil, false
+	}
+	// Fraction of max_tokens reserved for thinking, increasing with effort.
+	// `max` keeps the largest budget (bounded below by the 1024 floor).
+	fraction := map[string]float64{
+		"low":    0.25,
+		"medium": 0.45,
+		"high":   0.65,
+		"xhigh":  0.80,
+		"max":    0.90,
+	}[effort]
+	if fraction == 0 {
+		// Unknown custom effort: default to a high budget so a non-standard
+		// effort still engages thinking rather than silently disabling it.
+		fraction = 0.65
+	}
+	budget := int(float64(maxTokens) * fraction)
+	const minBudget = 1024
+	// Anthropic rejects budget_tokens >= max_tokens; keep strictly below.
+	if budget >= maxTokens {
+		budget = maxTokens - 1
+	}
+	if budget <= minBudget {
+		// max_tokens is too small to admit a valid thinking budget; skip
+		// thinking rather than send a request the gateway must reject.
+		return nil, false
+	}
+	return map[string]any{
+		"type":          "enabled",
+		"budget_tokens": budget,
+	}, true
 }
 
 // anthropicContentBlocks turns Responses content into Anthropic text content blocks.

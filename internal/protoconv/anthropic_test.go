@@ -129,3 +129,127 @@ func TestAnthropicResponseToResponses(t *testing.T) {
 		t.Errorf("output[1] type = %v", output[1].(map[string]any)["type"])
 	}
 }
+
+// wantBudget mirrors anthropicThinking's budget derivation for a given
+// max_tokens and effort fraction, including the strictly-below-max_tokens clamp.
+func wantBudget(maxTokens int, fraction float64) int {
+	b := int(float64(maxTokens) * fraction)
+	if b >= maxTokens {
+		b = maxTokens - 1
+	}
+	return b
+}
+
+// TestAnthropicRequest_ReasoningToThinking verifies the Responses
+// `reasoning.effort` → Anthropic `thinking:{type:"enabled",budget_tokens}`
+// mapping (spec: GLM converter, "reasoning.effort → thinking mapping where
+// applicable"). Codex sends `reasoning:{effort:"low"|"medium"|"high"|
+// "xhigh"|"max"}` (the `ultra` config is rewritten to "max" on the wire).
+func TestAnthropicRequest_ReasoningToThinking(t *testing.T) {
+	// max_tokens defaults to 8192 when Codex omits max_output_tokens (it does
+	// not send that field on the Responses request).
+	const maxTokens = 8192
+	cases := []struct {
+		name       string
+		reasoning  any
+		wantThink  bool
+		wantBudget int // ignored when wantThink is false
+	}{
+		{"xhigh", map[string]any{"effort": "xhigh"}, true, wantBudget(maxTokens, 0.80)},
+		{"max", map[string]any{"effort": "max"}, true, wantBudget(maxTokens, 0.90)},
+		{"high", map[string]any{"effort": "high"}, true, wantBudget(maxTokens, 0.65)},
+		{"medium", map[string]any{"effort": "medium"}, true, wantBudget(maxTokens, 0.45)},
+		{"low", map[string]any{"effort": "low"}, true, wantBudget(maxTokens, 0.25)},
+		{"none disables", map[string]any{"effort": "none"}, false, 0},
+		{"minimal disables", map[string]any{"effort": "minimal"}, false, 0},
+		{"null reasoning", nil, false, 0},
+		{"absent reasoning", nil, false, 0}, // modeled by not setting the key
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req := map[string]any{"model": "glm-5.2", "input": "hi", "stream": true}
+			if c.reasoning != nil {
+				req["reasoning"] = c.reasoning
+			}
+			body, _ := json.Marshal(req)
+			gotBody, err := AnthropicRequestFromResponses(body)
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			var got map[string]any
+			_ = json.Unmarshal(gotBody, &got)
+			thinking, present := got["thinking"].(map[string]any)
+			if c.wantThink {
+				if !present {
+					t.Fatalf("expected thinking field, got none; body=%s", gotBody)
+				}
+				if thinking["type"] != "enabled" {
+					t.Errorf("thinking.type = %v, want enabled", thinking["type"])
+				}
+				budget, _ := thinking["budget_tokens"].(float64)
+				if int(budget) != c.wantBudget {
+					t.Errorf("budget_tokens = %v, want %d", budget, c.wantBudget)
+				}
+				// Anthropic invariants: budget > 1024 and strictly < max_tokens.
+				if int(budget) <= 1024 {
+					t.Errorf("budget_tokens = %d must be > 1024", int(budget))
+				}
+				if int(budget) >= maxTokens {
+					t.Errorf("budget_tokens = %d must be < max_tokens (%d)", int(budget), maxTokens)
+				}
+			} else {
+				if present {
+					t.Errorf("expected no thinking field, got %v; body=%s", thinking, gotBody)
+				}
+			}
+		})
+	}
+}
+
+// TestAnthropicRequest_ThinkingBudgetClampsBelowMaxTokens ensures that when
+// max_output_tokens is small (Codex can omit it, defaulting to 8192, but a
+// caller may set a smaller value), the thinking budget stays strictly below
+// max_tokens and is omitted entirely when no valid budget fits.
+func TestAnthropicRequest_ThinkingBudgetClampsBelowMaxTokens(t *testing.T) {
+	// Small max_tokens that still admits a valid (>1024) budget.
+	body, _ := json.Marshal(map[string]any{
+		"model": "glm-5.2", "input": "hi", "stream": true,
+		"max_output_tokens": float64(2000),
+		"reasoning":         map[string]any{"effort": "max"},
+	})
+	gotBody, err := AnthropicRequestFromResponses(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(gotBody, &got)
+	thinking, ok := got["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected thinking field for max effort with small max_tokens; body=%s", gotBody)
+	}
+	budget, _ := thinking["budget_tokens"].(float64)
+	if int(budget) >= 2000 {
+		t.Errorf("budget_tokens = %d must be < max_tokens 2000", int(budget))
+	}
+	if int(budget) <= 1024 {
+		t.Errorf("budget_tokens = %d must be > 1024", int(budget))
+	}
+
+	// Tiny max_tokens: no valid budget fits, thinking must be omitted.
+	body, _ = json.Marshal(map[string]any{
+		"model": "glm-5.2", "input": "hi", "stream": true,
+		"max_output_tokens": float64(1024),
+		"reasoning":         map[string]any{"effort": "max"},
+	})
+	gotBody, err = AnthropicRequestFromResponses(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Use a fresh map: json.Unmarshal into an existing map does not delete keys
+	// absent from the new payload, so the prior thinking field would leak.
+	var got2 map[string]any
+	_ = json.Unmarshal(gotBody, &got2)
+	if _, present := got2["thinking"]; present {
+		t.Errorf("expected thinking omitted when max_tokens too small; body=%s", gotBody)
+	}
+}

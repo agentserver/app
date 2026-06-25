@@ -141,6 +141,10 @@ func SetModel(path, model string) error {
 
 	root["model"] = model
 
+	if err := provisionGLMCatalog(root, path); err != nil {
+		return fmt.Errorf("provision glm catalog: %w", err)
+	}
+
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
 		return fmt.Errorf("marshal config.toml: %w", err)
@@ -223,6 +227,15 @@ func UpdateConfig(path string, s Settings) error {
 	}
 	providers[s.Provider] = provider
 	root["model_providers"] = providers
+
+	// Provision the GLM model catalog so Codex resolves glm-5.2 metadata
+	// (1M context window, xhigh reasoning) instead of falling back to
+	// degraded defaults. Written next to config.toml and referenced via
+	// `model_catalog_json`. Idempotent: only rewrites when the embedded asset
+	// differs from the on-disk copy.
+	if err := provisionGLMCatalog(root, path); err != nil {
+		return fmt.Errorf("provision glm catalog: %w", err)
+	}
 
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
@@ -375,6 +388,31 @@ func RemoveMCPServer(path, name string) error {
 		return fmt.Errorf("marshal config.toml: %w", err)
 	}
 	return writeConfigFile(path, buf.Bytes())
+}
+
+// provisionGLMCatalog writes the embedded GLM model catalog to the Codex
+// home dir (next to config.toml) and sets `model_catalog_json` on root to
+// point at it. Idempotent: the catalog file is only rewritten when the
+// embedded asset differs from what is on disk, so a routine config refresh
+// does not thrash the file. The config key is (re)set on every call so it
+// cannot drift out of sync if a user or prior version removed it.
+//
+// The path is absolute (Codex requires an absolute path in
+// `model_catalog_json`) and derived from the config file's directory.
+func provisionGLMCatalog(root map[string]any, configPath string) error {
+	catalogPath := filepath.Join(filepath.Dir(configPath), glmCatalogFilename)
+
+	existing, err := os.ReadFile(catalogPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read glm catalog: %w", err)
+	}
+	if !bytes.Equal(existing, glmCatalogJSON) {
+		if err := writeConfigFile(catalogPath, glmCatalogJSON); err != nil {
+			return fmt.Errorf("write glm catalog: %w", err)
+		}
+	}
+	root["model_catalog_json"] = catalogPath
+	return nil
 }
 
 func defaultString(v, fallback string) string {
