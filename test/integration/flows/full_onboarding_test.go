@@ -37,8 +37,9 @@ func TestFullOnboarding_MS_AS(t *testing.T) {
 
 	deps := ui.Deps{
 		State: store, Secrets: sec,
-		MS: modelserver.New(fake.MSURL()),
-		AS: agentserver.New(fake.ASURL()),
+		MS:      modelserver.New(fake.MSURL()),
+		MSProxy: modelserver.New(fake.MSURL()),
+		AS:      agentserver.New(fake.ASURL()),
 		MSOAuth: oauth.AuthCodeConfig{
 			Endpoint:     fake.MSURL(),
 			AuthPath:     "/oauth2/auth",

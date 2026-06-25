@@ -42,6 +42,9 @@ func Start() *Server {
 	mux.HandleFunc("/api/v1/projects", s.handleProjects)
 	mux.HandleFunc("/api/v1/projects/", s.handleProjectsSub) // .../keys
 
+	// ---- modelserver profile (proxy gateway) ----
+	mux.HandleFunc("/api/oauth/profile", s.handleProfile)
+
 	// ---- PKCE / Hydra routes ----
 	mux.HandleFunc("/oauth2/auth", s.handlePKCEAuth)       // PKCE: GET, bounces to callback
 	mux.HandleFunc("/oauth2/token", s.handlePKCETokenSwap) // PKCE: POST authorization_code
@@ -256,6 +259,13 @@ func (s *Server) handlePKCETokenSwap(w http.ResponseWriter, r *http.Request) {
 func fakeJWT(claims map[string]any) string {
 	payload, _ := json.Marshal(claims)
 	return "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".sig"
+}
+
+func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{
+		"account": map[string]any{"uuid": "acct-1", "email": "test@test.com", "display_name": "Test"},
+		"project": map[string]any{"uuid": "proj-1", "project_type": "personal"},
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -130,16 +130,31 @@ func SetModel(path, model string) error {
 		if err := UpdateConfig(path, seed); err != nil {
 			return err
 		}
-		if b, err := os.ReadFile(path); err == nil {
-			if _, err := toml.Decode(string(b), &root); err != nil {
-				return fmt.Errorf("parse seeded config.toml: %w", err)
-			}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			// We just wrote this file via UpdateConfig; a read failure here is
+			// unexpected (transient I/O or a race). Returning rather than
+			// silently proceeding avoids overwriting the seeded config with a
+			// root that only carries `model` (and possibly the GLM catalog),
+			// which would drop provider/base_url/bearer_token.
+			return fmt.Errorf("re-read seeded config.toml: %w", err)
+		}
+		if _, err := toml.Decode(string(b), &root); err != nil {
+			return fmt.Errorf("parse seeded config.toml: %w", err)
 		}
 	default:
 		return fmt.Errorf("read codex config: %w", err)
 	}
 
 	root["model"] = model
+
+	if model == glmCatalogSlug {
+		if err := provisionGLMCatalog(root, path); err != nil {
+			return fmt.Errorf("provision glm catalog: %w", err)
+		}
+	} else {
+		delete(root, "model_catalog_json")
+	}
 
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
@@ -223,6 +238,23 @@ func UpdateConfig(path string, s Settings) error {
 	}
 	providers[s.Provider] = provider
 	root["model_providers"] = providers
+
+	// Provision the GLM model catalog only when the active model is the GLM
+	// model. model_catalog_json *replaces* Codex's bundled catalog, so wiring
+	// it unconditionally would strip gpt-5.5's metadata when a user selects
+	// gpt-5.5. Resolve the effective model: caller-supplied s.Model wins,
+	// otherwise whatever is already on disk.
+	effectiveModel := s.Model
+	if effectiveModel == "" {
+		effectiveModel, _ = root["model"].(string)
+	}
+	if effectiveModel == glmCatalogSlug {
+		if err := provisionGLMCatalog(root, path); err != nil {
+			return fmt.Errorf("provision glm catalog: %w", err)
+		}
+	} else {
+		delete(root, "model_catalog_json")
+	}
 
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(root); err != nil {
@@ -375,6 +407,31 @@ func RemoveMCPServer(path, name string) error {
 		return fmt.Errorf("marshal config.toml: %w", err)
 	}
 	return writeConfigFile(path, buf.Bytes())
+}
+
+// provisionGLMCatalog writes the embedded GLM model catalog to the Codex
+// home dir (next to config.toml) and sets `model_catalog_json` on root to
+// point at it. Idempotent: the catalog file is only rewritten when the
+// embedded asset differs from what is on disk, so a routine config refresh
+// does not thrash the file. The config key is (re)set on every call so it
+// cannot drift out of sync if a user or prior version removed it.
+//
+// The path is absolute (Codex requires an absolute path in
+// `model_catalog_json`) and derived from the config file's directory.
+func provisionGLMCatalog(root map[string]any, configPath string) error {
+	catalogPath := filepath.Join(filepath.Dir(configPath), glmCatalogFilename)
+
+	existing, err := os.ReadFile(catalogPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read glm catalog: %w", err)
+	}
+	if !bytes.Equal(existing, glmCatalogJSON) {
+		if err := writeConfigFile(catalogPath, glmCatalogJSON); err != nil {
+			return fmt.Errorf("write glm catalog: %w", err)
+		}
+	}
+	root["model_catalog_json"] = catalogPath
+	return nil
 }
 
 func defaultString(v, fallback string) string {
