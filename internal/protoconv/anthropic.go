@@ -55,11 +55,12 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 	if thinking, ok := anthropicThinking(root["reasoning"], maxTokens); ok {
 		out["thinking"] = thinking
 	}
-	// Collect prior reasoning items (Codex echoes them with encrypted_content
-	// when include=["reasoning.encrypted_content"]) so they can be replayed as
-	// Anthropic thinking blocks. Anthropic requires thinking blocks from the
-	// last assistant turn to be echoed back during tool-use loops; omitting
-	// them causes a 400 invalid_request_error.
+	// Prior reasoning items are replayed as Anthropic thinking blocks in the
+	// input loop below (case "reasoning"): Codex echoes them with
+	// encrypted_content (include=["reasoning.encrypted_content"]) and we map
+	// that back to the Anthropic `signature` field. Anthropic requires thinking
+	// blocks from the last assistant turn to be echoed back during tool-use
+	// loops; omitting them causes a 400 invalid_request_error.
 
 	// system: instructions + any developer/system input messages
 	systemParts := []string{}
@@ -93,9 +94,25 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 					if role == "" {
 						role = "user"
 					}
+					blocks := anthropicContentBlocks(m["content"])
+					// If the last message is an assistant turn that currently holds only
+					// echoed thinking blocks (no text/tool_use yet), merge this text into it
+					// so thinking precedes text within one assistant turn, as Anthropic
+					// requires. Otherwise a reasoning item followed by an assistant text
+					// message would produce two separate assistant turns (thinking-only,
+					// then text), which Anthropic rejects when the next turn carries tool_use.
+					if role == "assistant" && len(messages) > 0 {
+						if last, ok := messages[len(messages)-1].(map[string]any); ok && last["role"] == "assistant" {
+							content, _ := last["content"].([]any)
+							if len(content) > 0 && !hasTextOrToolUse(content) {
+								last["content"] = append(content, blocks...)
+								break
+							}
+						}
+					}
 					messages = append(messages, map[string]any{
 						"role":    role,
-						"content": anthropicContentBlocks(m["content"]),
+						"content": blocks,
 					})
 				}
 			case "function_call":
@@ -270,6 +287,22 @@ func attachThinkingBlock(messages *[]any, block map[string]any) {
 		"role":    "assistant",
 		"content": []any{block},
 	})
+}
+
+// hasTextOrToolUse reports whether a content slice already contains a text or
+// tool_use block. Used to decide whether an assistant turn that started with
+// echoed thinking blocks can still absorb an incoming assistant text message:
+// it can only while it holds thinking blocks alone.
+func hasTextOrToolUse(content []any) bool {
+	for _, c := range content {
+		if cm, ok := c.(map[string]any); ok {
+			switch cm["type"] {
+			case "text", "tool_use":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hasToolUse reports whether a content slice already contains a tool_use block.

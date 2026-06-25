@@ -379,3 +379,61 @@ func TestAnthropicRequest_EchoesReasoningAsThinkingBlock(t *testing.T) {
 		t.Errorf("missing tool_use block in assistant message; content=%v", content)
 	}
 }
+
+// TestAnthropicRequest_ThinkingTextToolUseSameAssistantTurn verifies that
+// when Codex's input is [reasoning, assistant-text, function_call], the
+// converter merges all three into a single assistant message with thinking
+// first, then text, then tool_use. Anthropic requires thinking blocks to be
+// the leading content of the assistant turn that carries the tool_use; an
+// earlier version emitted a separate thinking-only assistant turn followed by
+// a text+tool_use turn, which Anthropic rejects.
+func TestAnthropicRequest_ThinkingTextToolUseSameAssistantTurn(t *testing.T) {
+	resp := map[string]any{
+		"model":        "glm-5.2",
+		"instructions": "be brief",
+		"input": []any{
+			map[string]any{"type": "message", "role": "user",
+				"content": []any{map[string]any{"type": "input_text", "text": "do it"}}},
+			// prior assistant turn: reasoning + text + tool_use
+			map[string]any{
+				"type": "reasoning", "encrypted_content": "sig-1",
+				"content": []any{map[string]any{"type": "reasoning_text", "text": "planning"}},
+			},
+			map[string]any{"type": "message", "role": "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "running tool"}}},
+			map[string]any{"type": "function_call", "name": "run", "arguments": "{}", "call_id": "c1"},
+			map[string]any{"type": "function_call_output", "call_id": "c1", "output": "ok"},
+		},
+		"reasoning": map[string]any{"effort": "high"},
+		"stream":    true,
+	}
+	body, _ := json.Marshal(resp)
+	gotBody, err := AnthropicRequestFromResponses(body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(gotBody, &got)
+	msgs, _ := got["messages"].([]any)
+	// Expect: user, assistant(thinking+text+tool_use), user(tool_result).
+	if len(msgs) != 3 {
+		t.Fatalf("messages len = %d, want 3;\n%s", len(msgs), gotBody)
+	}
+	asst, _ := msgs[1].(map[string]any)
+	if asst["role"] != "assistant" {
+		t.Fatalf("msgs[1] role = %v, want assistant", asst["role"])
+	}
+	content, _ := asst["content"].([]any)
+	if len(content) != 3 {
+		t.Fatalf("assistant content len = %d, want 3 (thinking, text, tool_use)", len(content))
+	}
+	if content[0].(map[string]any)["type"] != "thinking" {
+		t.Errorf("content[0] = %v, want thinking", content[0])
+	}
+	if content[1].(map[string]any)["type"] != "text" {
+		t.Errorf("content[1] = %v, want text", content[1])
+	}
+	if content[2].(map[string]any)["type"] != "tool_use" {
+		t.Errorf("content[2] = %v, want tool_use", content[2])
+	}
+}
