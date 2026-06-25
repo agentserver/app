@@ -55,6 +55,11 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 	if thinking, ok := anthropicThinking(root["reasoning"], maxTokens); ok {
 		out["thinking"] = thinking
 	}
+	// Collect prior reasoning items (Codex echoes them with encrypted_content
+	// when include=["reasoning.encrypted_content"]) so they can be replayed as
+	// Anthropic thinking blocks. Anthropic requires thinking blocks from the
+	// last assistant turn to be echoed back during tool-use loops; omitting
+	// them causes a 400 invalid_request_error.
 
 	// system: instructions + any developer/system input messages
 	systemParts := []string{}
@@ -102,11 +107,25 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 				if input == nil {
 					input = map[string]any{}
 				}
+				block := map[string]any{
+					"type": "tool_use", "id": callID, "name": name, "input": input,
+				}
+				// If the last message is an assistant message that only holds
+				// echoed thinking blocks (no tool_use yet), append the tool_use
+				// to it so thinking + tool_use share one assistant turn, as
+				// Anthropic requires.
+				if len(messages) > 0 {
+					if last, ok := messages[len(messages)-1].(map[string]any); ok && last["role"] == "assistant" {
+						content, _ := last["content"].([]any)
+						if !hasToolUse(content) {
+							last["content"] = append(content, block)
+							break
+						}
+					}
+				}
 				messages = append(messages, map[string]any{
-					"role": "assistant",
-					"content": []any{map[string]any{
-						"type": "tool_use", "id": callID, "name": name, "input": input,
-					}},
+					"role":    "assistant",
+					"content": []any{block},
 				})
 			case "function_call_output":
 				callID, _ := m["call_id"].(string)
@@ -118,7 +137,21 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 					}},
 				})
 			case "reasoning":
-				// v1: dropped (parity follow-up).
+				// Replay the prior turn's thinking block: map Codex
+				// encrypted_content back to the Anthropic `signature` field
+				// (the opaque token Anthropic requires to be echoed verbatim).
+				enc, _ := m["encrypted_content"].(string)
+				if enc == "" {
+					continue
+				}
+				block := map[string]any{"type": "thinking", "signature": enc}
+				if t := reasoningItemText(m); t != "" {
+					block["thinking"] = t
+				}
+				// Thinking blocks must sit on an assistant message, before any
+				// tool_use. Attach to the last assistant message if it has no
+				// tool_use yet; otherwise start a new assistant message.
+				attachThinkingBlock(&messages, block)
 			}
 		}
 	}
@@ -201,6 +234,57 @@ func anthropicThinking(reasoning any, maxTokens int) (map[string]any, bool) {
 	}, true
 }
 
+// reasoningItemText extracts the plaintext thinking text from a Codex
+// `reasoning` input item, if any. Codex carries it under content[] as
+// {type:"reasoning_text", text}.
+func reasoningItemText(m map[string]any) string {
+	content, _ := m["content"].([]any)
+	for _, c := range content {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if cm["type"] == "reasoning_text" {
+			if t, _ := cm["text"].(string); t != "" {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+// attachThinkingBlock places an Anthropic thinking block onto an assistant
+// message. Anthropic requires thinking blocks to be the first content of an
+// assistant turn and consecutive; a thinking block may not follow a tool_use
+// in the same message. If the last message is an assistant message with no
+// tool_use blocks yet, append there; otherwise open a new assistant message.
+func attachThinkingBlock(messages *[]any, block map[string]any) {
+	if len(*messages) > 0 {
+		last, ok := (*messages)[len(*messages)-1].(map[string]any)
+		if ok && last["role"] == "assistant" {
+			content, _ := last["content"].([]any)
+			if !hasToolUse(content) {
+				last["content"] = append(content, block)
+				return
+			}
+		}
+	}
+	*messages = append(*messages, map[string]any{
+		"role":    "assistant",
+		"content": []any{block},
+	})
+}
+
+// hasToolUse reports whether a content slice already contains a tool_use block.
+func hasToolUse(content []any) bool {
+	for _, c := range content {
+		if cm, ok := c.(map[string]any); ok && cm["type"] == "tool_use" {
+			return true
+		}
+	}
+	return false
+}
+
 // anthropicContentBlocks turns Responses content into Anthropic text content blocks.
 func anthropicContentBlocks(content any) []any {
 	switch v := content.(type) {
@@ -227,11 +311,13 @@ func AnthropicResponseToResponses(antBody []byte) ([]byte, error) {
 		ID      string `json:"id"`
 		Model   string `json:"model"`
 		Content []struct {
-			Type  string          `json:"type"`
-			Text  string          `json:"text"`
-			ID    string          `json:"id"`
-			Name  string          `json:"name"`
-			Input json.RawMessage `json:"input"`
+			Type      string          `json:"type"`
+			Text      string          `json:"text"`
+			Thinking  string          `json:"thinking"`
+			Signature string          `json:"signature"`
+			ID        string          `json:"id"`
+			Name      string          `json:"name"`
+			Input     json.RawMessage `json:"input"`
 		} `json:"content"`
 		Usage any `json:"usage"`
 	}
@@ -242,6 +328,27 @@ func AnthropicResponseToResponses(antBody []byte) ([]byte, error) {
 	output := []any{}
 	for _, b := range ant.Content {
 		switch b.Type {
+		case "thinking":
+			// Emit a reasoning item carrying the Anthropic thinking signature as
+			// encrypted_content. Codex echoes reasoning items back on the next
+			// turn (when include=["reasoning.encrypted_content"]), and the
+			// request converter maps encrypted_content back to the Anthropic
+			// `signature` field. Without this round-trip, Anthropic rejects
+			// tool-use loops that interleave thinking with a 400
+			// invalid_request_error ("thinking blocks must be consecutive...").
+			if b.Signature == "" {
+				continue
+			}
+			reasoning := map[string]any{
+				"type":              "reasoning",
+				"encrypted_content": b.Signature,
+			}
+			if strings.TrimSpace(b.Thinking) != "" {
+				reasoning["content"] = []any{map[string]any{
+					"type": "reasoning_text", "text": b.Thinking,
+				}}
+			}
+			output = append(output, reasoning)
 		case "text":
 			if strings.TrimSpace(b.Text) != "" {
 				output = append(output, map[string]any{
@@ -294,6 +401,13 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 	curToolName := ""    // function name carried from content_block_start
 	var textBuf strings.Builder
 	var argsBuf strings.Builder
+	// thinkingBuf/thinkingSig accumulate the open thinking block's text and
+	// signature. Anthropic streams thinking as content_block_start{type:"thinking"}
+	// + thinking_delta/signature_delta + content_block_stop; the signature must
+	// be echoed back on the next turn, so we capture it into a reasoning item's
+	// encrypted_content at block stop.
+	var thinkingBuf strings.Builder
+	var thinkingSig string
 
 	// Upstream response identity, captured from message_start. Codex's
 	// Responses parser rejects the stream with "missing field `id`" if these
@@ -412,12 +526,33 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 						"content": []any{},
 					},
 				})
+			case "thinking":
+				// Accumulate thinking text + signature; emit a reasoning output
+				// item at content_block_stop. Do not open a message/tool item.
+				thinkingBuf.Reset()
+				thinkingSig = ""
+				if sig, _ := block["signature"].(string); sig != "" {
+					thinkingSig = sig
+				}
 			default:
-				// thinking / server-tool / other deferred block types: ignore
-				// without opening an output item (reasoning parity is a follow-up).
+				// server-tool / other deferred block types: ignore without
+				// opening an output item.
 			}
 		case "content_block_delta":
 			delta, _ := msg["delta"].(map[string]any)
+			// Thinking deltas do not belong to the open message/tool item.
+			switch delta["type"] {
+			case "thinking_delta":
+				if t, _ := delta["thinking"].(string); t != "" {
+					thinkingBuf.WriteString(t)
+				}
+				continue
+			case "signature_delta":
+				if sig, _ := delta["signature"].(string); sig != "" {
+					thinkingSig += sig
+				}
+				continue
+			}
 			if curItemID == "" {
 				continue
 			}
@@ -434,6 +569,32 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 				}
 			}
 		case "content_block_stop":
+			// If the block just closed was a thinking block, emit a reasoning
+			// item carrying the signature as encrypted_content so Codex echoes
+			// it back next turn (mapped to the Anthropic `signature` field by
+			// the request converter). Without this round-trip, Anthropic rejects
+			// tool-use loops that interleave thinking with a 400.
+			if thinkingSig != "" {
+				item := map[string]any{
+					"type":              "reasoning",
+					"encrypted_content": thinkingSig,
+				}
+				if strings.TrimSpace(thinkingBuf.String()) != "" {
+					item["content"] = []any{map[string]any{
+						"type": "reasoning_text", "text": thinkingBuf.String(),
+					}}
+				}
+				writeEvent("response.output_item.added", map[string]any{
+					"type": "response.output_item.added",
+					"item": item,
+				})
+				writeEvent("response.output_item.done", map[string]any{
+					"type": "response.output_item.done",
+					"item": item,
+				})
+			}
+			thinkingBuf.Reset()
+			thinkingSig = ""
 			closeCurrent()
 		case "message_stop":
 			closeCurrent()

@@ -2,6 +2,8 @@ package protoconv
 
 import (
 	"encoding/json"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -130,16 +132,6 @@ func TestAnthropicResponseToResponses(t *testing.T) {
 	}
 }
 
-// wantBudget mirrors anthropicThinking's budget derivation for a given
-// max_tokens and effort fraction, including the strictly-below-max_tokens clamp.
-func wantBudget(maxTokens int, fraction float64) int {
-	b := int(float64(maxTokens) * fraction)
-	if b >= maxTokens {
-		b = maxTokens - 1
-	}
-	return b
-}
-
 // TestAnthropicRequest_ReasoningToThinking verifies the Responses
 // `reasoning.effort` → Anthropic `thinking:{type:"enabled",budget_tokens}`
 // mapping (spec: GLM converter, "reasoning.effort → thinking mapping where
@@ -155,11 +147,14 @@ func TestAnthropicRequest_ReasoningToThinking(t *testing.T) {
 		wantThink  bool
 		wantBudget int // ignored when wantThink is false
 	}{
-		{"xhigh", map[string]any{"effort": "xhigh"}, true, wantBudget(maxTokens, 0.80)},
-		{"max", map[string]any{"effort": "max"}, true, wantBudget(maxTokens, 0.90)},
-		{"high", map[string]any{"effort": "high"}, true, wantBudget(maxTokens, 0.65)},
-		{"medium", map[string]any{"effort": "medium"}, true, wantBudget(maxTokens, 0.45)},
-		{"low", map[string]any{"effort": "low"}, true, wantBudget(maxTokens, 0.25)},
+		// Budgets are hardcoded (not recomputed from the production formula) so
+		// the test catches an arithmetic regression rather than agreeing on a
+		// wrong value. Values: int(8192*frac), truncated.
+		{"xhigh", map[string]any{"effort": "xhigh"}, true, 6553},   // 8192*0.80
+		{"max", map[string]any{"effort": "max"}, true, 7372},       // 8192*0.90
+		{"high", map[string]any{"effort": "high"}, true, 5324},     // 8192*0.65
+		{"medium", map[string]any{"effort": "medium"}, true, 3686}, // 8192*0.45
+		{"low", map[string]any{"effort": "low"}, true, 2048},       // 8192*0.25
 		{"none disables", map[string]any{"effort": "none"}, false, 0},
 		{"minimal disables", map[string]any{"effort": "minimal"}, false, 0},
 		{"null reasoning", nil, false, 0},
@@ -251,5 +246,136 @@ func TestAnthropicRequest_ThinkingBudgetClampsBelowMaxTokens(t *testing.T) {
 	_ = json.Unmarshal(gotBody, &got2)
 	if _, present := got2["thinking"]; present {
 		t.Errorf("expected thinking omitted when max_tokens too small; body=%s", gotBody)
+	}
+}
+
+// TestAnthropicResponse_CapturesThinkingSignature verifies the non-streaming
+// response path emits a `reasoning` item carrying the Anthropic thinking
+// block's `signature` as `encrypted_content`. This is the first half of the
+// thinking round-trip: Codex echoes reasoning items back, and the request
+// converter maps encrypted_content -> Anthropic `signature` so tool-use loops
+// that interleave thinking are not rejected with a 400.
+func TestAnthropicResponse_CapturesThinkingSignature(t *testing.T) {
+	ant := map[string]any{
+		"id":    "msg_1",
+		"model": "glm-5.2",
+		"content": []any{
+			map[string]any{"type": "thinking", "thinking": "let me plan", "signature": "sig-abc"},
+			map[string]any{"type": "text", "text": "answer"},
+		},
+		"usage": map[string]any{"input_tokens": 1, "output_tokens": 2},
+	}
+	body, _ := json.Marshal(ant)
+	out, err := AnthropicResponseToResponses(body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	output, _ := got["output"].([]any)
+	if len(output) != 2 {
+		t.Fatalf("output len = %d, want 2 (reasoning + message)", len(output))
+	}
+	r := output[0].(map[string]any)
+	if r["type"] != "reasoning" {
+		t.Errorf("output[0] type = %v, want reasoning", r["type"])
+	}
+	if r["encrypted_content"] != "sig-abc" {
+		t.Errorf("encrypted_content = %v, want sig-abc", r["encrypted_content"])
+	}
+	content, _ := r["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["text"] != "let me plan" {
+		t.Errorf("reasoning content = %v, want reasoning_text 'let me plan'", content)
+	}
+}
+
+// TestAnthropicStream_CapturesThinkingSignature verifies the streaming path
+// accumulates signature_delta (and thinking_delta) and emits a reasoning
+// output item with the full signature as encrypted_content at block stop.
+func TestAnthropicStream_CapturesThinkingSignature(t *testing.T) {
+	const sse = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"glm-5.2\"}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"plan\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-part-1\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-part-2\"}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"OK\"}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	rec := httptest.NewRecorder()
+	if err := WriteAnthropicStreamAsResponses(strings.NewReader(sse), rec); err != nil {
+		t.Fatal(err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"encrypted_content":"sig-part-1sig-part-2"`) {
+		t.Errorf("missing concatenated signature in reasoning item;\n%s", body)
+	}
+	if !strings.Contains(body, `"reasoning_text"`) || !strings.Contains(body, `"plan"`) {
+		t.Errorf("missing reasoning_text 'plan';\n%s", body)
+	}
+}
+
+// TestAnthropicRequest_EchoesReasoningAsThinkingBlock verifies the request
+// converter replays a prior reasoning input item as an Anthropic thinking
+// block with signature = encrypted_content. This is the second half of the
+// round-trip that keeps tool-use + thinking loops from being 400-rejected.
+func TestAnthropicRequest_EchoesReasoningAsThinkingBlock(t *testing.T) {
+	resp := map[string]any{
+		"model":        "glm-5.2",
+		"instructions": "be brief",
+		"input": []any{
+			map[string]any{"type": "message", "role": "user",
+				"content": []any{map[string]any{"type": "input_text", "text": "hi"}}},
+			// Prior assistant reasoning echoed by Codex (include=reasoning.encrypted_content).
+			map[string]any{
+				"type": "reasoning", "encrypted_content": "sig-xyz",
+				"content": []any{map[string]any{"type": "reasoning_text", "text": "pondered"}},
+			},
+			// Prior assistant tool call that this reasoning accompanied.
+			map[string]any{"type": "function_call", "name": "run", "arguments": "{}", "call_id": "c1"},
+			map[string]any{"type": "function_call_output", "call_id": "c1", "output": "ok"},
+		},
+		"reasoning": map[string]any{"effort": "xhigh"},
+		"stream":    true,
+	}
+	body, _ := json.Marshal(resp)
+	gotBody, err := AnthropicRequestFromResponses(body)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(gotBody, &got)
+	msgs, _ := got["messages"].([]any)
+	if len(msgs) < 2 {
+		t.Fatalf("messages len = %d, want >= 2", len(msgs))
+	}
+	// messages[0] = user; messages[1] = assistant(thinking block + tool_use)
+	asst, ok := msgs[1].(map[string]any)
+	if !ok || asst["role"] != "assistant" {
+		t.Fatalf("messages[1] not assistant: %v", msgs[1])
+	}
+	content, _ := asst["content"].([]any)
+	var foundThinking, foundToolUse bool
+	for _, c := range content {
+		cm, _ := c.(map[string]any)
+		if cm["type"] == "thinking" {
+			foundThinking = true
+			if cm["signature"] != "sig-xyz" {
+				t.Errorf("thinking signature = %v, want sig-xyz", cm["signature"])
+			}
+			if cm["thinking"] != "pondered" {
+				t.Errorf("thinking text = %v, want pondered", cm["thinking"])
+			}
+		}
+		if cm["type"] == "tool_use" {
+			foundToolUse = true
+		}
+	}
+	if !foundThinking {
+		t.Errorf("missing thinking block in assistant message; content=%v", content)
+	}
+	if !foundToolUse {
+		t.Errorf("missing tool_use block in assistant message; content=%v", content)
 	}
 }

@@ -595,8 +595,10 @@ func TestSetModelPreservesExistingBearerToken(t *testing.T) {
 func TestUpdateConfig_ProvisionsGLMCatalog(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
+	// Catalog provisioning is gated on the active model being the GLM slug;
+	// selecting gpt-5.5 must NOT replace Codex's bundled catalog.
 	if err := UpdateConfig(path, Settings{
-		Provider: "modelserver", Model: "gpt-5.5",
+		Provider: "modelserver", Model: "glm-5.2",
 		BaseURL: "https://code.ai.cs.ac.cn/v1", EnvKey: "OPENAI_API_KEY",
 		WireAPI: "responses",
 	}); err != nil {
@@ -631,7 +633,7 @@ func TestUpdateConfig_CatalogProvisioningIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	settings := Settings{
-		Provider: "modelserver", Model: "gpt-5.5",
+		Provider: "modelserver", Model: "glm-5.2",
 		BaseURL: "https://code.ai.cs.ac.cn/v1", EnvKey: "OPENAI_API_KEY",
 		WireAPI: "responses",
 	}
@@ -654,5 +656,29 @@ func TestUpdateConfig_CatalogProvisioningIsIdempotent(t *testing.T) {
 	if info1.ModTime() != info2.ModTime() {
 		t.Errorf("catalog file was rewritten on identical re-run (mtime changed): %v -> %v",
 			info1.ModTime(), info2.ModTime())
+	}
+}
+
+// TestUpdateConfig_DoesNotProvisionCatalogForGPT verifies the GLM catalog is
+// NOT written and model_catalog_json is NOT set when the active model is
+// gpt-5.5. model_catalog_json replaces Codex's bundled catalog, so wiring it
+// for gpt-5.5 would strip gpt-5.5's metadata.
+func TestUpdateConfig_DoesNotProvisionCatalogForGPT(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := UpdateConfig(path, Settings{
+		Provider: "modelserver", Model: "gpt-5.5",
+		BaseURL: "https://code.ai.cs.ac.cn/v1", EnvKey: "OPENAI_API_KEY",
+		WireAPI: "responses",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	s := string(b)
+	if strings.Contains(s, "model_catalog_json") {
+		t.Errorf("gpt-5.5 must not set model_catalog_json:\n%s", s)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "glm-catalog.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("gpt-5.5 must not write glm-catalog.json")
 	}
 }

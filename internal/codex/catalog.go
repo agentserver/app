@@ -15,3 +15,8 @@ var glmCatalogJSON []byte
 
 // glmCatalogFilename is the on-disk filename written into the Codex home dir.
 const glmCatalogFilename = "glm-catalog.json"
+
+// glmCatalogSlug is the model name the embedded catalog describes. Catalog
+// provisioning is gated on the active model matching this slug so a
+// gpt-5.5 selection keeps Codex's bundled (gpt-5.5-aware) catalog.
+const glmCatalogSlug = "glm-5.2"

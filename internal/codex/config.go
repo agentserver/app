@@ -130,10 +130,17 @@ func SetModel(path, model string) error {
 		if err := UpdateConfig(path, seed); err != nil {
 			return err
 		}
-		if b, err := os.ReadFile(path); err == nil {
-			if _, err := toml.Decode(string(b), &root); err != nil {
-				return fmt.Errorf("parse seeded config.toml: %w", err)
-			}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			// We just wrote this file via UpdateConfig; a read failure here is
+			// unexpected (transient I/O or a race). Returning rather than
+			// silently proceeding avoids overwriting the seeded config with a
+			// root that only carries `model` (and possibly the GLM catalog),
+			// which would drop provider/base_url/bearer_token.
+			return fmt.Errorf("re-read seeded config.toml: %w", err)
+		}
+		if _, err := toml.Decode(string(b), &root); err != nil {
+			return fmt.Errorf("parse seeded config.toml: %w", err)
 		}
 	default:
 		return fmt.Errorf("read codex config: %w", err)
@@ -141,8 +148,10 @@ func SetModel(path, model string) error {
 
 	root["model"] = model
 
-	if err := provisionGLMCatalog(root, path); err != nil {
-		return fmt.Errorf("provision glm catalog: %w", err)
+	if model == glmCatalogSlug {
+		if err := provisionGLMCatalog(root, path); err != nil {
+			return fmt.Errorf("provision glm catalog: %w", err)
+		}
 	}
 
 	var buf bytes.Buffer
@@ -228,13 +237,19 @@ func UpdateConfig(path string, s Settings) error {
 	providers[s.Provider] = provider
 	root["model_providers"] = providers
 
-	// Provision the GLM model catalog so Codex resolves glm-5.2 metadata
-	// (1M context window, xhigh reasoning) instead of falling back to
-	// degraded defaults. Written next to config.toml and referenced via
-	// `model_catalog_json`. Idempotent: only rewrites when the embedded asset
-	// differs from the on-disk copy.
-	if err := provisionGLMCatalog(root, path); err != nil {
-		return fmt.Errorf("provision glm catalog: %w", err)
+	// Provision the GLM model catalog only when the active model is the GLM
+	// model. model_catalog_json *replaces* Codex's bundled catalog, so wiring
+	// it unconditionally would strip gpt-5.5's metadata when a user selects
+	// gpt-5.5. Resolve the effective model: caller-supplied s.Model wins,
+	// otherwise whatever is already on disk.
+	effectiveModel := s.Model
+	if effectiveModel == "" {
+		effectiveModel, _ = root["model"].(string)
+	}
+	if effectiveModel == glmCatalogSlug {
+		if err := provisionGLMCatalog(root, path); err != nil {
+			return fmt.Errorf("provision glm catalog: %w", err)
+		}
 	}
 
 	var buf bytes.Buffer
