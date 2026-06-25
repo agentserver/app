@@ -152,6 +152,8 @@ func SetModel(path, model string) error {
 		if err := provisionGLMCatalog(root, path); err != nil {
 			return fmt.Errorf("provision glm catalog: %w", err)
 		}
+	} else {
+		delete(root, "model_catalog_json")
 	}
 
 	var buf bytes.Buffer
@@ -250,6 +252,8 @@ func UpdateConfig(path string, s Settings) error {
 		if err := provisionGLMCatalog(root, path); err != nil {
 			return fmt.Errorf("provision glm catalog: %w", err)
 		}
+	} else {
+		delete(root, "model_catalog_json")
 	}
 
 	var buf bytes.Buffer

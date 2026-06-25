@@ -144,10 +144,7 @@ func AnthropicRequestFromResponses(respBody []byte) ([]byte, error) {
 				if enc == "" {
 					continue
 				}
-				block := map[string]any{"type": "thinking", "signature": enc}
-				if t := reasoningItemText(m); t != "" {
-					block["thinking"] = t
-				}
+				block := map[string]any{"type": "thinking", "thinking": reasoningItemText(m), "signature": enc}
 				// Thinking blocks must sit on an assistant message, before any
 				// tool_use. Attach to the last assistant message if it has no
 				// tool_use yet; otherwise start a new assistant message.
@@ -343,7 +340,7 @@ func AnthropicResponseToResponses(antBody []byte) ([]byte, error) {
 				"type":              "reasoning",
 				"encrypted_content": b.Signature,
 			}
-			if strings.TrimSpace(b.Thinking) != "" {
+			if b.Thinking != "" {
 				reasoning["content"] = []any{map[string]any{
 					"type": "reasoning_text", "text": b.Thinking,
 				}}
@@ -579,7 +576,7 @@ func WriteAnthropicStreamAsResponses(r io.Reader, w http.ResponseWriter) error {
 					"type":              "reasoning",
 					"encrypted_content": thinkingSig,
 				}
-				if strings.TrimSpace(thinkingBuf.String()) != "" {
+				if thinkingBuf.Len() > 0 {
 					item["content"] = []any{map[string]any{
 						"type": "reasoning_text", "text": thinkingBuf.String(),
 					}}
