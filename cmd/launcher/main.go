@@ -964,6 +964,7 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 			return fmt.Errorf("configure codex mcp driver: %w", err)
 		}
 	}
+	_ = loom.StartDriverDaemon(driverPath, loomConfigPath)
 	return nil
 }
 

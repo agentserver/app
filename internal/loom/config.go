@@ -1,8 +1,10 @@
 package loom
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -143,6 +145,23 @@ func (c DriverConfig) validate() error {
 		return fmt.Errorf("agentserver registration missing %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+func StartDriverDaemon(exe, configPath string) error {
+	if exe == "" || configPath == "" {
+		return nil
+	}
+	if _, err := os.Stat(exe); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	cmd := exec.Command(exe, "serve-daemon", "--config", configPath)
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Start()
 }
 
 func quote(v string) string {

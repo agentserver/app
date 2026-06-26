@@ -399,8 +399,7 @@ func TestExecSlaveRunnerForwardsOutputAuthURLAndCancels(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script test requires /bin/sh")
 	}
-	sh, err := exec.LookPath("sh")
-	if err != nil {
+	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not found")
 	}
 	temp := t.TempDir()
@@ -424,7 +423,7 @@ sleep 30
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- execSlaveRunner{stdout: &out}.Run(ctx, SlaveProcessRequest{
-			Exe:        sh,
+			Exe:        script,
 			ConfigPath: script,
 			WorkDir:    temp,
 			AuthURL: func(url string) {
@@ -461,8 +460,7 @@ func TestExecSlaveRunnerSerializesAuthCallbacks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script test requires /bin/sh")
 	}
-	sh, err := exec.LookPath("sh")
-	if err != nil {
+	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh not found")
 	}
 	temp := t.TempDir()
@@ -482,8 +480,8 @@ done
 		inAuth   bool
 		authURLs []string
 	)
-	err = execSlaveRunner{stdout: ioDiscard{}}.Run(context.Background(), SlaveProcessRequest{
-		Exe:        sh,
+	err := execSlaveRunner{stdout: ioDiscard{}}.Run(context.Background(), SlaveProcessRequest{
+		Exe:        script,
 		ConfigPath: script,
 		WorkDir:    temp,
 		AuthURL: func(url string) {

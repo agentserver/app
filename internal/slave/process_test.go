@@ -1187,7 +1187,7 @@ func TestExecRunnerStartCancelsAndKillsChildBeforeStartupSuccess(t *testing.T) {
 func TestExecRunnerStartPassesConfigArgAndLogsStdoutAndStderr(t *testing.T) {
 	dir := t.TempDir()
 	argFile := filepath.Join(dir, "arg")
-	exe := writeLinuxShellScript(t, "printf '%s' \"$1\" > \""+argFile+"\"\necho stdout-line\necho stderr-line >&2\necho 'https://agent.cs.ac.cn/device?user_code=ABCD'\nexec sleep 30\n")
+	exe := writeLinuxShellScript(t, "printf '%s' \"$3\" > \""+argFile+"\"\necho stdout-line\necho stderr-line >&2\necho 'https://agent.cs.ac.cn/device?user_code=ABCD'\nexec sleep 30\n")
 	logPath := filepath.Join(dir, "logs", "slave.log")
 	configPath := filepath.Join(dir, "config.yaml")
 
@@ -1209,14 +1209,14 @@ func TestExecRunnerStartPassesConfigArgAndLogsStdoutAndStderr(t *testing.T) {
 		t.Fatalf("read arg file: %v", err)
 	}
 	if string(gotArg) != configPath {
-		t.Fatalf("argv[1]=%q want %q", gotArg, configPath)
+		t.Fatalf("argv[3]=%q want %q", gotArg, configPath)
 	}
 	assertLogContains(t, logPath, "stdout-line", "stderr-line")
 }
 
 func TestExecRunnerStartHidesSlaveProcessWindow(t *testing.T) {
 	s := readPackageSourceFile(t, "process.go")
-	command := strings.Index(s, "cmd := exec.Command(req.Exe, req.ConfigPath)")
+	command := strings.Index(s, `cmd := exec.Command(req.Exe, "serve-daemon", "--config", req.ConfigPath)`)
 	hide := strings.Index(s, "process.HideWindow(cmd)")
 	start := strings.Index(s, "if err := cmd.Start(); err != nil")
 	if command < 0 || hide < 0 || start < 0 {

@@ -44,3 +44,5 @@ Thumbs.db
 .worktrees/
 docs/ops
 image
+docs/superpowers/AUDIT-2026-06-13.md
+*.lock

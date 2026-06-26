@@ -94,6 +94,7 @@ func ServeDriverMCP(ctx context.Context, opts DriverMCPOptions) error {
 	defer func() {
 		_ = os.Remove(sessionConfig)
 	}()
+	_ = loom.StartDriverDaemon(opts.Package.DriverAgent, persistentDriverConfigPath(opts.Paths))
 	run := opts.Exec
 	if run == nil {
 		run = execDriverMCP
@@ -384,6 +385,7 @@ func refreshDriverFiles(p paths.Paths, pkg Package, sec secrets.Store) error {
 	}); err != nil {
 		return fmt.Errorf("configure codex mcp driver: %w", err)
 	}
+	_ = loom.StartDriverDaemon(pkg.DriverAgent, persistentDriverConfigPath(p))
 	return nil
 }
 

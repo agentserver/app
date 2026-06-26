@@ -587,42 +587,41 @@ func TestSetModelPreservesExistingBearerToken(t *testing.T) {
 	}
 }
 
-// TestUpdateConfig_ProvisionsGLMCatalog verifies that UpdateConfig writes the
-// GLM model catalog next to config.toml and sets `model_catalog_json` to an
-// absolute path pointing at it. This is what makes Codex resolve glm-5.2
-// metadata (1M context, xhigh reasoning) instead of falling back to degraded
-// defaults on a fresh install.
-func TestUpdateConfig_ProvisionsGLMCatalog(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.toml")
-	// Catalog provisioning is gated on the active model being the GLM slug;
-	// selecting gpt-5.5 must NOT replace Codex's bundled catalog.
-	if err := UpdateConfig(path, Settings{
-		Provider: "modelserver", Model: "glm-5.2",
-		BaseURL: "https://code.ai.cs.ac.cn/v1", EnvKey: "OPENAI_API_KEY",
-		WireAPI: "responses",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	b, _ := os.ReadFile(path)
-	s := string(b)
-	wantKey := `model_catalog_json =`
-	if !strings.Contains(s, wantKey) {
-		t.Errorf("missing %q in config:\n%s", wantKey, s)
-	}
-	// The catalog file must exist next to config.toml.
-	catalogPath := filepath.Join(dir, "glm-catalog.json")
-	catalog, err := os.ReadFile(catalogPath)
-	if err != nil {
-		t.Fatalf("glm catalog not written: %v", err)
-	}
-	// The written catalog must match the embedded asset (1M context, glm-5.2).
-	if !bytes.Equal(catalog, glmCatalogJSON) {
-		t.Errorf("on-disk catalog differs from embedded asset")
-	}
-	// config.toml must reference the catalog by absolute path.
-	if !strings.Contains(s, catalogPath) {
-		t.Errorf("config does not reference catalog path %q:\n%s", catalogPath, s)
+// TestUpdateConfig_ProvisionsModelCatalog verifies that UpdateConfig writes the
+// model catalog next to config.toml and sets `model_catalog_json` to an
+// absolute path pointing at it. This is what makes Codex resolve metadata
+// (context window, reasoning levels) for all proxy-served models instead of
+// falling back to degraded defaults.
+func TestUpdateConfig_ProvisionsModelCatalog(t *testing.T) {
+	for _, model := range []string{"glm-5.2", "gpt-5.5", "deepseek-v4-pro"} {
+		t.Run(model, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "config.toml")
+			if err := UpdateConfig(path, Settings{
+				Provider: "modelserver", Model: model,
+				BaseURL: "https://code.ai.cs.ac.cn/v1", EnvKey: "OPENAI_API_KEY",
+				WireAPI: "responses",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			b, _ := os.ReadFile(path)
+			s := string(b)
+			wantKey := `model_catalog_json =`
+			if !strings.Contains(s, wantKey) {
+				t.Errorf("missing %q in config:\n%s", wantKey, s)
+			}
+			catalogPath := filepath.Join(dir, "model-catalog.json")
+			catalog, err := os.ReadFile(catalogPath)
+			if err != nil {
+				t.Fatalf("model catalog not written: %v", err)
+			}
+			if !bytes.Equal(catalog, modelCatalogJSON) {
+				t.Errorf("on-disk catalog differs from embedded asset")
+			}
+			if !strings.Contains(s, catalogPath) {
+				t.Errorf("config does not reference catalog path %q:\n%s", catalogPath, s)
+			}
+		})
 	}
 }
 
@@ -633,19 +632,18 @@ func TestUpdateConfig_CatalogProvisioningIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	settings := Settings{
-		Provider: "modelserver", Model: "glm-5.2",
+		Provider: "modelserver", Model: "gpt-5.5",
 		BaseURL: "https://code.ai.cs.ac.cn/v1", EnvKey: "OPENAI_API_KEY",
 		WireAPI: "responses",
 	}
 	if err := UpdateConfig(path, settings); err != nil {
 		t.Fatal(err)
 	}
-	catalogPath := filepath.Join(dir, "glm-catalog.json")
+	catalogPath := filepath.Join(dir, "model-catalog.json")
 	info1, err := os.Stat(catalogPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Second run: file content is identical, so it should not be rewritten.
 	if err := UpdateConfig(path, settings); err != nil {
 		t.Fatal(err)
 	}
@@ -659,13 +657,16 @@ func TestUpdateConfig_CatalogProvisioningIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestUpdateConfig_DoesNotProvisionCatalogForGPT verifies the GLM catalog is
-// NOT written and model_catalog_json is NOT set when the active model is
-// gpt-5.5. model_catalog_json replaces Codex's bundled catalog, so wiring it
-// for gpt-5.5 would strip gpt-5.5's metadata.
-func TestUpdateConfig_DoesNotProvisionCatalogForGPT(t *testing.T) {
+// TestUpdateConfig_CleansUpLegacyGLMCatalog verifies that the old
+// single-model glm-catalog.json is removed when the new multi-model
+// model-catalog.json is provisioned.
+func TestUpdateConfig_CleansUpLegacyGLMCatalog(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
+	legacyPath := filepath.Join(dir, "glm-catalog.json")
+	if err := os.WriteFile(legacyPath, []byte(`{"models":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := UpdateConfig(path, Settings{
 		Provider: "modelserver", Model: "gpt-5.5",
 		BaseURL: "https://code.ai.cs.ac.cn/v1", EnvKey: "OPENAI_API_KEY",
@@ -673,12 +674,10 @@ func TestUpdateConfig_DoesNotProvisionCatalogForGPT(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(path)
-	s := string(b)
-	if strings.Contains(s, "model_catalog_json") {
-		t.Errorf("gpt-5.5 must not set model_catalog_json:\n%s", s)
+	if _, err := os.Stat(legacyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("legacy glm-catalog.json should have been removed")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "glm-catalog.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("gpt-5.5 must not write glm-catalog.json")
+	if _, err := os.Stat(filepath.Join(dir, "model-catalog.json")); err != nil {
+		t.Errorf("model-catalog.json should exist: %v", err)
 	}
 }
