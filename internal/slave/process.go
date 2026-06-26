@@ -664,7 +664,7 @@ func (execRunner) Start(ctx context.Context, req StartRequest) (StartResult, err
 	if err != nil {
 		return StartResult{}, fmt.Errorf("open slave log: %w", err)
 	}
-	cmd := exec.Command(req.Exe, req.ConfigPath)
+	cmd := exec.Command(req.Exe, "serve-daemon", "--config", req.ConfigPath)
 	cmd.Dir = req.WorkDir
 	process.HideWindow(cmd)
 	stdout, err := cmd.StdoutPipe()

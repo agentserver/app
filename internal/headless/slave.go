@@ -141,7 +141,7 @@ type execSlaveRunner struct {
 var foregroundHTTPURLPattern = regexp.MustCompile(`(?i)https?://\S+`)
 
 func (r execSlaveRunner) Run(ctx context.Context, req SlaveProcessRequest) error {
-	cmd := exec.Command(req.Exe, req.ConfigPath)
+	cmd := exec.Command(req.Exe, "serve-daemon", "--config", req.ConfigPath)
 	cmd.Dir = req.WorkDir
 	configureSlaveProcess(cmd)
 
