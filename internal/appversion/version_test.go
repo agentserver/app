@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-const expectedReleaseVersion = "0.1.3"
+const expectedReleaseVersion = "0.1.4"
 
 func TestVersionIsSemverLike(t *testing.T) {
 	if Version == "" {

@@ -43,7 +43,7 @@ make package
 packaging/windows/Output/agentserver-app-<VERSION>-setup.exe
 ```
 
-当前版本号定义在 `scripts/package-windows.sh` 中的 `VERSION` 变量（如 `VERSION="0.1.3"`）。
+当前版本号定义在 `scripts/package-windows.sh` 中的 `VERSION` 变量（如 `VERSION="0.1.4"`）。
 
 ## 版本与资产管理
 
@@ -64,10 +64,10 @@ gh release view <version> --repo agentserver/loom --json assets \
 
 ```bash
 # 传输
-scp packaging/windows/Output/agentserver-app-0.1.3-setup.exe Administrator@9.0.16.110:C:/Users/Administrator/Desktop/
+scp packaging/windows/Output/agentserver-app-0.1.4-setup.exe Administrator@9.0.16.110:C:/Users/Administrator/Desktop/
 
 # 远程静默安装
-ssh Administrator@9.0.16.110 'C:\Users\Administrator\Desktop\agentserver-app-0.1.3-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+ssh Administrator@9.0.16.110 'C:\Users\Administrator\Desktop\agentserver-app-0.1.4-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
 ```
 
 安装目录：`C:\Users\Administrator\AppData\Local\Programs\agentserver-app\`
