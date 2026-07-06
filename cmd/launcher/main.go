@@ -939,7 +939,7 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 	if s.Agentserver.ShortID != "" {
 		serverName = "driver-" + s.Agentserver.ShortID
 	}
-	codexBin := completedDriverCodexBin(p, s)
+	codexBin := completedDriverCodexBin(p)
 	if err := loom.WriteDriverConfig(loomConfigPath, loom.DriverConfig{
 		ServerURL:     serverURL,
 		ServerName:    serverName,
@@ -991,15 +991,10 @@ func completedDriverCodexHome(p paths.Paths) string {
 	return ""
 }
 
-func completedDriverCodexBin(p paths.Paths, s *state.State) string {
-	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeMinimalVSCode {
-		if p.CodexExePath != "" {
-			return p.CodexExePath
-		}
-		return "codex"
+func completedDriverCodexBin(p paths.Paths) string {
+	if p.CodexExePath != "" {
+		return p.CodexExePath
 	}
-	// Codex Desktop owns its CLI runtime; do not point the driver at the
-	// VS Code helper codex.exe staged under agentserver-app.
 	return "codex"
 }
 

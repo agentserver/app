@@ -1174,15 +1174,12 @@ func TestConfigureCompletedLoomDriverUsesDefaultObserver(t *testing.T) {
 		`agent_id: "driver-abc123"`,
 		`api_key: "sandbox-proxy-token"`,
 		`token_state_path: "` + filepath.ToSlash(filepath.Join(filepath.Dir(loomPath), "observer.token")) + `"`,
-		`bin: "codex"`,
+		`bin: "` + filepath.ToSlash(p.CodexExePath) + `"`,
 		`codex_home: "` + filepath.ToSlash(p.CodexDir) + `"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("driver.yaml missing %q:\n%s", want, text)
 		}
-	}
-	if strings.Contains(text, filepath.ToSlash(p.CodexExePath)) {
-		t.Fatalf("Codex Desktop driver should use Codex Desktop's codex command, not local VS Code codex path:\n%s", text)
 	}
 	codexText, err := os.ReadFile(p.CodexConfigFile)
 	if err != nil {
@@ -1256,6 +1253,21 @@ func TestConfigureCompletedLoomDriverMinimalVSCodeUsesVSCodeCodexPath(t *testing
 	want := `bin: "` + filepath.ToSlash(p.CodexExePath) + `"`
 	if !strings.Contains(string(body), want) {
 		t.Fatalf("driver.yaml missing %q:\n%s", want, body)
+	}
+}
+
+func TestCompletedDriverCodexBinCodexDesktopUsesManagedCodexAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		CodexExePath: filepath.Join(dir, "agentserver-app", "bin", "codex.exe"),
+	}
+
+	got := completedDriverCodexBin(p)
+	if got != p.CodexExePath {
+		t.Fatalf("codex bin=%q, want managed Codex runtime %q", got, p.CodexExePath)
+	}
+	if got == "codex" {
+		t.Fatalf("Codex Desktop driver must not rely on PATH command: %q", got)
 	}
 }
 
