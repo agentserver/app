@@ -145,10 +145,6 @@
         {
           "effort": "xhigh",
           "description": "Extra high reasoning for complex problems"
-        },
-        {
-          "effort": "max",
-          "description": "Maximum reasoning depth for the hardest problems"
         }
       ],
       "shell_type": "shell_command",

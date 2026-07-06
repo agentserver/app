@@ -2,6 +2,7 @@ package codex
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -679,5 +680,30 @@ func TestUpdateConfig_CleansUpLegacyGLMCatalog(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "model-catalog.json")); err != nil {
 		t.Errorf("model-catalog.json should exist: %v", err)
+	}
+}
+
+func TestModelCatalogUsesCodexCompatibleReasoningEfforts(t *testing.T) {
+	var catalog struct {
+		Models []struct {
+			Slug                     string `json:"slug"`
+			SupportedReasoningLevels []struct {
+				Effort string `json:"effort"`
+			} `json:"supported_reasoning_levels"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(modelCatalogJSON, &catalog); err != nil {
+		t.Fatalf("model catalog is not JSON: %v", err)
+	}
+	allowed := map[string]bool{
+		"none": true, "minimal": true, "low": true,
+		"medium": true, "high": true, "xhigh": true,
+	}
+	for _, model := range catalog.Models {
+		for _, level := range model.SupportedReasoningLevels {
+			if !allowed[level.Effort] {
+				t.Fatalf("model %s has unsupported reasoning effort %q", model.Slug, level.Effort)
+			}
+		}
 	}
 }

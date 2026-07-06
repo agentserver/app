@@ -343,11 +343,21 @@ begin
     '  $localAppDataRoot = Join-Path $env:LOCALAPPDATA ''agentserver-app''' + #13#10 +
     '}' + #13#10 +
     '$codexBin = Join-Path $localAppDataRoot ''bin\codex.exe''' + #13#10 +
+    '$codexDesktopPackageFamily = ''OpenAI.Codex_2p2nqsd0c76g0''' + #13#10 +
+    '$codexDesktopPackagePrefix = ''OpenAI.Codex_''' + #13#10 +
     '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''slave-agent.exe'', ''codex.exe'')' + #13#10 +
     '$filter = {' + #13#10 +
-    '  if (-not $_.ExecutablePath) { return $false }' + #13#10 +
-    '  $exe = [System.IO.Path]::GetFullPath($_.ExecutablePath)' + #13#10 +
-    '  (($names -contains $_.Name) -and $exe.StartsWith($installRoot + ''\'', [System.StringComparison]::OrdinalIgnoreCase)) -or (($_.Name -eq ''codex.exe'') -and ($exe -ieq $codexBin))' + #13#10 +
+    '  $exePath = [string]$_.ExecutablePath' + #13#10 +
+    '  $commandLine = [string]$_.CommandLine' + #13#10 +
+    '  $exe = ""' + #13#10 +
+    '  if (-not [string]::IsNullOrWhiteSpace($exePath)) {' + #13#10 +
+    '    $exe = [System.IO.Path]::GetFullPath($exePath)' + #13#10 +
+    '  }' + #13#10 +
+    '  $inInstallDir = ($exe -ne "") -and ($names -contains $_.Name) -and $exe.StartsWith($installRoot + ''\'', [System.StringComparison]::OrdinalIgnoreCase)' + #13#10 +
+    '  $isLocalCodex = ($exe -ne "") -and ($_.Name -eq ''codex.exe'') -and ($exe -ieq $codexBin)' + #13#10 +
+    '  $inCodexDesktopPackage = ($exe -ne "") -and ($exe.IndexOf(''\WindowsApps\'' + $codexDesktopPackagePrefix, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)' + #13#10 +
+    '  $usesCodexDesktopPackage = $commandLine.IndexOf($codexDesktopPackageFamily, [System.StringComparison]::OrdinalIgnoreCase) -ge 0' + #13#10 +
+    '  $inInstallDir -or $isLocalCodex -or $inCodexDesktopPackage -or $usesCodexDesktopPackage' + #13#10 +
     '}' + #13#10 +
     '$procs = @(Get-CimInstance Win32_Process | Where-Object $filter)' + #13#10 +
     'foreach ($p in $procs) {' + #13#10 +

@@ -124,12 +124,20 @@ function Stop-RunningAgentserverProcesses {
         $localAppDataRoot = Join-Path $env:LOCALAPPDATA 'agentserver-app'
     }
     $codexBin = Join-Path $localAppDataRoot 'bin\codex.exe'
+    $codexDesktopPackageFamily = 'OpenAI.Codex_2p2nqsd0c76g0'
+    $codexDesktopPackagePrefix = 'OpenAI.Codex_'
     $filter = {
-        if (-not $_.ExecutablePath) { return $false }
-        $exe = [System.IO.Path]::GetFullPath($_.ExecutablePath)
-        $inInstallDir = ($names -contains $_.Name) -and $exe.StartsWith($installRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)
-        $isLocalCodex = ($_.Name -eq 'codex.exe') -and ($exe -ieq $codexBin)
-        return $inInstallDir -or $isLocalCodex
+        $exePath = [string]$_.ExecutablePath
+        $commandLine = [string]$_.CommandLine
+        $exe = ''
+        if (-not [string]::IsNullOrWhiteSpace($exePath)) {
+            $exe = [System.IO.Path]::GetFullPath($exePath)
+        }
+        $inInstallDir = ($exe -ne '') -and ($names -contains $_.Name) -and $exe.StartsWith($installRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)
+        $isLocalCodex = ($exe -ne '') -and ($_.Name -eq 'codex.exe') -and ($exe -ieq $codexBin)
+        $inCodexDesktopPackage = ($exe -ne '') -and ($exe.IndexOf('\WindowsApps\' + $codexDesktopPackagePrefix, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+        $usesCodexDesktopPackage = $commandLine.IndexOf($codexDesktopPackageFamily, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        return $inInstallDir -or $isLocalCodex -or $inCodexDesktopPackage -or $usesCodexDesktopPackage
     }
 
     $procs = @(Get-CimInstance Win32_Process | Where-Object $filter)

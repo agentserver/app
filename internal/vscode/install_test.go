@@ -1061,6 +1061,31 @@ func TestWindowsPortableInstallerDoesNotAbortWhenShortcutCreationFails(t *testin
 	}
 }
 
+func TestWindowsInstallersStopCodexDesktopBeforeReinstall(t *testing.T) {
+	for _, file := range []string{
+		"../../packaging/windows/install.ps1",
+		"../../packaging/windows/installer.iss",
+	} {
+		t.Run(file, func(t *testing.T) {
+			body, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := string(body)
+			for _, want := range []string{
+				"OpenAI.Codex_2p2nqsd0c76g0",
+				"WindowsApps",
+				"CommandLine",
+				"Stop-Process",
+			} {
+				if !strings.Contains(s, want) {
+					t.Fatalf("%s should stop running Codex Desktop before reinstall; missing %q", file, want)
+				}
+			}
+		})
+	}
+}
+
 func TestWindowsInnoInstallerInitializesMachineBeforeFrontend(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
