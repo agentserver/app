@@ -1,0 +1,341 @@
+package updater
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/agentserver/agentserver-pkg/internal/appversion"
+)
+
+const defaultGitHubAPIBase = "https://api.github.com"
+
+type githubSource struct {
+	repo    string
+	apiBase string
+	client  *http.Client
+	policy  SourcePolicy
+
+	// installerHostMatch is the asset-host validator. Production value
+	// is githubAssetHost; tests override to accept httptest.Server hosts.
+	installerHostMatch func(host string) bool
+}
+
+// NewGitHubSource returns a Source backed by a public GitHub release.
+// apiBase defaults to https://api.github.com; tests override to point
+// at an httptest.Server. The returned Source has its own *http.Transport
+// (via applyFirstByteTimeout) so setting FirstByteTimeout does not
+// affect other sources.
+func NewGitHubSource(repo, apiBase string, client *http.Client, policy SourcePolicy) Source {
+	if apiBase == "" {
+		apiBase = defaultGitHubAPIBase
+	}
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return &githubSource{
+		repo:               repo,
+		apiBase:            apiBase,
+		client:             client,
+		policy:             policy,
+		installerHostMatch: githubAssetHost,
+	}
+}
+
+func (s *githubSource) Name() string { return "github" }
+
+// isRealTransport delegates to package-level hasRealTransport.
+func (s *githubSource) isRealTransport() bool { return hasRealTransport(s.client) }
+
+// normalizeHost canonicalizes a URL host for whitelist comparison.
+// Lowercase + trim trailing dot (DNS-dot bypass defense).
+func normalizeHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
+// githubAssetHost is the SINGLE source of truth for "is this URL a
+// legitimate GitHub-hosted asset?" Matches:
+//   - github.com (production browser_download_url host)
+//   - codeload.github.com (occasional archive redirect)
+//   - any subdomain of githubusercontent.com (release-assets.,
+//     objects., raw., and future renames)
+// Does NOT match api.github.com or bare "githubusercontent.com".
+func githubAssetHost(host string) bool {
+	h := normalizeHost(host)
+	if h == "" {
+		return false
+	}
+	if h == "github.com" || h == "codeload.github.com" {
+		return true
+	}
+	const suffix = ".githubusercontent.com"
+	if !strings.HasSuffix(h, suffix) {
+		return false
+	}
+	sub := strings.TrimSuffix(h, suffix)
+	if sub == "" || strings.ContainsAny(sub, "/@") {
+		return false
+	}
+	return true
+}
+
+// githubAPIHost is used ONLY for the initial /repos/.../releases/latest
+// request. Also accepts any *.githubusercontent.com for redirects from
+// api.github.com hitting the asset CDN.
+func githubAPIHost(host string) bool {
+	if normalizeHost(host) == "api.github.com" {
+		return true
+	}
+	return githubAssetHost(host)
+}
+
+func (s *githubSource) setHeaders(req *http.Request) {
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "agentserver-app/"+appversion.Version)
+}
+
+func (s *githubSource) apiClient() *http.Client {
+	return s.redirectPinned(s.client, githubAPIHost)
+}
+
+func (s *githubSource) assetClient() *http.Client {
+	return s.redirectPinned(s.client, s.installerHostMatch)
+}
+
+func (s *githubSource) installerClient() *http.Client {
+	return applyFirstByteTimeout(s.assetClient(), s.policy.FirstByteTimeout)
+}
+
+func (s *githubSource) redirectPinned(base *http.Client, hostOK func(string) bool) *http.Client {
+	client := *base
+	prior := base.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if req.URL.User != nil {
+			return fmt.Errorf("%w: userinfo not permitted", ErrHostNotAllowed)
+		}
+		if !hostOK(req.URL.Hostname()) {
+			return fmt.Errorf("%w: %s", ErrHostNotAllowed, req.URL.Hostname())
+		}
+		// Preserve Accept + User-Agent across redirects. Go's stdlib
+		// strips Authorization on cross-host; Accept + UA aren't in
+		// the sensitive-header list, but we re-install defensively
+		// per hop so GitHub asset CDN never sees a bare request.
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "application/vnd.github+json")
+		}
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", "agentserver-app/"+appversion.Version)
+		}
+		if prior != nil {
+			return prior(req, via)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		return nil
+	}
+	return &client
+}
+
+type githubReleaseAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+type githubReleaseResponse struct {
+	TagName string               `json:"tag_name"`
+	Assets  []githubReleaseAsset `json:"assets"`
+}
+
+func (s *githubSource) FetchManifest(ctx context.Context) (Manifest, error) {
+	release, err := s.fetchRelease(ctx)
+	if err != nil {
+		return Manifest{}, err
+	}
+	assetURL := ""
+	for _, a := range release.Assets {
+		if a.Name == "latest.json" {
+			assetURL = a.BrowserDownloadURL
+			break
+		}
+	}
+	if assetURL == "" {
+		return Manifest{}, fmt.Errorf("github release %s missing latest.json asset", release.TagName)
+	}
+	assetU, err := url.Parse(assetURL)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("invalid asset url: %w", err)
+	}
+	if assetU.User != nil {
+		return Manifest{}, fmt.Errorf("%w: asset url has userinfo", ErrHostNotAllowed)
+	}
+	if !s.installerHostMatch(assetU.Hostname()) {
+		return Manifest{}, fmt.Errorf("%w: asset host %s", ErrHostNotAllowed, assetU.Hostname())
+	}
+	m, err := s.fetchLatestJSON(ctx, assetURL)
+	if err != nil {
+		return Manifest{}, err
+	}
+	if err := m.Validate(); err != nil {
+		return Manifest{}, err
+	}
+	instU, err := url.Parse(m.URL)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("invalid installer url: %w", err)
+	}
+	if instU.User != nil {
+		return Manifest{}, fmt.Errorf("%w: installer url has userinfo", ErrHostNotAllowed)
+	}
+	// Installer host validated at DownloadInstaller time (via
+	// installerHostMatch) so tests can inject a permissive matcher.
+	return m, nil
+}
+
+// fetchRelease is one HTTP hop with its own ManifestTimeout budget.
+func (s *githubSource) fetchRelease(parent context.Context) (githubReleaseResponse, error) {
+	ctx := parent
+	if s.policy.ManifestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(parent, s.policy.ManifestTimeout)
+		defer cancel()
+	}
+
+	apiURL := strings.TrimRight(s.apiBase, "/") + "/repos/" + s.repo + "/releases/latest"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return githubReleaseResponse{}, err
+	}
+	s.setHeaders(req)
+	resp, err := s.apiClient().Do(req)
+	if err != nil {
+		return githubReleaseResponse{}, s.classifyFetch(parent, ctx, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		// Deliberately do NOT log X-GitHub-Request-Id or response body —
+		// avoid leaking identifying tokens to state.json / console API.
+		rem := resp.Header.Get("X-RateLimit-Remaining")
+		return githubReleaseResponse{}, fmt.Errorf("%w: github %d: x-ratelimit-remaining=%q", ErrRateLimited, resp.StatusCode, rem)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return githubReleaseResponse{}, fmt.Errorf("github fetch releases/latest: unexpected status %s", resp.Status)
+	}
+	var release githubReleaseResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 512*1024)).Decode(&release); err != nil {
+		return githubReleaseResponse{}, err
+	}
+	return release, nil
+}
+
+// fetchLatestJSON is one HTTP hop with its own ManifestTimeout budget.
+func (s *githubSource) fetchLatestJSON(parent context.Context, assetURL string) (Manifest, error) {
+	ctx := parent
+	if s.policy.ManifestTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(parent, s.policy.ManifestTimeout)
+		defer cancel()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
+	if err != nil {
+		return Manifest{}, err
+	}
+	s.setHeaders(req)
+	resp, err := s.assetClient().Do(req)
+	if err != nil {
+		return Manifest{}, s.classifyFetch(parent, ctx, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		return Manifest{}, fmt.Errorf("%w: github %d fetching latest.json", ErrRateLimited, resp.StatusCode)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return Manifest{}, fmt.Errorf("github fetch latest.json: unexpected status %s", resp.Status)
+	}
+	var m Manifest
+	if err := json.NewDecoder(io.LimitReader(resp.Body, manifestMaxBytes)).Decode(&m); err != nil {
+		return Manifest{}, err
+	}
+	return m, nil
+}
+
+func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Writer, onProgress func(SpeedSample)) error {
+	u, err := url.Parse(m.URL)
+	if err != nil {
+		return fmt.Errorf("invalid installer url: %w", err)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%w: installer url has userinfo", ErrHostNotAllowed)
+	}
+	if !s.installerHostMatch(u.Hostname()) {
+		return fmt.Errorf("%w: installer host %s", ErrHostNotAllowed, u.Hostname())
+	}
+	if onProgress == nil {
+		onProgress = noopProgress
+	}
+
+	dlCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	monitor := newSpeedMonitor(s.policy, cancel, onProgress)
+	monitorDone := make(chan struct{})
+	go func() { monitor.run(dlCtx); close(monitorDone) }()
+	defer func() { cancel(); <-monitorDone }()
+
+	reqCtx := dlCtx
+	if !s.isRealTransport() && s.policy.FirstByteTimeout > 0 {
+		var reqCancel context.CancelFunc
+		reqCtx, reqCancel = context.WithTimeout(dlCtx, s.policy.FirstByteTimeout)
+		defer reqCancel()
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, m.URL, nil)
+	if err != nil {
+		return err
+	}
+	s.setHeaders(req)
+	resp, err := s.installerClient().Do(req)
+	if err != nil {
+		return s.classifyDownload(ctx, monitor, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("github download: unexpected status %s", resp.Status)
+	}
+	body := monitor.wrap(io.LimitReader(resp.Body, m.Size+1))
+	n, err := io.Copy(dst, body)
+	if err != nil {
+		return s.classifyDownload(ctx, monitor, err)
+	}
+	if n > m.Size {
+		return fmt.Errorf("github download: response larger than declared size")
+	}
+	return nil
+}
+
+// classifyFetch takes both the parent ctx (caller-supplied) and the
+// per-request ctx (has the ManifestTimeout deadline). If the per-request
+// deadline fired, return ErrFetchTimeout; else honor parent cancellation;
+// else return err verbatim.
+func (s *githubSource) classifyFetch(parent context.Context, req context.Context, err error) error {
+	if req.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("%w: %v", ErrFetchTimeout, err)
+	}
+	if parent.Err() != nil {
+		return parent.Err()
+	}
+	return err
+}
+
+func (s *githubSource) classifyDownload(parent context.Context, monitor *speedMonitor, err error) error {
+	if parent.Err() != nil {
+		return parent.Err()
+	}
+	if monitor.Tripped() {
+		return fmt.Errorf("%w: %v", ErrSlowDownload, err)
+	}
+	return err
+}
