@@ -1574,6 +1574,7 @@ func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
 		`short_id: "abc123"`,
 		`kind: "codex"`,
 		`bin: "` + filepath.ToSlash(filepath.Join(dir, "codex.exe")) + `"`,
+		`codex_home: "` + filepath.ToSlash(filepath.Join(dir, ".codex")) + `"`,
 		`enabled: true`,
 		`url: "https://loom.nj.cs.ac.cn:10062/"`,
 		`workspace_name: "Readable workspace"`,

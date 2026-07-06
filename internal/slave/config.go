@@ -22,8 +22,6 @@ type loomSlaveConfig struct {
 	Server      loomServer      `yaml:"server"`
 	Credentials loomCredentials `yaml:"credentials"`
 	Agent       loomAgent       `yaml:"agent"`
-	Codex       loomCodex       `yaml:"codex"`
-	Claude      loomClaude      `yaml:"claude"`
 	Discovery   loomDiscovery   `yaml:"discovery"`
 	Resources   loomResources   `yaml:"resources"`
 	Observer    loomObserver    `yaml:"observer"`
@@ -43,18 +41,10 @@ type loomCredentials struct {
 }
 
 type loomAgent struct {
-	Kind string `yaml:"kind"`
-}
-
-type loomCodex struct {
+	Kind      string   `yaml:"kind"`
 	Bin       string   `yaml:"bin"`
 	WorkDir   string   `yaml:"workdir"`
-	ExtraArgs []string `yaml:"extra_args"`
-}
-
-type loomClaude struct {
-	Bin       string   `yaml:"bin"`
-	WorkDir   string   `yaml:"workdir"`
+	CodexHome string   `yaml:"codex_home,omitempty"`
 	ExtraArgs []string `yaml:"extra_args"`
 }
 
@@ -92,18 +82,20 @@ func WriteConfig(sl Slave, m Machine, in ConfigInput) error {
 	if codexBin == "" {
 		codexBin = "codex"
 	}
+	codexHome := slaveCodexHome(sl.Folder)
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		return fmt.Errorf("mkdir slave codex home: %w", err)
+	}
+	credentials := loomCredentials{
+		SandboxID: "", TunnelToken: "", ProxyToken: "", WorkspaceID: "", ShortID: "",
+	}
+	if existing, ok := existingCredentials(sl.ConfigPath); ok {
+		credentials = existing
+	}
 	cfg := loomSlaveConfig{
-		Server: loomServer{URL: serverURL, Name: sl.DisplayName},
-		Credentials: loomCredentials{
-			SandboxID: "", TunnelToken: "", ProxyToken: "", WorkspaceID: "", ShortID: "",
-		},
-		Agent: loomAgent{Kind: "codex"},
-		Codex: loomCodex{Bin: codexBin, WorkDir: sl.Folder, ExtraArgs: []string{}},
-		Claude: loomClaude{
-			Bin:       "",
-			WorkDir:   sl.Folder,
-			ExtraArgs: []string{},
-		},
+		Server:      loomServer{URL: serverURL, Name: sl.DisplayName},
+		Credentials: credentials,
+		Agent:       loomAgent{Kind: "codex", Bin: codexBin, WorkDir: sl.Folder, CodexHome: codexHome, ExtraArgs: []string{}},
 		Discovery: loomDiscovery{
 			DisplayName: sl.DisplayName,
 			Description: fmt.Sprintf("来自同一台电脑：%s；工作目录：%s", m.ComputerName, sl.Folder),
@@ -125,6 +117,32 @@ func WriteConfig(sl Slave, m Machine, in ConfigInput) error {
 		return fmt.Errorf("marshal slave config: %w", err)
 	}
 	return writeConfigFile(sl.ConfigPath, b)
+}
+
+func slaveCodexHome(folder string) string {
+	return filepath.Join(folder, ".codex")
+}
+
+func existingCredentials(path string) (loomCredentials, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return loomCredentials{}, false
+	}
+	var cfg struct {
+		Credentials loomCredentials `yaml:"credentials"`
+	}
+	if err := yaml.Unmarshal(b, &cfg); err != nil {
+		return loomCredentials{}, false
+	}
+	c := cfg.Credentials
+	if strings.TrimSpace(c.SandboxID) == "" &&
+		strings.TrimSpace(c.TunnelToken) == "" &&
+		strings.TrimSpace(c.ProxyToken) == "" &&
+		strings.TrimSpace(c.WorkspaceID) == "" &&
+		strings.TrimSpace(c.ShortID) == "" {
+		return loomCredentials{}, false
+	}
+	return c, true
 }
 
 func writeConfigFile(path string, b []byte) error {

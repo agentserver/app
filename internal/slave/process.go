@@ -15,18 +15,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/process"
 	"gopkg.in/yaml.v3"
 )
 
 type ManagerDeps struct {
-	Machines    *MachineStore
-	Registry    *Registry
-	Runner      Runner
-	SlaveExe    string
-	ServerURL   string
-	CodexBin    string
-	OpenAuthURL func(string)
+	Machines        *MachineStore
+	Registry        *Registry
+	Runner          Runner
+	SlaveExe        string
+	ServerURL       string
+	CodexBin        string
+	LocalProxyToken string
+	OpenAuthURL     func(string)
 }
 
 type Manager struct {
@@ -149,7 +152,71 @@ func (m *Manager) CreateAndStart(ctx context.Context, in CreateInput) (Slave, er
 		})
 		return Slave{}, err
 	}
+	if err := m.configureCodex(sl); err != nil {
+		_, _ = m.d.Registry.Update(sl.ID, func(s *Slave) error {
+			s.Status = StatusError
+			s.PID = 0
+			s.AuthURL = ""
+			s.LastError = err.Error()
+			return nil
+		})
+		return Slave{}, err
+	}
 	return m.start(ctx, sl)
+}
+
+func (m *Manager) refreshConfig(sl Slave) error {
+	if m.d.Machines == nil {
+		return nil
+	}
+	machine, err := m.d.Machines.Load()
+	if err != nil {
+		return fmt.Errorf("load machine identity: %w", err)
+	}
+	if err := WriteConfig(sl, machine, ConfigInput{
+		ServerURL: m.d.ServerURL,
+		CodexBin:  m.d.CodexBin,
+	}); err != nil {
+		return err
+	}
+	return m.configureCodex(sl)
+}
+
+func (m *Manager) configureCodex(sl Slave) error {
+	if strings.TrimSpace(m.d.LocalProxyToken) == "" || strings.TrimSpace(sl.Folder) == "" {
+		return nil
+	}
+	configPath := filepath.Join(slaveCodexHome(sl.Folder), "config.toml")
+	if err := codex.UpdateConfig(configPath, codex.ModelserverProxySettings(modelproxy.DefaultBaseURL, m.d.LocalProxyToken)); err != nil {
+		return fmt.Errorf("configure slave codex proxy: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) RefreshConfigs(ctx context.Context) error {
+	if err := m.requireDeps(true, true, false); err != nil {
+		return err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	slaves, err := m.d.Registry.List()
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, sl := range slaves {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := m.refreshConfig(sl); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", sl.ID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (m *Manager) Restart(ctx context.Context, id string) (Slave, error) {
@@ -179,6 +246,9 @@ func (m *Manager) Restart(ctx context.Context, id string) (Slave, error) {
 				return Slave{}, err
 			}
 		}
+	}
+	if err := m.refreshConfig(sl); err != nil {
+		return Slave{}, err
 	}
 	return m.start(ctx, sl)
 }
@@ -664,7 +734,7 @@ func (execRunner) Start(ctx context.Context, req StartRequest) (StartResult, err
 	if err != nil {
 		return StartResult{}, fmt.Errorf("open slave log: %w", err)
 	}
-	cmd := exec.Command(req.Exe, "serve-daemon", "--config", req.ConfigPath)
+	cmd := exec.Command(req.Exe, req.ConfigPath)
 	cmd.Dir = req.WorkDir
 	process.HideWindow(cmd)
 	stdout, err := cmd.StdoutPipe()

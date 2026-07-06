@@ -33,9 +33,9 @@ import (
 )
 
 type Deps struct {
-	State                             *state.Store
-	Secrets                           secrets.Store
-	MS                                *modelserver.Client
+	State   *state.Store
+	Secrets secrets.Store
+	MS      *modelserver.Client
 	// MSProxy is the modelserver client pointed at the proxy gateway
 	// (code.ai.cs.ac.cn). The OAuth profile endpoint (PR #63) lives there,
 	// not on the admin API host MS targets (codeapi.cs.ac.cn).
@@ -533,6 +533,7 @@ func (r *realOrchestrator) configureLoomDriver() error {
 		DisplayName:   "星池指挥官",
 		Description:   "星池指挥官本地协作驱动。",
 		CodexBin:      codexBin,
+		CodexHome:     filepath.Dir(r.d.CodexConfigPath),
 		CodexWorkDir: func() string {
 			if home, err := os.UserHomeDir(); err == nil {
 				return home

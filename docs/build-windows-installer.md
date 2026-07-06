@@ -47,7 +47,7 @@ packaging/windows/Output/agentserver-app-<VERSION>-setup.exe
 
 ## 版本与资产管理
 
-loom 二进制版本和 SHA256 校验值在以下文件中维护：
+当前打包使用的 loom 版本为 `v0.0.10`。loom 二进制版本和 SHA256 校验值在以下文件中维护：
 
 - `scripts/linux-package-common.sh` — Linux 打包用的 loom 资产（含 amd64/arm64）
 - `scripts/windows-package-common.sh` — Windows 打包用的 loom 资产

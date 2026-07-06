@@ -48,15 +48,15 @@ Source: "..\..\dist\windows\open-folder.exe";       DestDir: "{app}"; Flags: ign
 Source: "..\..\dist\windows\uninstall.exe";         DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\token-refresher.exe";   DestDir: "{app}"; Flags: ignoreversion
 ; Bundled offline payloads
-Source: "..\..\dist\cache\loom\v0.0.8\driver-agent.windows-amd64.exe"; \
+Source: "..\..\dist\cache\loom\v0.0.10\driver-agent.windows-amd64.exe"; \
     DestDir: "{app}"; DestName: "driver-agent.exe"; Flags: ignoreversion
-Source: "..\..\dist\cache\loom\v0.0.8\slave-agent.windows-amd64.exe"; \
+Source: "..\..\dist\cache\loom\v0.0.10\slave-agent.windows-amd64.exe"; \
     DestDir: "{app}"; DestName: "slave-agent.exe"; Flags: ignoreversion
-Source: "..\..\dist\cache\loom\v0.0.8\driver-skills.tar.gz"; \
+Source: "..\..\dist\cache\loom\v0.0.10\driver-skills.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-skills.tar.gz"; Flags: ignoreversion
 Source: "..\..\dist\cache\superpowers\driver-superpower-skills.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-superpower-skills.tar.gz"; Flags: ignoreversion
-Source: "..\..\dist\cache\loom\v0.0.8\driver-codex-prompts.tar.gz"; \
+Source: "..\..\dist\cache\loom\v0.0.10\driver-codex-prompts.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-codex-prompts.tar.gz"; Flags: ignoreversion
 Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
     DestDir: "{app}"; DestName: "codex-desktop-installer.exe"; Flags: ignoreversion
