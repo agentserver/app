@@ -516,7 +516,7 @@ func (r *realOrchestrator) configureLoomDriver() error {
 	if serverURL == "" {
 		serverURL = "https://agent.cs.ac.cn"
 	}
-	codexBin := r.loomDriverCodexBin(st)
+	codexBin := r.loomDriverCodexBin()
 	serverName := "driver-" + lastN(st.InstallID, 8)
 	if st.Agentserver.ShortID != "" {
 		serverName = "driver-" + st.Agentserver.ShortID
@@ -575,17 +575,13 @@ func codexUserHome(configPath string) string {
 	return ""
 }
 
-func (r *realOrchestrator) loomDriverCodexBin(st *state.State) string {
-	if state.NormalizeFrontendMode(st.FrontendMode) == state.FrontendModeMinimalVSCode {
-		if r.d.CodexAbsPath != "" {
-			return r.d.CodexAbsPath
-		}
-		return "codex"
-	}
+func (r *realOrchestrator) loomDriverCodexBin() string {
 	if r.d.CodexDesktopCodexPath != "" {
 		return r.d.CodexDesktopCodexPath
 	}
-	// Codex Desktop provides the CLI runtime for its own driver workflow.
+	if r.d.CodexAbsPath != "" {
+		return r.d.CodexAbsPath
+	}
 	return "codex"
 }
 

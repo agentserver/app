@@ -1628,7 +1628,7 @@ func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
 	}
 }
 
-func TestConfigureCodexDesktopDefaultsDriverCodexBinToCodexCommand(t *testing.T) {
+func TestConfigureCodexDesktopDefaultsDriverCodexBinToManagedCodexPath(t *testing.T) {
 	dir := t.TempDir()
 	sec := secrets.New(filepath.Join(dir, "secrets.json"))
 	for key, value := range map[string]string{
@@ -1676,11 +1676,11 @@ func TestConfigureCodexDesktopDefaultsDriverCodexBinToCodexCommand(t *testing.T)
 		t.Fatal(err)
 	}
 	loomText := string(loomBytes)
-	if !strings.Contains(loomText, `bin: "codex"`) {
-		t.Fatalf("driver.yaml should default Codex Desktop driver bin to codex command:\n%s", loomText)
+	if !strings.Contains(loomText, `bin: "`+filepath.ToSlash(codexAbsPath)+`"`) {
+		t.Fatalf("driver.yaml should use managed Codex runtime path:\n%s", loomText)
 	}
-	if strings.Contains(loomText, filepath.ToSlash(codexAbsPath)) {
-		t.Fatalf("Codex Desktop driver should not use local VS Code codex path:\n%s", loomText)
+	if strings.Contains(loomText, `bin: "codex"`) {
+		t.Fatalf("Codex Desktop driver should not rely on PATH codex command:\n%s", loomText)
 	}
 }
 
