@@ -281,7 +281,9 @@ func stopDriverBackgroundProcessesForTest() {
 	}
 	driverBackgroundProcesses.Unlock()
 	for _, entry := range entries {
-		_ = entry.stdin.Close()
+		if entry.stdin != nil {
+			_ = entry.stdin.Close()
+		}
 		if entry.process != nil {
 			_ = entry.process.Kill()
 		}
@@ -303,6 +305,19 @@ func StartDriverDaemon(exe, configPath string) error {
 		return err
 	}
 	mcpErr := StartDriverMCPServer(exe, configPath)
+	key := exe + "\x00serve-daemon\x00" + configPath
+	driverBackgroundProcesses.Lock()
+	if existing, ok := driverBackgroundProcesses.byKey[key]; ok {
+		select {
+		case <-existing.done:
+			delete(driverBackgroundProcesses.byKey, key)
+		default:
+			driverBackgroundProcesses.Unlock()
+			return mcpErr
+		}
+	}
+	driverBackgroundProcesses.Unlock()
+
 	cmd := exec.Command(exe, "serve-daemon", "--config", configPath)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
@@ -311,6 +326,32 @@ func StartDriverDaemon(exe, configPath string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	done := make(chan struct{})
+	entry := driverBackgroundProcess{process: cmd.Process, done: done}
+	driverBackgroundProcesses.Lock()
+	if existing, ok := driverBackgroundProcesses.byKey[key]; ok {
+		driverBackgroundProcesses.Unlock()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		select {
+		case <-existing.done:
+			return StartDriverDaemon(exe, configPath)
+		default:
+			return mcpErr
+		}
+	}
+	driverBackgroundProcesses.byKey[key] = entry
+	driverBackgroundProcesses.Unlock()
+
+	go func() {
+		_ = cmd.Wait()
+		driverBackgroundProcesses.Lock()
+		if current, ok := driverBackgroundProcesses.byKey[key]; ok && current.done == done {
+			delete(driverBackgroundProcesses.byKey, key)
+		}
+		driverBackgroundProcesses.Unlock()
+		close(done)
+	}()
 	return mcpErr
 }
 

@@ -138,6 +138,80 @@ func TestStartDriverDaemonWaitsForMCPReadinessBeforeDaemon(t *testing.T) {
 	}
 }
 
+func TestStartDriverDaemonDoesNotStartDuplicateDaemonForSameConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell helper")
+	}
+	dir := t.TempDir()
+	daemonPIDsPath := filepath.Join(dir, "daemon-pids.txt")
+	exe := filepath.Join(dir, "driver-agent")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"serve-mcp\" ]; then\n" +
+		"  echo 'driver: tunnel connected' >&2\n" +
+		"  cat >/dev/null\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"serve-daemon\" ]; then\n" +
+		"  echo $$ >> " + strconv.Quote(daemonPIDsPath) + "\n" +
+		"  trap 'exit 0' TERM INT\n" +
+		"  while :; do sleep 1; done\n" +
+		"fi\n"
+	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stopDriverBackgroundProcessesForTest()
+	t.Cleanup(func() {
+		for _, line := range strings.Split(strings.TrimSpace(readFileIfExists(daemonPIDsPath)), "\n") {
+			pidText := strings.TrimSpace(line)
+			if pidText == "" {
+				continue
+			}
+			pid, err := strconv.Atoi(pidText)
+			if err != nil {
+				continue
+			}
+			if proc, err := os.FindProcess(pid); err == nil {
+				_ = proc.Kill()
+			}
+		}
+		stopDriverBackgroundProcessesForTest()
+	})
+
+	configPath := filepath.Join(dir, "driver.yaml")
+	if err := StartDriverDaemon(exe, configPath); err != nil {
+		t.Fatalf("StartDriverDaemon first: %v", err)
+	}
+	_ = waitForFile(t, daemonPIDsPath)
+	if err := StartDriverDaemon(exe, configPath); err != nil {
+		t.Fatalf("StartDriverDaemon second: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	got := nonEmptyLines(readFileIfExists(daemonPIDsPath))
+	if len(got) != 1 {
+		t.Fatalf("daemon starts=%d, want 1; pids=%v", len(got), got)
+	}
+}
+
+func readFileIfExists(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func nonEmptyLines(text string) []string {
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 func waitForFile(t *testing.T, path string) string {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
