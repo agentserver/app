@@ -40,7 +40,7 @@ if ($OpenCodeDesktop -and $MinimalVSCode) {
 $AppName    = 'agentserver-app'
 $AppDisplayName = '星池指挥官'
 $ContextMenuLabel = '用星池指挥官打开'
-$Version    = '0.1.4'
+$Version    = '0.1.5'
 $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
 $RegSubKeyFile = "Software\Classes\*\shell\AgentserverApp"
 $RegSubKeyDir  = "Software\Classes\Directory\shell\AgentserverApp"

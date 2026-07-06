@@ -4,7 +4,7 @@
 
 #define MyAppId "agentserver-app"
 #define MyAppName "星池指挥官"
-#define MyAppVersion "0.1.4"
+#define MyAppVersion "0.1.5"
 #define MyAppPublisher "agentserver"
 #define MyAppURL "https://agent.cs.ac.cn"
 #define MyAppExeName "launcher.exe"
@@ -61,7 +61,7 @@ Source: "..\..\dist\cache\loom\v0.0.10\driver-codex-prompts.tar.gz"; \
 Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
     DestDir: "{app}"; DestName: "codex-desktop-installer.exe"; Flags: ignoreversion
 ; Bundled VS Code extension
-Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.4.vsix"; \
+Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.5.vsix"; \
     DestDir: "{app}"; DestName: "agentserver-app.vsix"; Flags: ignoreversion
 ; Icon
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion

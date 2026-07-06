@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-0.1.4}"
+VERSION="${VERSION:-0.1.5}"
 OUT="${OUT:-dist}"
 DRY_RUN="${DRY_RUN:-0}"
 source scripts/linux-package-common.sh
