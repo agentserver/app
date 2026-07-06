@@ -173,6 +173,7 @@ func TestCompletedSlaveManagerDepsRecoversBadMachineIdentity(t *testing.T) {
 			MachineFile:  machinePath,
 			SlavesFile:   filepath.Join(dir, ".agentserver-app", "slaves.json"),
 			SlavesDir:    filepath.Join(dir, ".agentserver-app", "slaves"),
+			CodexDir:     filepath.Join(dir, ".codex"),
 			CodexExePath: filepath.Join(dir, "local-appdata", "agentserver-app", "bin", "codex.exe"),
 		},
 		InstallDir: filepath.Join(dir, "app"),
@@ -1150,8 +1151,9 @@ func TestConfigureCompletedLoomDriverUsesDefaultObserver(t *testing.T) {
 	st.Agentserver.ShortID = "abc123"
 	p := paths.Paths{
 		UserHome:        dir,
+		CodexDir:        filepath.Join(dir, "codex-desktop-home"),
 		CodexExePath:    filepath.Join(dir, "bin", "codex.exe"),
-		CodexConfigFile: filepath.Join(dir, ".codex", "config.toml"),
+		CodexConfigFile: filepath.Join(dir, "codex-desktop-home", "config.toml"),
 	}
 
 	if err := configureCompletedLoomDriver(p, st, sec, installDir); err != nil {
@@ -1173,6 +1175,7 @@ func TestConfigureCompletedLoomDriverUsesDefaultObserver(t *testing.T) {
 		`api_key: "sandbox-proxy-token"`,
 		`token_state_path: "` + filepath.ToSlash(filepath.Join(filepath.Dir(loomPath), "observer.token")) + `"`,
 		`bin: "codex"`,
+		`codex_home: "` + filepath.ToSlash(p.CodexDir) + `"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("driver.yaml missing %q:\n%s", want, text)

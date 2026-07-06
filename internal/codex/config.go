@@ -148,12 +148,8 @@ func SetModel(path, model string) error {
 
 	root["model"] = model
 
-	if model == glmCatalogSlug {
-		if err := provisionGLMCatalog(root, path); err != nil {
-			return fmt.Errorf("provision glm catalog: %w", err)
-		}
-	} else {
-		delete(root, "model_catalog_json")
+	if err := provisionModelCatalog(root, path); err != nil {
+		return fmt.Errorf("provision model catalog: %w", err)
 	}
 
 	var buf bytes.Buffer
@@ -239,21 +235,8 @@ func UpdateConfig(path string, s Settings) error {
 	providers[s.Provider] = provider
 	root["model_providers"] = providers
 
-	// Provision the GLM model catalog only when the active model is the GLM
-	// model. model_catalog_json *replaces* Codex's bundled catalog, so wiring
-	// it unconditionally would strip gpt-5.5's metadata when a user selects
-	// gpt-5.5. Resolve the effective model: caller-supplied s.Model wins,
-	// otherwise whatever is already on disk.
-	effectiveModel := s.Model
-	if effectiveModel == "" {
-		effectiveModel, _ = root["model"].(string)
-	}
-	if effectiveModel == glmCatalogSlug {
-		if err := provisionGLMCatalog(root, path); err != nil {
-			return fmt.Errorf("provision glm catalog: %w", err)
-		}
-	} else {
-		delete(root, "model_catalog_json")
+	if err := provisionModelCatalog(root, path); err != nil {
+		return fmt.Errorf("provision model catalog: %w", err)
 	}
 
 	var buf bytes.Buffer
@@ -409,7 +392,7 @@ func RemoveMCPServer(path, name string) error {
 	return writeConfigFile(path, buf.Bytes())
 }
 
-// provisionGLMCatalog writes the embedded GLM model catalog to the Codex
+// provisionModelCatalog writes the embedded multi-model catalog to the Codex
 // home dir (next to config.toml) and sets `model_catalog_json` on root to
 // point at it. Idempotent: the catalog file is only rewritten when the
 // embedded asset differs from what is on disk, so a routine config refresh
@@ -418,19 +401,23 @@ func RemoveMCPServer(path, name string) error {
 //
 // The path is absolute (Codex requires an absolute path in
 // `model_catalog_json`) and derived from the config file's directory.
-func provisionGLMCatalog(root map[string]any, configPath string) error {
-	catalogPath := filepath.Join(filepath.Dir(configPath), glmCatalogFilename)
+func provisionModelCatalog(root map[string]any, configPath string) error {
+	dir := filepath.Dir(configPath)
+	catalogPath := filepath.Join(dir, modelCatalogFilename)
 
 	existing, err := os.ReadFile(catalogPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read glm catalog: %w", err)
+		return fmt.Errorf("read model catalog: %w", err)
 	}
-	if !bytes.Equal(existing, glmCatalogJSON) {
-		if err := writeConfigFile(catalogPath, glmCatalogJSON); err != nil {
-			return fmt.Errorf("write glm catalog: %w", err)
+	if !bytes.Equal(existing, modelCatalogJSON) {
+		if err := writeConfigFile(catalogPath, modelCatalogJSON); err != nil {
+			return fmt.Errorf("write model catalog: %w", err)
 		}
 	}
 	root["model_catalog_json"] = catalogPath
+
+	// Clean up the legacy single-model catalog file from prior versions.
+	_ = os.Remove(filepath.Join(dir, legacyGLMCatalogFilename))
 	return nil
 }
 
