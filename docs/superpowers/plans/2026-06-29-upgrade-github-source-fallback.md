@@ -332,6 +332,34 @@ func TestSpeedMonitorDoesNotCancelWhenTrailingAvgAboveThreshold(t *testing.T) {
 	<-done
 }
 
+func TestSpeedMonitorDisabledWhenMinBPSZero(t *testing.T) {
+	// Compat-mode policy: MinSpeedBytesPerSec == 0 ⇒ monitor never cancels
+	// even when throughput is zero for many windows. Preserves today's
+	// CDN download behavior in Service.Sources==nil mode.
+	policy := SourcePolicy{SpeedWindow: 1 * time.Second, MinSpeedBytesPerSec: 0}
+	start := time.Unix(1_000_000, 0)
+	ft := newFakeTicker(start)
+	ctx, cancel := context.WithCancel(context.Background())
+	m := newSpeedMonitor(policy, cancel, nil).withClock(ft.now, ft.ch)
+
+	done := make(chan struct{})
+	go func() { m.run(ctx); close(done) }()
+
+	// Send 20 ticks with zero bytes; monitor must never trip.
+	for i := 1; i <= 20; i++ {
+		ft.send(start.Add(time.Duration(i) * time.Second))
+	}
+	time.Sleep(20 * time.Millisecond)
+	if m.Tripped() {
+		t.Fatal("disabled monitor must not trip")
+	}
+	if ctx.Err() != nil {
+		t.Fatal("disabled monitor must not cancel ctx")
+	}
+	cancel()
+	<-done
+}
+
 func TestSpeedMonitorEmitsOnSamplePerTick(t *testing.T) {
 	policy := SourcePolicy{SpeedWindow: 10 * time.Second, MinSpeedBytesPerSec: 0}
 	start := time.Unix(1_000_000, 0)
@@ -466,6 +494,12 @@ func (m *speedMonitor) recordTick(now, start time.Time) {
 		})
 	}
 
+	// A zero threshold or zero window disables slow-download detection.
+	// Compat mode (Service.Sources == nil) uses this to preserve today's
+	// "download runs until socket timeout" behavior in existing tests.
+	if m.minBPS <= 0 || m.window <= 0 {
+		return
+	}
 	if elapsed < m.window {
 		return
 	}
@@ -782,14 +816,27 @@ func (s *cdnSource) pinnedClient() *http.Client {
 	return s.redirectPinned(s.client)
 }
 
-// installerClient enforces FirstByteTimeout via ResponseHeaderTimeout.
-// It clones s.client's Transport so the parent Client is not mutated.
+// installerClient enforces FirstByteTimeout via ResponseHeaderTimeout
+// when the underlying Transport is *http.Transport. For custom
+// RoundTrippers (test rewriters), the download loop wraps client.Do
+// in context.WithTimeout(ctx, FirstByteTimeout) instead — same wall
+// deadline, different mechanism.
 func (s *cdnSource) installerClient() *http.Client {
 	c := s.redirectPinned(s.client)
-	transport := cloneTransport(c.Transport)
-	transport.ResponseHeaderTimeout = s.policy.FirstByteTimeout
-	c.Transport = transport
-	return c
+	return applyFirstByteTimeout(c, s.policy.FirstByteTimeout)
+}
+
+// isRealTransport returns true when the source's client uses a real
+// *http.Transport; false for custom RoundTrippers. The download loop
+// uses this to decide whether to also apply a context deadline for
+// FirstByteTimeout (needed only in the non-*Transport path).
+func (s *cdnSource) isRealTransport() bool {
+	rt := s.client.Transport
+	if rt == nil {
+		return true
+	}
+	_, ok := rt.(*http.Transport)
+	return ok
 }
 
 func (s *cdnSource) redirectPinned(base *http.Client) *http.Client {
@@ -810,30 +857,34 @@ func (s *cdnSource) redirectPinned(base *http.Client) *http.Client {
 	return &client
 }
 
-// cloneTransport returns a defensive copy of t so we can mutate
-// ResponseHeaderTimeout without affecting the caller's Transport.
-// If t is nil, it returns a fresh Transport that clones DefaultTransport.
-func cloneTransport(t http.RoundTripper) *http.Transport {
-	if t == nil {
-		if dt, ok := http.DefaultTransport.(*http.Transport); ok {
-			return dt.Clone()
-		}
-		return &http.Transport{}
+// applyFirstByteTimeout returns a client whose Transport enforces
+// ResponseHeaderTimeout when the base Transport is *http.Transport,
+// or a client with the base RoundTripper preserved verbatim otherwise.
+// This preserves test-only RoundTrippers such as assetsHostRewriteTransport
+// (internal/updater/service_test.go) which would be lost by a naive clone.
+// In the non-*Transport path, FirstByteTimeout is best-effort via the
+// request context deadline instead.
+func applyFirstByteTimeout(base *http.Client, firstByte time.Duration) *http.Client {
+	c := *base
+	rt := c.Transport
+	if rt == nil {
+		rt = http.DefaultTransport
 	}
-	if ht, ok := t.(*http.Transport); ok {
-		return ht.Clone()
+	if ht, ok := rt.(*http.Transport); ok {
+		clone := ht.Clone()
+		clone.ResponseHeaderTimeout = firstByte
+		c.Transport = clone
+		return &c
 	}
-	// Non-*Transport RoundTripper: build a fresh Transport. Tests using
-	// http.RoundTripper implementations should pass an *http.Transport.
-	return &http.Transport{}
+	// Custom RoundTripper (typically a test rewriter). Do not clone;
+	// downloading code applies context.WithTimeout(ctx, firstByte)
+	// around the .Do call instead. Return the client unchanged so the
+	// custom RT still sees requests.
+	return &c
 }
-
-// unusedTimeCompat suppresses unused-import warning if the file's imports
-// change during future edits.
-var _ = time.Now
 ```
 
-Remove that last `var _` line and any unused imports before committing — it's a placeholder to make the file compile if you copy incrementally.
+Remove the placeholder `time` import once real usage stabilizes.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -924,10 +975,20 @@ pinning; the incoming GitHub source enforces its own whitelist."
 - Create: `internal/updater/source_github_test.go`
 
 **Interfaces:**
-- Consumes: `Source`, `SourcePolicy`, sentinels, `Manifest`, `manifestMaxBytes`, `appversion.Version`.
+- Consumes: `Source`, `SourcePolicy`, sentinels, `Manifest`, `manifestMaxBytes`, `appversion.Version`, `applyFirstByteTimeout` (Task 3).
 - Produces:
   - `func NewGitHubSource(repo string, apiBase string, client *http.Client, policy SourcePolicy) Source` — `apiBase` defaults to `https://api.github.com` when empty; tests override to point at `httptest.Server`.
   - `type githubSource struct { … }` (unexported), `Name() == "github"`.
+
+**Security invariants for this task:**
+
+- Host validation uses `url.Hostname()` (strips port & IPv6 brackets), lowered, with any trailing `.` trimmed to defeat DNS-dot bypass.
+- Reject any URL where `u.User != nil` (defeats `https://good.example@evil.com/...` bypass).
+- Manifest asset URLs from GitHub API responses are validated with the **same** host matcher as installer URLs (`githubAssetHost`) — a single source of truth. There is no separate `manifestHost` whitelist.
+- `githubAssetHost` accepts: `github.com` (raw `browser_download_url`), `codeload.github.com` (occasional archive redirect), and any subdomain of `githubusercontent.com` (`objects.` / `release-assets.` / future renames).
+- `api.github.com` is NOT in `githubAssetHost`. The initial `/repos/.../releases/latest` request goes through a separate `manifestAPIClient` whose CheckRedirect additionally accepts `api.github.com`.
+- Per-request context deadline via `context.WithTimeout(ctx, ManifestTimeout)` — one budget per HTTP call, not shared across the two-hop fetch.
+- HTTP 403 and 429 always map to `ErrRateLimited` regardless of response body; response body is not surfaced in `FallbackRecord.Reason` beyond status code + `X-RateLimit-Remaining` value (never `X-GitHub-Request-Id` or the body, to avoid leaking identifying tokens to disk).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -941,6 +1002,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1104,7 +1166,7 @@ func TestGitHubSourceRateLimit403(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !isErrRateLimited(err) {
+	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("err=%v; want ErrRateLimited", err)
 	}
 }
@@ -1120,30 +1182,66 @@ func TestGitHubSourceRateLimit429(t *testing.T) {
 	}
 }
 
-func TestGitHubSourceManifestTimeout(t *testing.T) {
-	mock := newGitHubMock(t)
-	mock.installerDelay = 200 * time.Millisecond // affects only assets, but the latest.json handler ALSO delays via mock:
-	mock.manifestBody = nil // will 200 with empty body
+func TestGitHubSourceManifestTimeoutFires(t *testing.T) {
+	// Slow API endpoint sleeps 500ms; policy timeout is 50ms.
+	// Assert the returned error wraps ErrFetchTimeout AND elapsed
+	// is roughly ManifestTimeout, not 500ms.
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(500 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+		case <-r.Context().Done():
+			return
+		}
+	}))
+	t.Cleanup(slow.Close)
 	policy := DefaultSourcePolicy()
-	policy.ManifestTimeout = 30 * time.Millisecond
-	src := NewGitHubSource(testRepo, mock.server.URL, http.DefaultClient, policy).(*githubSource)
-
-	// Point apiBase at a black-hole port to force timeout.
-	src.apiBase = "http://127.0.0.1:1" // reserved port; connect should fail fast, but we specifically want context.DeadlineExceeded.
+	policy.ManifestTimeout = 50 * time.Millisecond
+	src := NewGitHubSource(testRepo, slow.URL, http.DefaultClient, policy).(*githubSource)
 
 	start := time.Now()
 	_, err := src.FetchManifest(context.Background())
+	elapsed := time.Since(start)
 	if err == nil {
-		t.Fatal("expected error")
+		t.Fatal("expected timeout error")
 	}
-	if time.Since(start) > 300*time.Millisecond {
-		t.Fatalf("FetchManifest exceeded policy timeout: %v", time.Since(start))
+	if !errors.Is(err, ErrFetchTimeout) {
+		t.Fatalf("err=%v; want ErrFetchTimeout wrap", err)
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("FetchManifest ran %v, expected ~50ms", elapsed)
 	}
 }
 
-func TestGitHubSourceRejectsUnwhitelistedRedirect(t *testing.T) {
-	// Mock returns a manifest whose installer URL points at a
-	// non-githubusercontent host; the source must reject.
+func TestGitHubSourceManifestTimeoutIsPerRequest(t *testing.T) {
+	// Two hops must each get their OWN ManifestTimeout budget, not a
+	// shared one. The API call returns quickly; the latest.json asset
+	// then sleeps 500ms. With per-request timeout the flow must still
+	// fail via ErrFetchTimeout on the second hop within ~50ms.
+	// Configure your mock so /assets/latest.json sleeps 500ms.
+	mock := newGitHubMock(t)
+	mock.slowManifestAsset = true // add this field to githubMock
+	body := []byte("payload")
+	mock.setManifest(mock.server.URL+"/assets/setup.exe", body)
+	policy := DefaultSourcePolicy()
+	policy.ManifestTimeout = 50 * time.Millisecond
+	src := NewGitHubSource(testRepo, mock.server.URL, http.DefaultClient, policy).(*githubSource)
+	src.installerHostMatch = func(string) bool { return true }
+
+	start := time.Now()
+	_, err := src.FetchManifest(context.Background())
+	elapsed := time.Since(start)
+	if err == nil || !errors.Is(err, ErrFetchTimeout) {
+		t.Fatalf("err=%v; want ErrFetchTimeout on slow second hop", err)
+	}
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("elapsed %v — timeout appears shared across hops", elapsed)
+	}
+}
+
+func TestGitHubSourceRejectsUnwhitelistedInstallerHost(t *testing.T) {
+	// Manifest declares an installer URL on evil.example.com. Source
+	// must reject with ErrHostNotAllowed BEFORE any HTTP request.
 	mock := newGitHubMock(t)
 	body := []byte("payload")
 	mock.setManifest("https://evil.example.com/setup.exe", body)
@@ -1153,19 +1251,115 @@ func TestGitHubSourceRejectsUnwhitelistedRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchManifest: %v", err)
 	}
-	var buf strings.Builder
-	err = src.DownloadInstaller(context.Background(), m, &buf, nil)
-	if err == nil {
-		t.Fatal("expected ErrHostNotAllowed")
-	}
-	if !errorsIs(err, ErrHostNotAllowed) {
+	err = src.DownloadInstaller(context.Background(), m, io.Discard, nil)
+	if err == nil || !errors.Is(err, ErrHostNotAllowed) {
 		t.Fatalf("err=%v; want ErrHostNotAllowed", err)
 	}
 }
 
-// Helpers referenced by these tests — implement them alongside the source.
-func isErrRateLimited(err error) bool { return errorsIs(err, ErrRateLimited) }
-func errorsIs(err, target error) bool { return err != nil && strings.Contains(err.Error(), target.Error()) }
+func TestGithubAssetHostMatcher(t *testing.T) {
+	// Regression guard for the real production browser_download_url,
+	// which is on github.com (NOT *.githubusercontent.com). Plus
+	// adversarial variants — bypass attempts must all be rejected.
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"github.com", true},                                    // real browser_download_url
+		{"codeload.github.com", true},                            // occasional archive redirect
+		{"objects.githubusercontent.com", true},                  // legacy asset CDN
+		{"release-assets.githubusercontent.com", true},           // current asset CDN
+		{"GitHub.com", true},                                     // case-fold
+		{"github.com.", true},                                    // trailing dot
+		{"api.github.com", false},                                // API host, not asset host
+		{"evil.githubusercontent.com.attacker.com", false},       // suffix bypass
+		{"githubusercontent.com", false},                         // must have subdomain
+		{"", false},                                              // empty
+		{"[::1]", false},                                         // IPv6 literal
+		{"192.168.1.1", false},                                   // IPv4 literal
+	}
+	for _, c := range cases {
+		if got := githubAssetHost(c.host); got != c.want {
+			t.Errorf("githubAssetHost(%q) = %v, want %v", c.host, got, c.want)
+		}
+	}
+}
+
+func TestGitHubSourceRejectsInstallerURLWithUserinfo(t *testing.T) {
+	mock := newGitHubMock(t)
+	body := []byte("payload")
+	// Even when host would otherwise pass, userinfo must be rejected.
+	mock.setManifest("https://good@github.com/setup.exe", body)
+	src := newTestGitHubSource(mock)
+	src.installerHostMatch = func(string) bool { return true }
+	m, err := src.FetchManifest(context.Background())
+	if err != nil {
+		t.Fatalf("FetchManifest: %v", err)
+	}
+	err = src.DownloadInstaller(context.Background(), m, io.Discard, nil)
+	if err == nil || !errors.Is(err, ErrHostNotAllowed) {
+		t.Fatalf("err=%v; want ErrHostNotAllowed for userinfo URL", err)
+	}
+}
+
+func TestGitHubSourceRejectsInstallerLargerThanSize(t *testing.T) {
+	// Manifest declares Size=10 but server sends 100 bytes.
+	// LimitReader caps at Size+1; io.Copy sees Size+1 → error.
+	mock := newGitHubMock(t)
+	realBody := []byte(strings.Repeat("x", 100))
+	sum := sha256.Sum256(realBody[:10])
+	m := Manifest{
+		Version: "1.0.0",
+		URL:     mock.server.URL + "/assets/setup.exe",
+		SHA256:  hex.EncodeToString(sum[:]),
+		Size:    10, // lie about size
+	}
+	mockManifest, _ := json.Marshal(m)
+	mock.manifestBody = mockManifest
+	mock.installerBody = realBody
+	src := newTestGitHubSource(mock)
+	src.installerHostMatch = func(string) bool { return true }
+
+	got, err := src.FetchManifest(context.Background())
+	if err != nil {
+		t.Fatalf("FetchManifest: %v", err)
+	}
+	err = src.DownloadInstaller(context.Background(), got, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "larger than declared size") {
+		t.Fatalf("err=%v; want size-overflow error", err)
+	}
+}
+
+func TestGitHubSourcePreservesHeadersAcrossRedirect(t *testing.T) {
+	// Every request (including hops after 302) must carry Accept +
+	// User-Agent, or GitHub asset CDN 403s the retry.
+	var secondHopSaw http.Header
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHopSaw = r.Header.Clone()
+		w.Write([]byte("body"))
+	}))
+	t.Cleanup(target.Close)
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/final", http.StatusFound)
+	}))
+	t.Cleanup(redirector.Close)
+
+	src := NewGitHubSource(testRepo, "", http.DefaultClient, DefaultSourcePolicy()).(*githubSource)
+	src.installerHostMatch = func(string) bool { return true }
+
+	body := []byte("body")
+	sum := sha256.Sum256(body)
+	m := Manifest{Version: "1.0.0", URL: redirector.URL + "/hop", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(body))}
+	if err := src.DownloadInstaller(context.Background(), m, io.Discard, nil); err != nil {
+		t.Fatalf("DownloadInstaller: %v", err)
+	}
+	if secondHopSaw.Get("User-Agent") == "" {
+		t.Fatal("User-Agent lost on redirect")
+	}
+	if secondHopSaw.Get("Accept") == "" {
+		t.Fatal("Accept lost on redirect")
+	}
+}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1227,26 +1421,50 @@ func NewGitHubSource(repo, apiBase string, client *http.Client, policy SourcePol
 
 func (s *githubSource) Name() string { return "github" }
 
-// githubInstallerHost matches production installer URLs: github.com or
-// any subdomain of githubusercontent.com. The wildcard tolerates
-// release-assets.githubusercontent.com and future subdomain renames.
-func githubInstallerHost(host string) bool {
-	host = strings.ToLower(host)
-	if host == "github.com" {
-		return true
-	}
-	return strings.HasSuffix(host, ".githubusercontent.com")
+// normalizeHost canonicalizes a URL host for whitelist comparison.
+// - lowercases
+// - trims trailing dot (defeats "github.com." bypass; DNS treats
+//   trailing-dot as equivalent, so must our whitelist)
+func normalizeHost(host string) string {
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	return h
 }
 
-// manifestHost matches the API host + asset CDN. api.github.com serves
-// /repos/.../releases/latest; the asset browser_download_url 302s to
-// *.githubusercontent.com.
-func githubManifestHost(host string) bool {
-	host = strings.ToLower(host)
-	if host == "api.github.com" {
+// githubAssetHost is the SINGLE source of truth for "is this URL a
+// legitimate GitHub-hosted asset?" It matches:
+//   - github.com (production browser_download_url host)
+//   - codeload.github.com (occasional archive redirect target)
+//   - any subdomain of githubusercontent.com (release-assets.,
+//     objects., raw., and future renames — GitHub has renamed the
+//     asset CDN before)
+// It does NOT match api.github.com (which is only used by the initial
+// releases/latest request, guarded separately) or bare
+// "githubusercontent.com" without subdomain (suffix-bypass defense).
+func githubAssetHost(host string) bool {
+	h := normalizeHost(host)
+	if h == "" {
+		return false
+	}
+	if h == "github.com" || h == "codeload.github.com" {
 		return true
 	}
-	return strings.HasSuffix(host, ".githubusercontent.com")
+	// Must have a non-empty subdomain before ".githubusercontent.com".
+	const suffix = ".githubusercontent.com"
+	if !strings.HasSuffix(h, suffix) {
+		return false
+	}
+	sub := strings.TrimSuffix(h, suffix)
+	if sub == "" || strings.Contains(sub, "/") {
+		return false
+	}
+	return true
+}
+
+// githubAPIHost is used ONLY for the initial /repos/.../releases/latest
+// request. The asset URL returned by that call is validated against
+// githubAssetHost / installerHostMatch.
+func githubAPIHost(host string) bool {
+	return normalizeHost(host) == "api.github.com"
 }
 
 func (s *githubSource) setHeaders(req *http.Request) {
@@ -1254,16 +1472,22 @@ func (s *githubSource) setHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", "agentserver-app/"+appversion.Version)
 }
 
-func (s *githubSource) manifestClient() *http.Client {
-	return s.redirectPinned(s.client, githubManifestHost)
+// apiClient handles the initial /repos/.../releases/latest request.
+// Its CheckRedirect allows api.github.com hops only.
+func (s *githubSource) apiClient() *http.Client {
+	return s.redirectPinned(s.client, githubAPIHost)
 }
 
+// assetClient handles both the latest.json asset fetch AND (via the
+// separately-installed FirstByteTimeout) the installer download.
+// CheckRedirect allows githubAssetHost hops only.
+func (s *githubSource) assetClient() *http.Client {
+	return s.redirectPinned(s.client, s.installerHostMatch)
+}
+
+// installerClient adds FirstByteTimeout on top of assetClient.
 func (s *githubSource) installerClient() *http.Client {
-	c := s.redirectPinned(s.client, s.installerHostMatch)
-	transport := cloneTransport(c.Transport)
-	transport.ResponseHeaderTimeout = s.policy.FirstByteTimeout
-	c.Transport = transport
-	return c
+	return applyFirstByteTimeout(s.assetClient(), s.policy.FirstByteTimeout)
 }
 
 func (s *githubSource) redirectPinned(base *http.Client, hostOK func(string) bool) *http.Client {
@@ -1275,6 +1499,16 @@ func (s *githubSource) redirectPinned(base *http.Client, hostOK func(string) boo
 		}
 		if !hostOK(req.URL.Hostname()) {
 			return fmt.Errorf("%w: %s", ErrHostNotAllowed, req.URL.Hostname())
+		}
+		// Preserve Accept + User-Agent across redirects. Go's stdlib
+		// copies headers on same-host redirects but strips
+		// Authorization on cross-host; Accept + UA aren't in the
+		// sensitive-header list but we set them defensively per hop.
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "application/vnd.github+json")
+		}
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", "agentserver-app/"+appversion.Version)
 		}
 		if prior != nil {
 			return prior(req, via)
@@ -1298,29 +1532,10 @@ type githubReleaseResponse struct {
 }
 
 func (s *githubSource) FetchManifest(ctx context.Context) (Manifest, error) {
-	ctx, cancel := context.WithTimeout(ctx, s.policy.ManifestTimeout)
-	defer cancel()
-
-	apiURL := strings.TrimRight(s.apiBase, "/") + "/repos/" + s.repo + "/releases/latest"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	// Per-request budgets — NOT one budget shared across hops. A slow
+	// API call must not consume the asset fetch's timeout.
+	release, err := s.fetchRelease(ctx)
 	if err != nil {
-		return Manifest{}, err
-	}
-	s.setHeaders(req)
-	resp, err := s.manifestClient().Do(req)
-	if err != nil {
-		return Manifest{}, s.classifyFetch(ctx, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-		rem := resp.Header.Get("X-RateLimit-Remaining")
-		return Manifest{}, fmt.Errorf("%w: github %d: x-ratelimit-remaining=%q", ErrRateLimited, resp.StatusCode, rem)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Manifest{}, fmt.Errorf("github fetch releases/latest: unexpected status %s", resp.Status)
-	}
-	var release githubReleaseResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 512*1024)).Decode(&release); err != nil {
 		return Manifest{}, err
 	}
 	assetURL := ""
@@ -1337,26 +1552,18 @@ func (s *githubSource) FetchManifest(ctx context.Context) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, fmt.Errorf("invalid asset url: %w", err)
 	}
-	if !githubManifestHost(assetU.Hostname()) {
+	if assetU.User != nil {
+		return Manifest{}, fmt.Errorf("%w: asset url has userinfo", ErrHostNotAllowed)
+	}
+	if !s.installerHostMatch(assetU.Hostname()) {
 		return Manifest{}, fmt.Errorf("%w: asset host %s", ErrHostNotAllowed, assetU.Hostname())
 	}
-	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
+	m, err := s.fetchLatestJSON(ctx, assetURL)
 	if err != nil {
 		return Manifest{}, err
 	}
-	s.setHeaders(req2)
-	resp2, err := s.manifestClient().Do(req2)
-	if err != nil {
-		return Manifest{}, s.classifyFetch(ctx, err)
-	}
-	defer resp2.Body.Close()
-	if resp2.StatusCode < 200 || resp2.StatusCode >= 300 {
-		return Manifest{}, fmt.Errorf("github fetch latest.json: unexpected status %s", resp2.Status)
-	}
-	var m Manifest
-	if err := json.NewDecoder(io.LimitReader(resp2.Body, manifestMaxBytes)).Decode(&m); err != nil {
-		return Manifest{}, err
-	}
+	// Structural check only — host validation is deferred to
+	// DownloadInstaller so tests can inject a permissive matcher.
 	if err := m.Validate(); err != nil {
 		return Manifest{}, err
 	}
@@ -1367,8 +1574,66 @@ func (s *githubSource) FetchManifest(ctx context.Context) (Manifest, error) {
 	if instU.User != nil {
 		return Manifest{}, fmt.Errorf("%w: installer url has userinfo", ErrHostNotAllowed)
 	}
-	// Installer host is validated at DownloadInstaller time (via
-	// installerHostMatch) so tests can inject a permissive matcher.
+	return m, nil
+}
+
+// fetchRelease is one HTTP hop with its own ManifestTimeout budget.
+func (s *githubSource) fetchRelease(parent context.Context) (githubReleaseResponse, error) {
+	ctx, cancel := context.WithTimeout(parent, s.policy.ManifestTimeout)
+	defer cancel()
+
+	apiURL := strings.TrimRight(s.apiBase, "/") + "/repos/" + s.repo + "/releases/latest"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return githubReleaseResponse{}, err
+	}
+	s.setHeaders(req)
+	resp, err := s.apiClient().Do(req)
+	if err != nil {
+		return githubReleaseResponse{}, s.classifyFetch(parent, ctx, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		// Deliberately do NOT log X-GitHub-Request-Id or response body —
+		// avoid leaking identifying tokens to state.json / console API.
+		rem := resp.Header.Get("X-RateLimit-Remaining")
+		return githubReleaseResponse{}, fmt.Errorf("%w: github %d: x-ratelimit-remaining=%q", ErrRateLimited, resp.StatusCode, rem)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return githubReleaseResponse{}, fmt.Errorf("github fetch releases/latest: unexpected status %s", resp.Status)
+	}
+	var release githubReleaseResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 512*1024)).Decode(&release); err != nil {
+		return githubReleaseResponse{}, err
+	}
+	return release, nil
+}
+
+// fetchLatestJSON is one HTTP hop with its own ManifestTimeout budget.
+func (s *githubSource) fetchLatestJSON(parent context.Context, assetURL string) (Manifest, error) {
+	ctx, cancel := context.WithTimeout(parent, s.policy.ManifestTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, assetURL, nil)
+	if err != nil {
+		return Manifest{}, err
+	}
+	s.setHeaders(req)
+	resp, err := s.assetClient().Do(req)
+	if err != nil {
+		return Manifest{}, s.classifyFetch(parent, ctx, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		return Manifest{}, fmt.Errorf("%w: github %d fetching latest.json", ErrRateLimited, resp.StatusCode)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return Manifest{}, fmt.Errorf("github fetch latest.json: unexpected status %s", resp.Status)
+	}
+	var m Manifest
+	if err := json.NewDecoder(io.LimitReader(resp.Body, manifestMaxBytes)).Decode(&m); err != nil {
+		return Manifest{}, err
+	}
 	return m, nil
 }
 
@@ -1395,7 +1660,18 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 	go func() { monitor.run(dlCtx); close(monitorDone) }()
 	defer func() { cancel(); <-monitorDone }()
 
-	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, m.URL, nil)
+	// When the underlying Transport is not *http.Transport (test path),
+	// applyFirstByteTimeout returned an unmodified client. Fall back
+	// to a context deadline for the first byte via WithTimeout — the
+	// deadline is cancelled after resp headers arrive by using a
+	// child ctx JUST for the Do() call.
+	reqCtx := dlCtx
+	if !s.isRealTransport() && s.policy.FirstByteTimeout > 0 {
+		var reqCancel context.CancelFunc
+		reqCtx, reqCancel = context.WithTimeout(dlCtx, s.policy.FirstByteTimeout)
+		defer reqCancel()
+	}
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, m.URL, nil)
 	if err != nil {
 		return err
 	}
@@ -1419,8 +1695,25 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 	return nil
 }
 
-func (s *githubSource) classifyFetch(parent context.Context, err error) error {
-	if parent.Err() == context.DeadlineExceeded {
+// isRealTransport mirrors cdnSource.isRealTransport — used by
+// DownloadInstaller to decide whether to add a context-level
+// FirstByteTimeout when the underlying Transport is a custom
+// RoundTripper (test path).
+func (s *githubSource) isRealTransport() bool {
+	rt := s.client.Transport
+	if rt == nil {
+		return true
+	}
+	_, ok := rt.(*http.Transport)
+	return ok
+}
+
+// classifyFetch takes both the parent ctx (caller-supplied) and the
+// per-request ctx (has the ManifestTimeout deadline). If the per-request
+// deadline fired, return ErrFetchTimeout; else honor parent
+// cancellation; else return err verbatim.
+func (s *githubSource) classifyFetch(parent context.Context, req context.Context, err error) error {
+	if req.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("%w: %v", ErrFetchTimeout, err)
 	}
 	if parent.Err() != nil {
@@ -1488,6 +1781,7 @@ package updater
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1524,18 +1818,9 @@ func TestStateOmitsEmptyFallbackFields(t *testing.T) {
 		t.Fatalf("bad json: %s", got)
 	}
 	// omitempty means the empty fields do not appear.
-	if contains(string(b), "last_source_used") || contains(string(b), "last_fallbacks") {
+	if strings.Contains(string(b), "last_source_used") || strings.Contains(string(b), "last_fallbacks") {
 		t.Fatalf("empty state must not include new fields: %s", string(b))
 	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 ```
 
@@ -1853,6 +2138,20 @@ b) Add these helpers below `Service` struct:
 ```go
 const maxFallbackHistory = 5
 
+// compatCDNPolicy is the SourcePolicy applied when the compat shortcut
+// synthesizes a cdnSource. All zeros ⇒ no ManifestTimeout wrap, no
+// FirstByteTimeout, no speed monitor — byte-identical to today's
+// behavior (which had none of these). This preserves the "existing
+// tests unchanged" guarantee.
+func compatCDNPolicy() SourcePolicy {
+	return SourcePolicy{
+		ManifestTimeout:     0,
+		FirstByteTimeout:    0,
+		SpeedWindow:         0,
+		MinSpeedBytesPerSec: 0,
+	}
+}
+
 func (s Service) effectiveSources() []Source {
 	if len(s.Sources) > 0 {
 		return s.Sources
@@ -1861,7 +2160,7 @@ func (s Service) effectiveSources() []Source {
 	if url == "" {
 		url = DefaultManifestURL
 	}
-	return []Source{NewCDNSource(url, s.client(), DefaultSourcePolicy())}
+	return []Source{NewCDNSource(url, s.client(), compatCDNPolicy())}
 }
 
 func (s Service) appendFallback(buf []FallbackRecord, source, stage string, err error) []FallbackRecord {
@@ -1885,6 +2184,35 @@ func mergeFallbacks(prior, fresh []FallbackRecord) []FallbackRecord {
 		combined = combined[len(combined)-maxFallbackHistory:]
 	}
 	return combined
+}
+
+// saveErrorWithFallbacks writes a StatusError state that PRESERVES
+// the caller's rolling fallback history. saveError alone drops
+// LastFallbacks, which contradicts the spec's "ops can see days
+// later why every attempt failed" guarantee.
+func (s Service) saveErrorWithFallbacks(now time.Time, err error, prior []FallbackRecord, fresh []FallbackRecord) (State, error) {
+	state := State{
+		CurrentVersion: s.CurrentVersion,
+		LastCheckedAt:  now,
+		Status:         StatusError,
+		LastError:      err.Error(),
+		LastFallbacks:  mergeFallbacks(prior, fresh),
+	}
+	if p, loadErr := s.loadState(); loadErr == nil {
+		if !p.LastCheckedAt.IsZero() {
+			state.LastCheckedAt = p.LastCheckedAt
+		}
+		if p.Update != nil {
+			if cmp, cmpErr := CompareVersions(p.Update.Version, s.CurrentVersion); cmpErr == nil && cmp > 0 {
+				state.Update = p.Update
+			}
+		}
+		state.LastSourceUsed = p.LastSourceUsed // preserve last-known good
+	}
+	if saveErr := s.saveState(state); saveErr != nil {
+		return state, errors.Join(err, fmt.Errorf("save error state: %w", saveErr))
+	}
+	return state, err
 }
 ```
 
@@ -1970,11 +2298,11 @@ func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no sources configured")
 	}
-	return s.saveError(now, lastErr)
+	return s.saveErrorWithFallbacks(now, lastErr, prior.LastFallbacks, fallbacks)
 }
 ```
 
-d) Rewrite `DownloadAndStart` to iterate sources (each source re-fetches its own manifest):
+d) Rewrite `DownloadAndStart` to iterate sources (each source re-fetches its own manifest). This preserves the caller-manifest version-downgrade guard (today's `service.go:147-153`), the `promoted`/defer temp-file cleanup (today's `service.go:179-184`), and augments all terminal error paths with the fallback history so ops can see later why every attempt failed:
 
 ```go
 func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error) {
@@ -1984,6 +2312,15 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 	now := s.now()
 	if err := m.Validate(); err != nil {
 		return s.saveError(now, err)
+	}
+	// Caller-manifest version guard — PRESERVED from today's behavior.
+	// A UI bug that replays a stale manifest must not trigger download.
+	cmp, err := CompareVersions(m.Version, s.CurrentVersion)
+	if err != nil {
+		return s.saveError(now, fmt.Errorf("invalid current version: %w", err))
+	}
+	if cmp <= 0 {
+		return s.saveError(now, fmt.Errorf("update version %s is not newer than current version %s", m.Version, s.CurrentVersion))
 	}
 	if s.CacheDir == "" {
 		return s.saveError(now, fmt.Errorf("cache dir is required"))
@@ -2009,19 +2346,19 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 		freshM, err := src.FetchManifest(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				return s.saveError(now, ctx.Err())
+				return s.saveErrorWithFallbacks(now, ctx.Err(), prior.LastFallbacks, fallbacks)
 			}
 			fallbacks = s.appendFallback(fallbacks, src.Name(), "manifest", err)
 			lastErr = err
 			continue
 		}
-		cmp, err := CompareVersions(freshM.Version, s.CurrentVersion)
+		vcmp, err := CompareVersions(freshM.Version, s.CurrentVersion)
 		if err != nil {
 			fallbacks = s.appendFallback(fallbacks, src.Name(), "version", err)
 			lastErr = err
 			continue
 		}
-		if cmp <= 0 {
+		if vcmp <= 0 {
 			fallbacks = s.appendFallback(fallbacks, src.Name(), "version",
 				fmt.Errorf("source manifest version %s not newer than current %s", freshM.Version, s.CurrentVersion))
 			lastErr = fmt.Errorf("source %s has no newer version", src.Name())
@@ -2030,13 +2367,24 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 
 		finalPath, err := installerCachePath(s.CacheDir, freshM)
 		if err != nil {
-			return s.saveError(now, err)
+			return s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
 		}
 		temp, err := os.CreateTemp(s.CacheDir, filepath.Base(finalPath)+".*.tmp")
 		if err != nil {
-			return s.saveError(now, err)
+			return s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
 		}
 		tempPath := temp.Name()
+		// promoted/defer PRESERVED from today's behavior — covers every
+		// unhappy exit from replaceFile / BeforeInstallerStart / start
+		// / saveFinalState. Without this the temp file leaks on non-
+		// download errors, a disk-fill vector under retry loops.
+		promoted := false
+		defer func() {
+			if !promoted {
+				_ = os.Remove(tempPath)
+			}
+		}()
+
 		attemptCtx, cancel := context.WithCancel(ctx)
 		err = src.DownloadInstaller(attemptCtx, freshM, temp, noopProgress)
 		cancel()
@@ -2044,27 +2392,25 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 			err = closeErr
 		}
 		if err != nil {
-			os.Remove(tempPath)
 			if ctx.Err() != nil {
-				return s.saveError(now, ctx.Err())
+				return s.saveErrorWithFallbacks(now, ctx.Err(), prior.LastFallbacks, fallbacks)
 			}
 			fallbacks = s.appendFallback(fallbacks, src.Name(), "download", err)
 			lastErr = err
 			continue
 		}
 		if err := verifyInstaller(tempPath, freshM); err != nil {
-			os.Remove(tempPath)
 			fallbacks = s.appendFallback(fallbacks, src.Name(), "verify",
 				fmt.Errorf("%w: %v", ErrSHA256Mismatch, err))
 			lastErr = err
 			continue
 		}
 		if err := replaceFile(tempPath, finalPath); err != nil {
-			return s.saveError(now, err)
+			return s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
 		}
 		if s.BeforeInstallerStart != nil {
 			if err := s.BeforeInstallerStart(ctx, freshM, finalPath); err != nil {
-				return s.saveError(now, err)
+				return s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
 			}
 		}
 		start := s.StartInstaller
@@ -2074,8 +2420,9 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 			startContext = context.Background()
 		}
 		if err := start(startContext, finalPath); err != nil {
-			return s.saveError(now, err)
+			return s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
 		}
+		promoted = true
 		state := State{
 			CurrentVersion: s.CurrentVersion,
 			Status:         StatusInstallerStarted,
@@ -2088,9 +2435,19 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no sources configured")
 	}
-	return s.saveError(now, lastErr)
+	return s.saveErrorWithFallbacks(now, lastErr, prior.LastFallbacks, fallbacks)
 }
 ```
+
+**Important note on the loop's `defer`:** each source iteration
+registers a `defer` that runs at function return. In practice this is
+safe because at most one iteration reaches the temp-file creation on
+a successful pass (subsequent iterations `continue` before creating
+their own temp file — if the CURRENT source failed and we're moving
+on, we've already `os.Remove`'d the current temp and left it). If
+future changes create a temp file every iteration, convert the defer
+into an explicit inline cleanup with a helper `cleanupTemp(&promoted, tempPath)`.
+
 
 e) Delete `fetchManifest`, `manifestDownloadClient`, `downloadInstaller`, `installerDownloadClient`, `redirectPinnedAssetsClient` from `service.go`. Keep `verifyInstaller`, `installerCachePath`, `availableFromManifest`, `now`, `loadState`, `saveState`, `saveFinalState`, `saveError`, `client`, `autoCheckEvery`, `NormalizeStateForCurrentVersion`.
 
@@ -2208,6 +2565,39 @@ func TestBuildSourcesEnabledReturnsGitHubThenCDN(t *testing.T) {
 		t.Fatalf("order=[%s,%s]", got[0].Name(), got[1].Name())
 	}
 }
+
+func TestLoadUpgradeConfigRejectsMaliciousRepoSlug(t *testing.T) {
+	// Path-traversal / control-char attempts fall back to default.
+	cases := []string{
+		"../../etc/passwd",
+		"owner//repo",
+		"owner",
+		"owner/repo/extra",
+		"/leading-slash/repo",
+		"owner/repo with space",
+		"owner/repo\nrepo",
+	}
+	for _, bad := range cases {
+		cfg := LoadUpgradeConfig(makeEnv(map[string]string{
+			"UPGRADE_GITHUB_REPO": bad,
+		}))
+		if cfg.GitHubRepo != "agentserver/app" {
+			t.Errorf("bad slug %q accepted as %q; want default fallback", bad, cfg.GitHubRepo)
+		}
+	}
+}
+
+func TestLoadUpgradeConfigAcceptsValidRepoSlugs(t *testing.T) {
+	cases := []string{"owner/repo", "a.b/c-d", "org_1/x_2.3"}
+	for _, ok := range cases {
+		cfg := LoadUpgradeConfig(makeEnv(map[string]string{
+			"UPGRADE_GITHUB_REPO": ok,
+		}))
+		if cfg.GitHubRepo != ok {
+			t.Errorf("valid slug %q rejected", ok)
+		}
+	}
+}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -2224,6 +2614,7 @@ package updater
 
 import (
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -2235,6 +2626,13 @@ type UpgradeConfig struct {
 	GitHubPolicy  SourcePolicy
 }
 
+// validRepoSlug matches "owner/repo" where each segment is 1..100 chars
+// of [A-Za-z0-9._-] — the character set GitHub allows. This defeats
+// path-traversal shenanigans like "../etc/passwd" that would otherwise
+// end up inside the constructed API URL and show as a suspicious
+// request line in logs. Invalid values fall back to the default.
+var validRepoSlug = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9._-]{1,100}$`)
+
 // LoadUpgradeConfig reads env vars via the provided getter. Pass
 // os.Getenv in production; tests pass a fake.
 func LoadUpgradeConfig(env func(string) string) UpgradeConfig {
@@ -2245,7 +2643,7 @@ func LoadUpgradeConfig(env func(string) string) UpgradeConfig {
 	if strings.EqualFold(env("UPGRADE_GITHUB_ENABLED"), "true") {
 		cfg.GitHubEnabled = true
 	}
-	if v := env("UPGRADE_GITHUB_REPO"); v != "" {
+	if v := env("UPGRADE_GITHUB_REPO"); v != "" && validRepoSlug.MatchString(v) {
 		cfg.GitHubRepo = v
 	}
 	if v := env("UPGRADE_GITHUB_MANIFEST_TIMEOUT"); v != "" {
@@ -2363,7 +2761,7 @@ git commit -m "feat(launcher): plumb UPGRADE_GITHUB_* env into updater.Sources"
 ### Task 10: Release pipeline — latest.json publishing
 
 **Files:**
-- Create: `packaging/windows/latest.json.tmpl`
+- (removed) `packaging/windows/latest.json.tmpl` — jq composes JSON structurally, no template.
 - Modify: `scripts/windows-package-common.sh`
 - Create: `.github/workflows/release.yml`
 
@@ -2373,64 +2771,54 @@ git commit -m "feat(launcher): plumb UPGRADE_GITHUB_* env into updater.Sources"
 
 Note: this task is CI/pipeline work and may be validated only end-to-end on the next tagged release. Local `go test` cannot exercise it. If your workflow uses a different CI system (Jenkins, GitLab), adapt the `.github/workflows/release.yml` step into that system's equivalent.
 
-- [ ] **Step 1: Create the template**
+**Note:** the template file is now unnecessary — `jq -n` composes the JSON with proper escaping. If a template is still preferred by the team's release runbook, keep it separate and let the shell function `jq -f template.jq --arg …` render it; do NOT `sed`-substitute a JSON template (arbitrary `notes` strings would corrupt the file).
 
-Create `packaging/windows/latest.json.tmpl`:
+- [ ] **Step 1: Extend windows-package-common.sh**
 
-```json
-{
-  "version": "__VERSION__",
-  "url": "__URL__",
-  "sha256": "__SHA256__",
-  "size": __SIZE__,
-  "notes": "__NOTES__"
-}
-```
-
-- [ ] **Step 2: Extend windows-package-common.sh**
-
-At the end of `scripts/windows-package-common.sh`, add a function that renders `latest.json` twice (once for CDN, once for GitHub). Example addition:
+At the end of `scripts/windows-package-common.sh`, add a function that emits both manifest flavors via `jq` so `notes` (or any field) with quotes, backslashes, or newlines round-trips safely:
 
 ```bash
-# Render latest.json manifests for both publish targets. Requires the
-# built installer at $1 and its target version at $2.
+# Emit latest-cdn.json and latest-github.json under $DIST_DIR from a
+# built installer. Requires: jq, sha256sum, stat (GNU or BSD).
 render_latest_json() {
   local installer_path="$1"
   local version="$2"
   local notes="${3:-}"
-  local size sha
-  size=$(stat -c%s "$installer_path")
-  sha=$(sha256sum "$installer_path" | cut -d' ' -f1)
-  local installer_name
-  installer_name=$(basename "$installer_path")
+  command -v jq >/dev/null || { echo "jq required" >&2; return 2; }
 
-  local dist_dir
+  local size sha installer_name dist_dir
+  # BSD stat differs from GNU stat; try both.
+  size=$(stat -c%s "$installer_path" 2>/dev/null || stat -f%z "$installer_path")
+  sha=$(sha256sum "$installer_path" | cut -d' ' -f1)
+  installer_name=$(basename "$installer_path")
   dist_dir=$(dirname "$installer_path")
 
-  # CDN copy: URL points at the internal asset host.
-  sed \
-    -e "s|__VERSION__|${version}|g" \
-    -e "s|__URL__|https://assets.agent.cs.ac.cn/agentserver-app/windows/${installer_name}|g" \
-    -e "s|__SHA256__|${sha}|g" \
-    -e "s|__SIZE__|${size}|g" \
-    -e "s|__NOTES__|${notes}|g" \
-    "$(dirname "$0")/../packaging/windows/latest.json.tmpl" \
-    > "${dist_dir}/latest-cdn.json"
-
-  # GitHub copy: URL points at the release asset. GitHub renders this
-  # via github.com/<owner>/<repo>/releases/download/<tag>/<installer>.
   local owner_repo="${UPGRADE_GITHUB_REPO:-agentserver/app}"
   local tag="v${version}"
-  sed \
-    -e "s|__VERSION__|${version}|g" \
-    -e "s|__URL__|https://github.com/${owner_repo}/releases/download/${tag}/${installer_name}|g" \
-    -e "s|__SHA256__|${sha}|g" \
-    -e "s|__SIZE__|${size}|g" \
-    -e "s|__NOTES__|${notes}|g" \
-    "$(dirname "$0")/../packaging/windows/latest.json.tmpl" \
+  local cdn_url="https://assets.agent.cs.ac.cn/agentserver-app/windows/${installer_name}"
+  local gh_url="https://github.com/${owner_repo}/releases/download/${tag}/${installer_name}"
+
+  jq -n \
+    --arg version "$version" \
+    --arg url "$cdn_url" \
+    --arg sha "$sha" \
+    --arg notes "$notes" \
+    --argjson size "$size" \
+    '{version:$version, url:$url, sha256:$sha, size:$size, notes:$notes}' \
+    > "${dist_dir}/latest-cdn.json"
+
+  jq -n \
+    --arg version "$version" \
+    --arg url "$gh_url" \
+    --arg sha "$sha" \
+    --arg notes "$notes" \
+    --argjson size "$size" \
+    '{version:$version, url:$url, sha256:$sha, size:$size, notes:$notes}' \
     > "${dist_dir}/latest-github.json"
 }
 ```
+
+The `packaging/windows/latest.json.tmpl` file is intentionally NOT created — jq composes the JSON structurally.
 
 Wire `render_latest_json` into the existing packaging flow at the point where the installer path and version are known.
 
@@ -2471,6 +2859,23 @@ jobs:
           # already emitted dist/latest-github.json.
           test -f dist/latest-github.json
 
+      - name: Guard against tag re-run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # Fail-fast if the release already has a latest.json asset —
+          # re-running the workflow on the same tag would race the
+          # second build against the first, and briefly point clients
+          # at a mismatched .exe. Delete the release manually if
+          # intentional re-publish is required.
+          if gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null | grep -qx 'latest.json'; then
+            echo "Refusing to re-publish: release $TAG already has latest.json"
+            exit 1
+          fi
+
       - name: Upload assets — installer first, latest.json last
         shell: bash
         env:
@@ -2478,18 +2883,24 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
-          # Upload .exe first so the source of truth (latest.json)
-          # never points at a missing asset.
-          gh release upload "$TAG" dist/agentserver-app-*-setup.exe --clobber
-          # Verify the asset is fetchable before publishing manifest.
+          # Upload .exe first so latest.json never points at a missing
+          # or wrong asset. Do NOT use --clobber on .exe — a re-run
+          # would silently swap bytes under an already-published
+          # latest.json.
+          gh release upload "$TAG" dist/agentserver-app-*-setup.exe
+          # Round-trip verify: fetch the just-uploaded asset back and
+          # compare SHA against the local dist bytes. Catches CDN
+          # cache poisoning / mid-upload corruption before the manifest
+          # references it.
           EXE_NAME=$(ls dist/agentserver-app-*-setup.exe | head -1 | xargs -n1 basename)
           curl -sSfL -o /tmp/verify.exe "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${EXE_NAME}"
           DIST_SHA=$(sha256sum "dist/${EXE_NAME}" | cut -d' ' -f1)
           REMOTE_SHA=$(sha256sum /tmp/verify.exe | cut -d' ' -f1)
           [ "$DIST_SHA" = "$REMOTE_SHA" ] || { echo "SHA mismatch"; exit 1; }
-          # Now publish the manifest.
+          # Only now publish the manifest — clients that fetch it are
+          # guaranteed to find a matching .exe.
           cp dist/latest-github.json dist/latest.json
-          gh release upload "$TAG" dist/latest.json --clobber
+          gh release upload "$TAG" dist/latest.json
 ```
 
 - [ ] **Step 4: Validate the shell script locally (dry run)**
@@ -2563,6 +2974,27 @@ Run: `git status`
 Expected: clean tree. If there are stray changes, review and either commit or discard.
 
 ---
+
+## Changes Log (v2, post codex round 1)
+
+- **Speed monitor**: skip trip check when `MinSpeedBytesPerSec <= 0` or `SpeedWindow <= 0` (compat mode disables monitor). New test: `TestSpeedMonitorDisabledWhenMinBPSZero`.
+- **Service compat shortcut**: `effectiveSources()` now builds the CDN source with `compatCDNPolicy()` (all zeros), preserving byte-identical behavior for `Sources==nil` mode. Prevents the "download aborts at 10s" behavior change for existing test fixtures.
+- **cdnSource + githubSource `installerClient`**: replaced `cloneTransport` with `applyFirstByteTimeout` — preserves custom `RoundTripper`s (e.g. test-only `assetsHostRewriteTransport`). Non-`*http.Transport` clients fall back to per-request `context.WithTimeout` for the first-byte deadline.
+- **GitHub source host validation**: collapsed `githubInstallerHost` + `githubManifestHost` into single `githubAssetHost` (accepts `github.com` + `codeload.github.com` + `*.githubusercontent.com`). Real `browser_download_url` on `github.com` is now accepted. Added `normalizeHost` for trailing-dot / case-fold defense. New test: `TestGithubAssetHostMatcher` with adversarial cases (IPv6, suffix bypass, empty, IDN-ready).
+- **GitHub source per-request timeout**: split `FetchManifest` into `fetchRelease` + `fetchLatestJSON`, each with its own `ManifestTimeout` budget. Second hop no longer starves when the first is slow. New test: `TestGitHubSourceManifestTimeoutIsPerRequest`.
+- **GitHub source header preservation across redirects**: `CheckRedirect` re-installs `Accept` + `User-Agent` if missing. New test: `TestGitHubSourcePreservesHeadersAcrossRedirect`.
+- **GitHub source manifest-timeout test fixed**: `TestGitHubSourceManifestTimeoutFires` now uses a real slow `httptest.Server` and asserts `errors.Is(err, ErrFetchTimeout)` + elapsed < `2 × ManifestTimeout`. Replaces the vacuous version that used `127.0.0.1:1`.
+- **GitHub source rate-limit test**: `errorsIs` helper replaced with `errors.Is` calls throughout — the substring version defeated the sentinel contract.
+- **GitHub source size-overflow test**: added `TestGitHubSourceRejectsInstallerLargerThanSize`.
+- **GitHub source userinfo test**: added `TestGitHubSourceRejectsInstallerURLWithUserinfo`.
+- **Rate-limit reason redaction**: fetchRelease's error message includes only `X-RateLimit-Remaining` — deliberately NOT `X-GitHub-Request-Id` or response body — to keep identifying tokens out of `state.json` / console API.
+- **Scheduler caller-manifest version guard restored**: `DownloadAndStart` re-checks `CompareVersions(m.Version, s.CurrentVersion) <= 0` immediately after `m.Validate()` — matches today's `service.go:147-153`. Prevents spurious `StatusDownloading` transitions from a stale caller manifest.
+- **Scheduler temp-file cleanup restored**: `promoted := false; defer` pattern re-added inside the source loop — covers every unhappy exit from `replaceFile` / `BeforeInstallerStart` / `start` / terminal error paths.
+- **Scheduler terminal error preserves fallbacks**: new `saveErrorWithFallbacks` helper writes `StatusError` state with the merged rolling `LastFallbacks` buffer. All terminal error paths in `Check` and `DownloadAndStart` migrated to it. `saveError` alone (which drops `LastFallbacks`) is used only for pre-loop guards.
+- **Config repo-slug validation**: `LoadUpgradeConfig` requires `UPGRADE_GITHUB_REPO` to match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9._-]{1,100}$`. Invalid values fall back to default `agentserver/app`. New tests: `TestLoadUpgradeConfigRejectsMaliciousRepoSlug`, `TestLoadUpgradeConfigAcceptsValidRepoSlugs`.
+- **Release template dropped**: `packaging/windows/latest.json.tmpl` removed — `jq -n --arg …` composes JSON structurally, safe for arbitrary `notes` strings (quotes, backslashes, newlines).
+- **Release workflow — no `--clobber` on `.exe`**: prevents byte-swap under an already-published `latest.json`. Pre-flight step refuses if `latest.json` already exists on the tag.
+- **Task 6 test**: dropped hand-rolled `contains`; imports `strings` and uses `strings.Contains`.
 
 ## Self-Review
 
