@@ -826,18 +826,10 @@ func (s *cdnSource) installerClient() *http.Client {
 	return applyFirstByteTimeout(c, s.policy.FirstByteTimeout)
 }
 
-// isRealTransport returns true when the source's client uses a real
-// *http.Transport; false for custom RoundTrippers. The download loop
-// uses this to decide whether to also apply a context deadline for
-// FirstByteTimeout (needed only in the non-*Transport path).
-func (s *cdnSource) isRealTransport() bool {
-	rt := s.client.Transport
-	if rt == nil {
-		return true
-	}
-	_, ok := rt.(*http.Transport)
-	return ok
-}
+// isRealTransport delegates to package-level hasRealTransport. Present
+// as a method so the download loop can call s.isRealTransport() without
+// closing over the client.
+func (s *cdnSource) isRealTransport() bool { return hasRealTransport(s.client) }
 
 func (s *cdnSource) redirectPinned(base *http.Client) *http.Client {
 	client := *base
@@ -864,8 +856,16 @@ func (s *cdnSource) redirectPinned(base *http.Client) *http.Client {
 // (internal/updater/service_test.go) which would be lost by a naive clone.
 // In the non-*Transport path, FirstByteTimeout is best-effort via the
 // request context deadline instead.
+//
+// When firstByte <= 0 (compat-mode policy or explicit disable), return
+// a shallow copy of base with no Transport mutation — avoids allocating
+// a fresh *http.Transport (and therefore a fresh connection pool) per
+// download attempt in compat mode.
 func applyFirstByteTimeout(base *http.Client, firstByte time.Duration) *http.Client {
 	c := *base
+	if firstByte <= 0 {
+		return &c
+	}
 	rt := c.Transport
 	if rt == nil {
 		rt = http.DefaultTransport
@@ -882,9 +882,20 @@ func applyFirstByteTimeout(base *http.Client, firstByte time.Duration) *http.Cli
 	// custom RT still sees requests.
 	return &c
 }
-```
 
-Remove the placeholder `time` import once real usage stabilizes.
+// hasRealTransport reports whether client.Transport is a *http.Transport
+// (or nil, which means net/http will use DefaultTransport, also real).
+// False for custom RoundTrippers — the download loop then applies a
+// request-context deadline for FirstByteTimeout as a fallback.
+// Shared by cdnSource and githubSource; defined here to avoid drift.
+func hasRealTransport(client *http.Client) bool {
+	if client == nil || client.Transport == nil {
+		return true
+	}
+	_, ok := client.Transport.(*http.Transport)
+	return ok
+}
+```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1017,15 +1028,16 @@ const testRepo = "agentserver/app"
 // githubMock is a helper that serves both the /releases/latest endpoint
 // and the browser_download_url assets in one httptest.Server.
 type githubMock struct {
-	t           *testing.T
-	server      *httptest.Server
-	manifestBody []byte
-	installerBody []byte
-	manifestStatus int
-	installerDelay time.Duration
-	slowInstaller  bool
-	seenHeaders http.Header
-	requireHeaders bool
+	t                *testing.T
+	server           *httptest.Server
+	manifestBody     []byte
+	installerBody    []byte
+	manifestStatus   int
+	installerDelay   time.Duration
+	slowInstaller    bool
+	slowManifestAsset bool // when true, /assets/latest.json sleeps 500ms
+	seenHeaders      http.Header
+	requireHeaders   bool
 }
 
 func newGitHubMock(t *testing.T) *githubMock {
@@ -1062,6 +1074,13 @@ func newGitHubMock(t *testing.T) *githubMock {
 		_ = json.NewEncoder(w).Encode(latest)
 	})
 	mux.HandleFunc("/assets/latest.json", func(w http.ResponseWriter, r *http.Request) {
+		if m.slowManifestAsset {
+			select {
+			case <-time.After(500 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(m.manifestBody)
 	})
@@ -1177,7 +1196,7 @@ func TestGitHubSourceRateLimit429(t *testing.T) {
 	src := newTestGitHubSource(mock)
 
 	_, err := src.FetchManifest(context.Background())
-	if err == nil || !isErrRateLimited(err) {
+	if err == nil || !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("err=%v; want ErrRateLimited", err)
 	}
 }
@@ -1220,7 +1239,7 @@ func TestGitHubSourceManifestTimeoutIsPerRequest(t *testing.T) {
 	// fail via ErrFetchTimeout on the second hop within ~50ms.
 	// Configure your mock so /assets/latest.json sleeps 500ms.
 	mock := newGitHubMock(t)
-	mock.slowManifestAsset = true // add this field to githubMock
+	mock.slowManifestAsset = true
 	body := []byte("payload")
 	mock.setManifest(mock.server.URL+"/assets/setup.exe", body)
 	policy := DefaultSourcePolicy()
@@ -1415,7 +1434,7 @@ func NewGitHubSource(repo, apiBase string, client *http.Client, policy SourcePol
 		apiBase:            apiBase,
 		client:             client,
 		policy:             policy,
-		installerHostMatch: githubInstallerHost,
+		installerHostMatch: githubAssetHost,
 	}
 }
 
@@ -1695,18 +1714,8 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 	return nil
 }
 
-// isRealTransport mirrors cdnSource.isRealTransport — used by
-// DownloadInstaller to decide whether to add a context-level
-// FirstByteTimeout when the underlying Transport is a custom
-// RoundTripper (test path).
-func (s *githubSource) isRealTransport() bool {
-	rt := s.client.Transport
-	if rt == nil {
-		return true
-	}
-	_, ok := rt.(*http.Transport)
-	return ok
-}
+// isRealTransport delegates to package-level hasRealTransport.
+func (s *githubSource) isRealTransport() bool { return hasRealTransport(s.client) }
 
 // classifyFetch takes both the parent ctx (caller-supplied) and the
 // per-request ctx (has the ManifestTimeout deadline). If the per-request
@@ -2013,6 +2022,49 @@ func TestServiceCheckAllSourcesFail(t *testing.T) {
 	if state.Status != StatusError {
 		t.Fatalf("status=%v", state.Status)
 	}
+	// Regression: on total failure the state MUST preserve fallback
+	// history so ops can see why every attempt died. Without this,
+	// saveErrorWithFallbacks would silently regress to saveError.
+	if len(state.LastFallbacks) != 2 {
+		t.Fatalf("LastFallbacks len=%d want 2", len(state.LastFallbacks))
+	}
+	if state.LastFallbacks[0].Source != "github" || state.LastFallbacks[1].Source != "cdn" {
+		t.Fatalf("fallbacks=%+v", state.LastFallbacks)
+	}
+}
+
+func TestServicePersistsFallbackHistoryAcrossAttempts(t *testing.T) {
+	// Attempt 1: github fails, cdn succeeds → LastFallbacks records
+	// the github failure even though cdn ultimately succeeded.
+	// Attempt 2 (fresh Check): both succeed → the PRIOR github failure
+	// remains in the rolling buffer until it ages out (cap=5).
+	gh := &fakeSource{name: "github", fetchErr: errors.New("boom")}
+	cdn := &fakeSource{name: "cdn", manifest: Manifest{
+		Version: "0.0.2", URL: "https://" + AssetsHost + "/setup.exe", SHA256: strings.Repeat("a", 64), Size: 1,
+	}}
+	svc, _ := newTestService(t, []Source{gh, cdn})
+
+	// Attempt 1 with automatic=false to force a fresh check.
+	s1, err := svc.Check(context.Background(), false)
+	if err != nil {
+		t.Fatalf("attempt 1: %v", err)
+	}
+	if s1.LastSourceUsed != "cdn" || len(s1.LastFallbacks) != 1 {
+		t.Fatalf("attempt 1 state=%+v", s1)
+	}
+	// Attempt 2: same automatic=false; both succeed this time.
+	gh.fetchErr = nil
+	gh.manifest = cdn.manifest
+	s2, err := svc.Check(context.Background(), false)
+	if err != nil {
+		t.Fatalf("attempt 2: %v", err)
+	}
+	if s2.LastSourceUsed != "github" {
+		t.Fatalf("attempt 2 LastSourceUsed=%q", s2.LastSourceUsed)
+	}
+	if len(s2.LastFallbacks) != 1 || s2.LastFallbacks[0].Source != "github" {
+		t.Fatalf("attempt 2 must retain prior github failure, got %+v", s2.LastFallbacks)
+	}
 }
 
 func TestServiceDownloadAndStartFallsBackOnSHA256Mismatch(t *testing.T) {
@@ -2256,7 +2308,7 @@ func (s Service) Check(ctx context.Context, automatic bool) (State, error) {
 		cancel()
 		if err != nil {
 			if ctx.Err() != nil {
-				return s.saveError(now, ctx.Err())
+				return s.saveErrorWithFallbacks(now, ctx.Err(), prior.LastFallbacks, fallbacks)
 			}
 			fallbacks = s.appendFallback(fallbacks, src.Name(), "manifest", err)
 			lastErr = err
@@ -2440,13 +2492,17 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 ```
 
 **Important note on the loop's `defer`:** each source iteration
-registers a `defer` that runs at function return. In practice this is
-safe because at most one iteration reaches the temp-file creation on
-a successful pass (subsequent iterations `continue` before creating
-their own temp file — if the CURRENT source failed and we're moving
-on, we've already `os.Remove`'d the current temp and left it). If
-future changes create a temp file every iteration, convert the defer
-into an explicit inline cleanup with a helper `cleanupTemp(&promoted, tempPath)`.
+`os.CreateTemp`s and registers its own `defer` (closing over per-
+iteration `tempPath` and `promoted` — Go 1.22+ makes each iteration's
+variables distinct). All deferred cleanups fire at function return
+in reverse-registration order, each removing its own temp file iff
+its `promoted` remained false. With today's 2 sources this leaves at
+most 2 leftover temps on disk between the failing `continue` and the
+terminal return (bounded by installer size). If a 3rd source is added
+later, revisit — either add explicit `os.Remove(tempPath)` before
+each `continue` (updates comment), or refactor to a `cleanupTemp`
+helper. Not a correctness bug today; documented so future
+maintainers reflect before adding more sources.
 
 
 e) Delete `fetchManifest`, `manifestDownloadClient`, `downloadInstaller`, `installerDownloadClient`, `redirectPinnedAssetsClient` from `service.go`. Keep `verifyInstaller`, `installerCachePath`, `availableFromManifest`, `now`, `loadState`, `saveState`, `saveFinalState`, `saveError`, `client`, `autoCheckEvery`, `NormalizeStateForCurrentVersion`.
@@ -2975,6 +3031,19 @@ Expected: clean tree. If there are stray changes, review and either commit or di
 
 ---
 
+## Changes Log (v3, post codex round 2)
+
+- **BLOCKER**: `installerHostMatch: githubInstallerHost` in `NewGitHubSource` constructor referred to a symbol deleted in v2. Fixed to `githubAssetHost`.
+- **BLOCKER**: `Check`'s parent-ctx cancellation path (`return s.saveError(now, ctx.Err())`) dropped `fallbacks` history. Migrated to `saveErrorWithFallbacks(now, ctx.Err(), prior.LastFallbacks, fallbacks)` — matches DownloadAndStart's pattern and preserves ops visibility.
+- **BLOCKER**: `TestGitHubSourceManifestTimeoutIsPerRequest` referenced `mock.slowManifestAsset` without the field existing. Added `slowManifestAsset bool` to `githubMock` and wired the sleep + parent-ctx cancellation into the `/assets/latest.json` handler.
+- **GAP**: `TestGitHubSourceRateLimit429` still called `isErrRateLimited(err)`; replaced with `errors.Is(err, ErrRateLimited)`.
+- **GAP**: `TestServiceCheckAllSourcesFail` now asserts `LastFallbacks` length + source names — regression guard against `saveErrorWithFallbacks` silently reverting to `saveError`. Added `TestServicePersistsFallbackHistoryAcrossAttempts` covering the "prior failure retained after later success" spec guarantee.
+- **GAP**: `applyFirstByteTimeout` short-circuits when `firstByte <= 0` — compat mode no longer allocates a fresh `*http.Transport` (fresh connection pool) per download attempt.
+- **GAP**: Loop-defer comment rewritten to accurately describe what happens (per-iteration `promoted`/`tempPath` captured by closure; defers fire at function return; up to N temps on disk between failing `continue` and terminal return, N = source count).
+- **NIT**: `isRealTransport` deduplicated into package-level `hasRealTransport(client)`; cdnSource/githubSource keep thin method wrappers.
+- **NIT**: Self-Review section corrected — no longer defends the deleted substring `errorsIs` helper.
+- **NIT**: Removed the stale "Remove the placeholder time import" instruction (no such placeholder remains in the v2 code).
+
 ## Changes Log (v2, post codex round 1)
 
 - **Speed monitor**: skip trip check when `MinSpeedBytesPerSec <= 0` or `SpeedWindow <= 0` (compat mode disables monitor). New test: `TestSpeedMonitorDisabledWhenMinBPSZero`.
@@ -3018,7 +3087,7 @@ Ran fresh eyes over the plan against the spec:
 
 Every spec section is covered.
 
-**2. Placeholder scan.** No `TBD`, no `implement later`, no unbounded `add error handling`. Task 5 test relies on a small helper `errorsIs` defined at test scope to compare wrapped sentinels via message substring — this is intentional (the source wraps sentinels in `fmt.Errorf("%w: …", sentinel, …)`; `errors.Is` also works but the substring version reads cleaner in test output). Left as-is.
+**2. Placeholder scan.** No `TBD`, no `implement later`, no unbounded `add error handling`. Task 5 tests use `errors.Is` throughout — the earlier substring-match helper (`errorsIs`) was deleted in v2 because it defeated the sentinel-wrap contract.
 
 **3. Type consistency.** Ran through function names and signatures:
 
