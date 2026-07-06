@@ -287,6 +287,18 @@ func (s Service) redirectPinnedAssetsClient() *http.Client {
 		if err := validateInstallerURL(req.URL.String()); err != nil {
 			return err
 		}
+		// Manifest.Validate no longer enforces AssetsHost (moved to
+		// per-source validator, per plan v3 Task 4). This function is
+		// used by the legacy Service.fetchManifest/downloadInstaller
+		// paths that Task 7 will delete; enforce AssetsHost inline
+		// until then so existing redirect-rejection tests keep passing.
+		if req.URL.User != nil {
+			return fmt.Errorf("installer url host %q is not allowed", req.URL.Hostname())
+		}
+		host := strings.TrimSuffix(strings.ToLower(req.URL.Hostname()), ".")
+		if host != AssetsHost {
+			return fmt.Errorf("installer url host %q is not allowed", req.URL.Hostname())
+		}
 		if priorCheckRedirect != nil {
 			return priorCheckRedirect(req, via)
 		}

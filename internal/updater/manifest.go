@@ -44,10 +44,6 @@ func validateInstallerURL(rawURL string) error {
 	if u.Scheme != "https" {
 		return fmt.Errorf("installer url must use https")
 	}
-	host := strings.ToLower(u.Hostname())
-	if host != AssetsHost {
-		return fmt.Errorf("installer url host %q is not allowed", u.Hostname())
-	}
 	return nil
 }
 
