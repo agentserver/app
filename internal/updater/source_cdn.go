@@ -47,11 +47,11 @@ func (s *cdnSource) validateInstallerURL(rawURL string) error {
 		return fmt.Errorf("cdn: installer url must use https")
 	}
 	if u.User != nil {
-		return fmt.Errorf("%w: userinfo not permitted", ErrHostNotAllowed)
+		return fmt.Errorf("%w: userinfo not allowed", ErrHostNotAllowed)
 	}
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
 	if host != AssetsHost {
-		return fmt.Errorf("%w: installer host %q", ErrHostNotAllowed, u.Hostname())
+		return fmt.Errorf("%w: installer host %q not allowed", ErrHostNotAllowed, u.Hostname())
 	}
 	return nil
 }

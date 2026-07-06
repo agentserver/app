@@ -655,9 +655,12 @@ func TestServerConsoleUpdateInstallEndpointRejectsInvalidPersistedUpdate(t *test
 			Status:         updater.StatusAvailable,
 			Update: &updater.AvailableUpdate{
 				Version: "1.2.4",
-				URL:     "https://example.com/installer.exe",
-				SHA256:  strings.Repeat("a", 64),
-				Size:    123456,
+				// Non-https URL fails Manifest.Validate() format check
+				// (the AssetsHost check moved to source_cdn per plan v3
+				// Task 4; format checks stay in Validate).
+				URL:    "http://assets.agent.cs.ac.cn/installer.exe",
+				SHA256: strings.Repeat("a", 64),
+				Size:   123456,
 			},
 		},
 	}
