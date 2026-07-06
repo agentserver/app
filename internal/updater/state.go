@@ -34,6 +34,20 @@ type State struct {
 	Status         Status           `json:"status"`
 	Update         *AvailableUpdate `json:"update,omitempty"`
 	LastError      string           `json:"last_error,omitempty"`
+	LastSourceUsed string           `json:"last_source_used,omitempty"`
+	LastFallbacks  []FallbackRecord `json:"last_fallbacks,omitempty"`
+}
+
+// FallbackRecord is one entry in the rolling history that records why a
+// source was skipped and the next source was tried. The scheduler caps
+// the history at maxFallbackHistory (5). Reason is a human-readable
+// error string; use errors.Is on the source-returned error for
+// programmatic detection.
+type FallbackRecord struct {
+	Source string    `json:"source"`
+	Stage  string    `json:"stage"`
+	Reason string    `json:"reason"`
+	Tried  time.Time `json:"tried"`
 }
 
 type StateStore struct {
