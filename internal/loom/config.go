@@ -522,10 +522,10 @@ func driverProcessMatches(exe, configPath string, persisted DriverProcessMetadat
 	if !samePath(inspected.Exe, exe) || !samePath(persisted.Exe, exe) {
 		return false
 	}
-	if !driverArgsMatch(inspected.Args, mode, configPath) {
+	if !driverArgsMatch(persisted.Args, mode, configPath) {
 		return false
 	}
-	if !driverArgsMatch(persisted.Args, mode, configPath) {
+	if len(inspected.Args) > 0 && !driverArgsMatch(inspected.Args, mode, configPath) {
 		return false
 	}
 	return true

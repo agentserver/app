@@ -297,6 +297,36 @@ func TestStopDriverDaemonRefusesPersistedPIDWithNonMatchingArgv(t *testing.T) {
 	}
 }
 
+func TestStopDriverDaemonTerminatesPersistedPIDWhenInspectedArgvUnavailable(t *testing.T) {
+	resetDriverProcessHooksForTest(t)
+	var terminatedPID int
+	inspectDriverProcess = func(pid int) (DriverProcessMetadata, bool, error) {
+		return DriverProcessMetadata{
+			PID:       pid,
+			Exe:       "/expected/driver-agent.exe",
+			Args:      nil,
+			CreatedAt: "windows:1",
+		}, true, nil
+	}
+	terminateDriverProcess = func(_ context.Context, pid int) error {
+		terminatedPID = pid
+		return nil
+	}
+
+	err := StopDriverDaemon("/expected/driver-agent.exe", "/tmp/driver.yaml", []DriverProcessMetadata{{
+		PID:       123,
+		Exe:       "/expected/driver-agent.exe",
+		Args:      []string{"serve-daemon", "--config", "/tmp/driver.yaml"},
+		CreatedAt: "windows:1",
+	}})
+	if err != nil {
+		t.Fatalf("StopDriverDaemon: %v", err)
+	}
+	if terminatedPID != 123 {
+		t.Fatalf("terminatedPID=%d, want 123", terminatedPID)
+	}
+}
+
 func TestStopDriverDaemonRefusesPersistedPIDWithMismatchedCreationTime(t *testing.T) {
 	resetDriverProcessHooksForTest(t)
 	calledTerminate := false
