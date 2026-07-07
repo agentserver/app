@@ -397,6 +397,58 @@ func TestGitHubSourceFirstByteTimeoutFiresBeforeHeaders(t *testing.T) {
 	}
 }
 
+// headersThenHangRT sends headers immediately, then Read() blocks
+// forever on Ctx.Done. Simulates a hostile mirror that satisfies
+// ResponseHeaderTimeout and then holds the connection open at 0
+// body bytes to starve the client.
+type headersThenHangRT struct{}
+
+func (headersThenHangRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: 200,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Length": []string{"1000"}},
+		Body:       &hangingBody{ctx: req.Context()},
+		Request:    req,
+	}, nil
+}
+
+type hangingBody struct{ ctx context.Context }
+
+func (h *hangingBody) Read(p []byte) (int, error) {
+	<-h.ctx.Done()
+	return 0, h.ctx.Err()
+}
+func (h *hangingBody) Close() error { return nil }
+
+func TestGitHubSourceRejectsHeadersThenHangBody(t *testing.T) {
+	// Regression for the round-6 P1: headers-then-hang attack.
+	// Server sends headers instantly (passes ResponseHeaderTimeout),
+	// then holds body at 0 bytes. Round-5 code stopped the deadline
+	// timer at header receipt → download hung forever. Round-6 fix
+	// keeps the timer armed until first BODY byte via
+	// speedMonitor.onFirstByte hook in countingReader.
+	client := &http.Client{Transport: headersThenHangRT{}}
+	policy := DefaultSourcePolicy()
+	policy.FirstByteTimeout = 100 * time.Millisecond
+	src := NewGitHubSource(testRepo, "https://example.invalid", client, policy).(*githubSource)
+	src.installerHostMatch = permissiveHost
+	src.rebuildClients()
+
+	body := []byte("x")
+	sum := sha256.Sum256(body)
+	m := Manifest{Version: "1.0.0", URL: "https://cdn.githubusercontent.com/x/setup.exe", SHA256: hex.EncodeToString(sum[:]), Size: 1000}
+	start := time.Now()
+	err := src.DownloadInstaller(context.Background(), m, io.Discard, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout — headers-then-hang body must not succeed")
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("elapsed %v — first-body-byte deadline did not fire; headers-then-hang attack succeeded", elapsed)
+	}
+}
+
 func TestGitHubSourceFirstByteTimeoutDoesNotCancelBodyReads(t *testing.T) {
 	// Custom RT returns headers instantly, then streams body one byte
 	// at a time with 30ms per byte (100 bytes → 3s). FirstByteTimeout

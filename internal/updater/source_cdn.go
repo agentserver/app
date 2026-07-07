@@ -111,24 +111,24 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	dlCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Arm a first-body-byte cancellation: timer cancels reqCtx unless
+	// the first BODY byte arrives before FirstByteTimeout. Post-Do
+	// header receipt does NOT stop it — a server that sends headers
+	// then hangs the body indefinitely would otherwise escape both
+	// this deadline and the speed monitor's startNS-gated ticks.
+	reqCtx, markFirstByte, stopFB := s.firstByteDeadlineCtx(dlCtx)
+	defer stopFB()
+
 	var monitor *speedMonitor
 	var monitorDone chan struct{}
 	if needMonitor {
 		monitor = newSpeedMonitor(s.policy, cancel, onProgress)
+		monitor.onFirstByte = markFirstByte
 		monitorDone = make(chan struct{})
 		go func() { monitor.run(dlCtx); close(monitorDone) }()
 		defer func() { cancel(); <-monitorDone }()
 	}
 
-	// When the underlying Transport is not *http.Transport (test path),
-	// applyFirstByteTimeout returned an unmodified client. Arm a
-	// first-byte-only cancellation: a timer that cancels reqCtx iff
-	// the "headers received" flag hasn't been set. Once client.Do
-	// returns (headers received), mark the flag and stop the timer —
-	// body reads then proceed under the parent dlCtx alone. This
-	// mirrors production's ResponseHeaderTimeout scope.
-	reqCtx, markHeadersReceived, stopFB := s.firstByteDeadlineCtx(dlCtx)
-	defer stopFB()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, m.URL, nil)
 	if err != nil {
 		return err
@@ -137,7 +137,6 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	if err != nil {
 		return s.classify(ctx, monitor, err)
 	}
-	markHeadersReceived()
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("cdn download: unexpected status %s", resp.Status)
@@ -156,44 +155,45 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	return nil
 }
 
-// firstByteDeadlineCtx arms a first-byte-only cancellation on the
+// firstByteDeadlineCtx arms a first-body-byte cancellation on the
 // returned ctx. Semantics:
-//   - If FirstByteTimeout elapses AND markHeadersReceived was not
-//     yet called, the ctx is cancelled — future request I/O returns
-//     context.Canceled.
-//   - If markHeadersReceived is called first, the timer is stopped
-//     and the ctx is NEVER cancelled by this helper — body reads
-//     proceed under the parent (dlCtx) alone.
+//   - If FirstByteTimeout elapses AND markFirstByte was not yet
+//     called, ctx is cancelled — request I/O returns context.Canceled
+//     and the source classifies as ErrFetchTimeout.
+//   - markFirstByte is invoked by speedMonitor's countingReader when
+//     the FIRST BODY BYTE arrives (not just headers). This closes
+//     the "headers-then-hang" attack where a hostile mirror sends
+//     headers immediately then stalls the body indefinitely.
 //   - stop is always called via defer and is a no-op after
-//     markHeadersReceived.
+//     markFirstByte.
 //
 // Used only in the non-*Transport fallback (test path). Production
-// gets first-byte enforcement via http.Transport.ResponseHeaderTimeout
-// inside applyFirstByteTimeout, so this helper is a no-op there.
+// combines http.Transport.ResponseHeaderTimeout (for headers) with
+// the speed monitor's slow-download detection (for body).
 //
-// Do NOT use context.WithTimeout's returned cancel — cancelling a
-// child ctx cancels the whole request, including in-flight body
-// reads (resp.Body is bound to req.Context()).
-func (s *cdnSource) firstByteDeadlineCtx(parent context.Context) (ctx context.Context, markHeadersReceived, stop func()) {
+// Do NOT use context.WithTimeout's returned cancel to "release" —
+// cancelling the child ctx cancels the whole request, including
+// in-flight body reads (resp.Body is bound to req.Context()).
+func (s *cdnSource) firstByteDeadlineCtx(parent context.Context) (ctx context.Context, markFirstByte, stop func()) {
 	if s.isRealTransport() || s.policy.FirstByteTimeout <= 0 {
 		return parent, func() {}, func() {}
 	}
 	ctx, cancel := context.WithCancel(parent)
-	var gotHeaders atomic.Bool
+	var gotFirstByte atomic.Bool
 	timer := time.AfterFunc(s.policy.FirstByteTimeout, func() {
-		if !gotHeaders.Load() {
+		if !gotFirstByte.Load() {
 			cancel()
 		}
 	})
-	markHeadersReceived = func() {
-		gotHeaders.Store(true)
+	markFirstByte = func() {
+		gotFirstByte.Store(true)
 		timer.Stop()
 	}
 	stop = func() {
 		timer.Stop()
 		cancel()
 	}
-	return ctx, markHeadersReceived, stop
+	return ctx, markFirstByte, stop
 }
 
 // classify implements the cancellation-precedence rule: parent ctx first,

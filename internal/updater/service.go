@@ -496,16 +496,30 @@ func (s Service) saveFinalState(now time.Time, state State) (State, error) {
 	return state, nil
 }
 
-// saveError writes a StatusError state with no fallback history. Used
-// only by pre-loop guards (validation, state IO, ctx already cancelled
-// before any source was tried). Terminal errors INSIDE the source loop
-// must use saveErrorWithFallbacks so ops can see attempt history.
-func (s Service) saveError(now time.Time, err error) (State, error) {
+// saveError writes a StatusError state.
+//
+// Variadic freshFallbacks: pass fresh FallbackRecords from an
+// in-progress source loop; they will be merged onto the prior
+// rolling history (capped at maxFallbackHistory). Pre-loop callers
+// omit the argument entirely — prior history is preserved unchanged.
+//
+// This single method replaces the earlier saveError /
+// saveErrorWithFallbacks pair. The split was fragile: any future
+// terminal-error branch inside a source loop that forgot the
+// "-WithFallbacks" variant silently dropped the accumulated
+// fallbacks and lost the ops visibility the feature is designed
+// for. Now the always-merge behavior means callers can never
+// pick the wrong one.
+func (s Service) saveError(now time.Time, err error, freshFallbacks ...[]FallbackRecord) (State, error) {
 	state := State{
 		CurrentVersion: s.CurrentVersion,
 		LastCheckedAt:  now,
 		Status:         StatusError,
 		LastError:      err.Error(),
+	}
+	var fresh []FallbackRecord
+	for _, f := range freshFallbacks {
+		fresh = append(fresh, f...)
 	}
 	if prior, loadErr := s.loadState(); loadErr == nil {
 		if !prior.LastCheckedAt.IsZero() {
@@ -516,10 +530,10 @@ func (s Service) saveError(now time.Time, err error) (State, error) {
 				state.Update = prior.Update
 			}
 		}
-		// Preserve prior rolling history — pre-loop errors shouldn't
-		// wipe out ops visibility from earlier attempts.
 		state.LastSourceUsed = prior.LastSourceUsed
-		state.LastFallbacks = prior.LastFallbacks
+		state.LastFallbacks = mergeFallbacks(prior.LastFallbacks, fresh)
+	} else {
+		state.LastFallbacks = fresh
 	}
 	if saveErr := s.saveState(state); saveErr != nil {
 		return state, errors.Join(err, fmt.Errorf("save error state: %w", saveErr))
@@ -527,32 +541,11 @@ func (s Service) saveError(now time.Time, err error) (State, error) {
 	return state, err
 }
 
-// saveErrorWithFallbacks writes a StatusError state that PRESERVES the
-// rolling fallback history — merges prior + fresh capped at
-// maxFallbackHistory. Every terminal error INSIDE the source loop
-// (both Check and DownloadAndStart) must route through this so ops
-// can see days later why every attempt failed.
+// saveErrorWithFallbacks is retained as a thin wrapper for existing
+// call sites; new code should use the variadic saveError directly.
 func (s Service) saveErrorWithFallbacks(now time.Time, err error, prior []FallbackRecord, fresh []FallbackRecord) (State, error) {
-	state := State{
-		CurrentVersion: s.CurrentVersion,
-		LastCheckedAt:  now,
-		Status:         StatusError,
-		LastError:      err.Error(),
-		LastFallbacks:  mergeFallbacks(prior, fresh),
-	}
-	if p, loadErr := s.loadState(); loadErr == nil {
-		if !p.LastCheckedAt.IsZero() {
-			state.LastCheckedAt = p.LastCheckedAt
-		}
-		if p.Update != nil {
-			if cmp, cmpErr := CompareVersions(p.Update.Version, s.CurrentVersion); cmpErr == nil && cmp > 0 {
-				state.Update = p.Update
-			}
-		}
-		state.LastSourceUsed = p.LastSourceUsed
-	}
-	if saveErr := s.saveState(state); saveErr != nil {
-		return state, errors.Join(err, fmt.Errorf("save error state: %w", saveErr))
-	}
-	return state, err
+	// prior is intentionally ignored — saveError re-loads state under
+	// serviceStateMu (held for the whole flow) and merges from there.
+	_ = prior
+	return s.saveError(now, err, fresh)
 }

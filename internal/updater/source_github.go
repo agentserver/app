@@ -314,21 +314,21 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 	dlCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Fallback-path first-body-byte deadline (test transports only).
+	// See cdnSource.firstByteDeadlineCtx for semantics.
+	reqCtx, markFirstByte, stopFB := s.firstByteDeadlineCtx(dlCtx)
+	defer stopFB()
+
 	var monitor *speedMonitor
 	var monitorDone chan struct{}
 	if needMonitor {
 		monitor = newSpeedMonitor(s.policy, cancel, onProgress)
+		monitor.onFirstByte = markFirstByte
 		monitorDone = make(chan struct{})
 		go func() { monitor.run(dlCtx); close(monitorDone) }()
 		defer func() { cancel(); <-monitorDone }()
 	}
 
-	// Fallback-path first-byte deadline (test transports only).
-	// Production uses http.Transport.ResponseHeaderTimeout via
-	// applyFirstByteTimeout, which naturally scopes to headers.
-	// See cdnSource.firstByteDeadlineCtx for the semantics.
-	reqCtx, markHeadersReceived, stopFB := s.firstByteDeadlineCtx(dlCtx)
-	defer stopFB()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, m.URL, nil)
 	if err != nil {
 		return err
@@ -338,7 +338,6 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 	if err != nil {
 		return s.classifyDownload(ctx, monitor, err)
 	}
-	markHeadersReceived()
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("github download: unexpected status %s", resp.Status)
@@ -372,27 +371,27 @@ func (s *githubSource) classifyFetch(parent context.Context, req context.Context
 }
 
 // firstByteDeadlineCtx: see cdnSource.firstByteDeadlineCtx for full
-// semantics. Returns ctx + markHeadersReceived + stop.
-func (s *githubSource) firstByteDeadlineCtx(parent context.Context) (ctx context.Context, markHeadersReceived, stop func()) {
+// semantics. Returns ctx + markFirstByte + stop.
+func (s *githubSource) firstByteDeadlineCtx(parent context.Context) (ctx context.Context, markFirstByte, stop func()) {
 	if s.isRealTransport() || s.policy.FirstByteTimeout <= 0 {
 		return parent, func() {}, func() {}
 	}
 	ctx, cancel := context.WithCancel(parent)
-	var gotHeaders atomic.Bool
+	var gotFirstByte atomic.Bool
 	timer := time.AfterFunc(s.policy.FirstByteTimeout, func() {
-		if !gotHeaders.Load() {
+		if !gotFirstByte.Load() {
 			cancel()
 		}
 	})
-	markHeadersReceived = func() {
-		gotHeaders.Store(true)
+	markFirstByte = func() {
+		gotFirstByte.Store(true)
 		timer.Stop()
 	}
 	stop = func() {
 		timer.Stop()
 		cancel()
 	}
-	return ctx, markHeadersReceived, stop
+	return ctx, markFirstByte, stop
 }
 
 func (s *githubSource) classifyDownload(parent context.Context, monitor *speedMonitor, err error) error {

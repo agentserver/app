@@ -72,12 +72,22 @@ type Source interface {
 func noopProgress(SpeedSample) {}
 
 // monitorRequired reports whether a source should spawn a speed monitor
-// for this download attempt. False iff the policy fully disables trip
-// detection AND the caller passed nil for onProgress — nobody's
-// watching the samples. Compat mode uses this to avoid ticker goroutine
-// overhead on every download.
+// (and its countingReader body-wrap) for this download attempt.
+// Returns true when:
+//   - trip detection is armed (window > 0 AND minBPS > 0), OR
+//   - a first-byte deadline is armed (FirstByteTimeout > 0) — the
+//     monitor's countingReader is what fires onFirstByte to stop the
+//     deadline timer; without it, a server that sends headers then
+//     hangs the body forever escapes both mechanisms, OR
+//   - the caller wants progress samples (onProgress != nil).
+//
+// Compat mode (all-zero policy + nil onProgress) skips the monitor
+// entirely — no ticker goroutine allocation per download.
 func monitorRequired(policy SourcePolicy, onProgress func(SpeedSample)) bool {
 	if policy.MinSpeedBytesPerSec > 0 && policy.SpeedWindow > 0 {
+		return true
+	}
+	if policy.FirstByteTimeout > 0 {
 		return true
 	}
 	return onProgress != nil

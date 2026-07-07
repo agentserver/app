@@ -20,6 +20,12 @@ type speedMonitor struct {
 	cancel   context.CancelFunc
 	onSample func(SpeedSample)
 
+	// onFirstByte fires exactly once, the first time countingReader
+	// observes a non-zero Read. Sources wire this to the first-byte
+	// deadline timer's Stop so a headers-then-hang body no longer
+	// escapes the deadline. Optional (nil-safe).
+	onFirstByte func()
+
 	bytes   atomic.Int64
 	tripped atomic.Bool
 
@@ -162,9 +168,12 @@ type countingReader struct {
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	if n > 0 {
-		if c.m.startNS.Load() == 0 {
-			// CompareAndSwap ⇒ only the first non-zero read sets start.
-			c.m.startNS.CompareAndSwap(0, c.m.now().UnixNano())
+		// CompareAndSwap ⇒ only the first non-zero read sets start
+		// AND invokes onFirstByte. Subsequent reads no-op both.
+		if c.m.startNS.CompareAndSwap(0, c.m.now().UnixNano()) {
+			if c.m.onFirstByte != nil {
+				c.m.onFirstByte()
+			}
 		}
 		c.m.bytes.Add(int64(n))
 	}
