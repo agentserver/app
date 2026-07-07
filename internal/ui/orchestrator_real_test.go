@@ -27,6 +27,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/opencode"
 	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
 
@@ -914,6 +915,10 @@ func TestPollAgentserverLoginRefreshesLoomDriverConfigAndMCP(t *testing.T) {
 	}
 	loomConfig := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
 	codexConfig := filepath.Join(dir, ".codex", "config.toml")
+	machineFile := filepath.Join(dir, ".agentserver-app", "machine.json")
+	if _, err := slave.NewMachineStore(machineFile).Ensure("TEST-PC"); err != nil {
+		t.Fatal(err)
+	}
 	r := &realOrchestrator{d: Deps{
 		State:           store,
 		Secrets:         sec,
@@ -922,6 +927,7 @@ func TestPollAgentserverLoginRefreshesLoomDriverConfigAndMCP(t *testing.T) {
 		CodexConfigPath: codexConfig,
 		LoomDriverPath:  driverExe,
 		LoomConfigPath:  loomConfig,
+		MachineFile:     machineFile,
 	}}
 	r.asChallenge = oauth.DeviceCodeChallenge{DeviceCode: "dev", ExpiresIn: 30, Interval: 1}
 
@@ -941,6 +947,8 @@ func TestPollAgentserverLoginRefreshesLoomDriverConfigAndMCP(t *testing.T) {
 		`workspace_id: "ws-new"`,
 		`workspace_name: "New workspace"`,
 		`agent_id: "driver-new123"`,
+		`display_name: "TEST-PC"`,
+		`description: "TEST-PC 本地协作驱动。"`,
 	} {
 		if !strings.Contains(loomText, want) {
 			t.Fatalf("driver.yaml missing %q:\n%s", want, loomText)

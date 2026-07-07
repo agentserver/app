@@ -218,4 +218,27 @@ describe('api', () => {
     expect(fetchSpy).toHaveBeenCalledWith('/api/console/slaves/sl-1/open-remote', expect.objectContaining({ method: 'POST' }));
     expect(fetchSpy).toHaveBeenCalledWith('/api/console/slaves/sl-1', expect.objectContaining({ method: 'DELETE' }));
   });
+
+  it('driver daemon APIs call console endpoint with token', async () => {
+    const meta = document.createElement('meta');
+    meta.name = 'agentserver-console-token';
+    meta.content = 'token-123';
+    document.head.appendChild(meta);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ enabled: true, running: true, commander_url: 'https://loom.nj.cs.ac.cn:10062/commander' }),
+    } as Response);
+
+    await api.getConsoleDriverDaemon();
+    await api.setConsoleDriverDaemon(false);
+
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/driver-daemon', undefined);
+    expect(fetchSpy).toHaveBeenCalledWith('/api/console/driver-daemon', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ enabled: false }),
+    }));
+    const postInit = fetchSpy.mock.calls[1][1] as RequestInit;
+    expect(new Headers(postInit.headers).get('X-AgentServer-Console-Token')).toBe('token-123');
+  });
 });

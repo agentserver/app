@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +106,209 @@ func TestServerConsoleHealthEndpointReportsHealthyCompletedConsole(t *testing.T)
 	}
 	if body["state"] != "ok" {
 		t.Fatalf("body=%+v", body)
+	}
+}
+
+func TestServerConsoleDriverDaemonGetEndpoint(t *testing.T) {
+	cc := &fakeConsoleController{
+		driverState: console.DriverDaemonState{
+			Enabled:      true,
+			Running:      true,
+			CommanderURL: console.DefaultCommanderURL,
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/console/driver-daemon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body console.DriverDaemonState
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Enabled || !body.Running || body.CommanderURL != console.DefaultCommanderURL {
+		t.Fatalf("body=%+v", body)
+	}
+}
+
+func TestServerConsoleDriverDaemonPostRequiresConsoleToken(t *testing.T) {
+	cc := &fakeConsoleController{}
+	srv := httptest.NewServer(NewServerWithConsoleToken(noopOrchestrator{}, cc, "token-123"))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/console/driver-daemon", "application/json", strings.NewReader(`{"enabled":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status=%d, want forbidden", resp.StatusCode)
+	}
+	if cc.driverSetCalled {
+		t.Fatal("driver daemon mutation called without token")
+	}
+}
+
+func TestServerConsoleDriverDaemonPostRejectsCrossOriginEvenWithToken(t *testing.T) {
+	cc := &fakeConsoleController{}
+	srv := httptest.NewServer(NewServerWithConsoleToken(noopOrchestrator{}, cc, "token-123"))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/console/driver-daemon", strings.NewReader(`{"enabled":false}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(ConsoleInstanceTokenHeader, "token-123")
+	req.Header.Set("Origin", "https://evil.example")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status=%d, want forbidden", resp.StatusCode)
+	}
+	if cc.driverSetCalled {
+		t.Fatal("driver daemon mutation called for cross-origin request")
+	}
+}
+
+func TestServerConsoleDriverDaemonPostTogglesEnabled(t *testing.T) {
+	cc := &fakeConsoleController{
+		driverState: console.DriverDaemonState{
+			Enabled:      false,
+			Running:      false,
+			CommanderURL: console.DefaultCommanderURL,
+		},
+	}
+	srv := httptest.NewServer(NewServerWithConsoleToken(noopOrchestrator{}, cc, "token-123"))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/console/driver-daemon", strings.NewReader(`{"enabled":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(ConsoleInstanceTokenHeader, "token-123")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	if !cc.driverSetCalled || !cc.driverSetEnabled {
+		t.Fatalf("driverSetCalled=%v enabled=%v", cc.driverSetCalled, cc.driverSetEnabled)
+	}
+}
+
+func TestServerConsoleDriverDaemonPostRejectsOversizedBody(t *testing.T) {
+	cc := &fakeConsoleController{}
+	srv := httptest.NewServer(NewServerWithConsoleToken(noopOrchestrator{}, cc, "token-123"))
+	defer srv.Close()
+
+	largeBody := `{"enabled":true,"padding":"` + strings.Repeat("x", 2048) + `"}`
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/console/driver-daemon", strings.NewReader(largeBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(ConsoleInstanceTokenHeader, "token-123")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, want bad request", resp.StatusCode)
+	}
+	if cc.driverSetCalled {
+		t.Fatal("driver daemon mutation called for oversized body")
+	}
+}
+
+func TestServerConsoleDriverDaemonRejectsUnsupportedMethods(t *testing.T) {
+	cc := &fakeConsoleController{}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/console/driver-daemon", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed || resp.Header.Get("Allow") != "GET, POST" {
+		t.Fatalf("status=%d allow=%q", resp.StatusCode, resp.Header.Get("Allow"))
+	}
+}
+
+func TestServerConsoleDriverDaemonDoesNotLeakRawPaths(t *testing.T) {
+	rawPath := filepath.Join(t.TempDir(), "driver-agent.exe")
+	cc := &fakeConsoleController{
+		driverState: console.DriverDaemonState{
+			Enabled:          false,
+			Running:          false,
+			CommanderURL:     console.DefaultCommanderURL,
+			LastErrorCode:    console.DriverDaemonStartFailed,
+			LastErrorMessage: "远程控制启动失败。",
+		},
+		driverRawErr: rawPath + " token-secret",
+	}
+	srv := httptest.NewServer(NewServerWithConsole(noopOrchestrator{}, cc))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/console/driver-daemon")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), rawPath) || strings.Contains(string(body), "token-secret") {
+		t.Fatalf("body leaks raw error: %s", body)
+	}
+}
+
+func TestServerConsoleDriverDaemonPostDoesNotLeakRawMutationErrors(t *testing.T) {
+	rawPath := filepath.Join(t.TempDir(), "driver-daemon.json")
+	cc := &fakeConsoleController{driverSetErr: errors.New("open " + rawPath + ": permission denied token-secret")}
+	srv := httptest.NewServer(NewServerWithConsoleToken(noopOrchestrator{}, cc, "token-123"))
+	defer srv.Close()
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/api/console/driver-daemon", strings.NewReader(`{"enabled":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(ConsoleInstanceTokenHeader, "token-123")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	if strings.Contains(string(body), rawPath) || strings.Contains(string(body), "token-secret") {
+		t.Fatalf("body leaks raw error: %s", body)
 	}
 }
 
@@ -1398,6 +1603,11 @@ type fakeConsoleController struct {
 	installUpdateErr     error
 	setModelCalled       string
 	setModelErr          error
+	driverState          console.DriverDaemonState
+	driverSetCalled      bool
+	driverSetEnabled     bool
+	driverRawErr         string
+	driverSetErr         error
 }
 
 func (f *fakeConsoleController) State(context.Context) (console.State, error) {
@@ -1486,6 +1696,29 @@ func (f *fakeConsoleController) InstallUpdate(_ context.Context, m updater.Manif
 		return f.installUpdateState, f.installUpdateErr
 	}
 	return f.installUpdateState, nil
+}
+
+func (f *fakeConsoleController) DriverDaemonState(context.Context) (console.DriverDaemonState, error) {
+	if f.driverRawErr != "" {
+		return f.driverState, nil
+	}
+	if f.driverState.CommanderURL == "" {
+		f.driverState.CommanderURL = console.DefaultCommanderURL
+	}
+	return f.driverState, nil
+}
+
+func (f *fakeConsoleController) SetDriverDaemonEnabled(_ context.Context, enabled bool) (console.DriverDaemonState, error) {
+	f.driverSetCalled = true
+	f.driverSetEnabled = enabled
+	if f.driverSetErr != nil {
+		return console.DriverDaemonState{}, f.driverSetErr
+	}
+	f.driverState.Enabled = enabled
+	if f.driverState.CommanderURL == "" {
+		f.driverState.CommanderURL = console.DefaultCommanderURL
+	}
+	return f.driverState, nil
 }
 
 func errWrap(msg string, err error) error {

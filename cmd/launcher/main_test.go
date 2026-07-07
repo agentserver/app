@@ -27,6 +27,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tray"
 	"github.com/agentserver/agentserver-pkg/internal/updater"
@@ -1215,6 +1216,113 @@ func TestConfigureCompletedLoomDriverUsesDefaultObserver(t *testing.T) {
 	}
 }
 
+func TestConfigureCompletedLoomDriverUsesMachineComputerName(t *testing.T) {
+	dir := t.TempDir()
+	installDir := createLauncherTestDriverInstall(t, dir)
+	sec := launcherTestDriverSecrets(t, dir)
+	st := launcherTestDriverState()
+	p := paths.Paths{
+		UserHome:        dir,
+		InstallRoot:     filepath.Join(dir, ".agentserver-app"),
+		MachineFile:     filepath.Join(dir, ".agentserver-app", "machine.json"),
+		CodexExePath:    filepath.Join(dir, "bin", "codex.exe"),
+		CodexConfigFile: filepath.Join(dir, ".codex", "config.toml"),
+	}
+	if _, err := slave.NewMachineStore(p.MachineFile).Ensure("TEST-PC"); err != nil {
+		t.Fatal(err)
+	}
+	resetCompletedDriverHooksForTest(t)
+
+	if err := configureCompletedLoomDriver(p, st, sec, installDir); err != nil {
+		t.Fatalf("configureCompletedLoomDriver: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, ".config", "multi-agent", "driver.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`display_name: "TEST-PC"`,
+		`description: "TEST-PC 本地协作驱动。"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("driver.yaml missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestConfigureCompletedLoomDriverFallbackDisplayNameHasStableSuffix(t *testing.T) {
+	st := &state.State{InstallID: "install-abcdef1234567890"}
+	got := completedDriverComputerName(paths.Paths{}, st)
+	if got != "local-computer-1234567890" {
+		t.Fatalf("fallback name=%q, want stable install suffix", got)
+	}
+}
+
+func TestConfigureCompletedLoomDriverDoesNotAutoStartWhenDriverDisabled(t *testing.T) {
+	dir := t.TempDir()
+	installDir := createLauncherTestDriverInstall(t, dir)
+	sec := launcherTestDriverSecrets(t, dir)
+	st := launcherTestDriverState()
+	p := paths.Paths{
+		UserHome:        dir,
+		InstallRoot:     filepath.Join(dir, ".agentserver-app"),
+		MachineFile:     filepath.Join(dir, ".agentserver-app", "machine.json"),
+		CodexExePath:    filepath.Join(dir, "bin", "codex.exe"),
+		CodexConfigFile: filepath.Join(dir, ".codex", "config.toml"),
+	}
+	if err := console.NewDriverDaemonStore(driverDaemonStatePath(p)).Save(console.DriverDaemonPersistedState{Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	started := false
+	resetCompletedDriverHooksForTest(t)
+	startCompletedLoomDriverDaemon = func(string, string) error {
+		started = true
+		return nil
+	}
+
+	if err := configureCompletedLoomDriver(p, st, sec, installDir); err != nil {
+		t.Fatalf("configureCompletedLoomDriver: %v", err)
+	}
+	if started {
+		t.Fatal("driver daemon auto-started while disabled")
+	}
+}
+
+func TestConfigureCompletedLoomDriverDoesNotAutoStartWhenDriverStateCorrupt(t *testing.T) {
+	dir := t.TempDir()
+	installDir := createLauncherTestDriverInstall(t, dir)
+	sec := launcherTestDriverSecrets(t, dir)
+	st := launcherTestDriverState()
+	p := paths.Paths{
+		UserHome:        dir,
+		InstallRoot:     filepath.Join(dir, ".agentserver-app"),
+		MachineFile:     filepath.Join(dir, ".agentserver-app", "machine.json"),
+		CodexExePath:    filepath.Join(dir, "bin", "codex.exe"),
+		CodexConfigFile: filepath.Join(dir, ".codex", "config.toml"),
+	}
+	if err := os.MkdirAll(filepath.Dir(driverDaemonStatePath(p)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(driverDaemonStatePath(p), []byte("{bad json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	started := false
+	resetCompletedDriverHooksForTest(t)
+	startCompletedLoomDriverDaemon = func(string, string) error {
+		started = true
+		return nil
+	}
+
+	if err := configureCompletedLoomDriver(p, st, sec, installDir); err != nil {
+		t.Fatalf("configureCompletedLoomDriver: %v", err)
+	}
+	if started {
+		t.Fatal("driver daemon auto-started with corrupt driver state")
+	}
+}
+
 func TestConfigureCompletedLoomDriverMinimalVSCodeUsesVSCodeCodexPath(t *testing.T) {
 	dir := t.TempDir()
 	installDir := filepath.Join(dir, "install")
@@ -1371,6 +1479,59 @@ observer:
 	if strings.Contains(text, "telemetry_enabled") {
 		t.Fatalf("driver.yaml contains unsupported observer telemetry field:\n%s", text)
 	}
+}
+
+func createLauncherTestDriverInstall(t *testing.T, dir string) string {
+	t.Helper()
+	installDir := filepath.Join(dir, "install")
+	if err := os.MkdirAll(installDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "driver-agent.exe"), []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeLauncherTestTarGz(t, filepath.Join(installDir, "driver-skills.tar.gz"), map[string]string{
+		"skills/multiagent/SKILL.md": "---\nname: multiagent\n---\nUse driver tools.\n",
+	})
+	writeLauncherTestTarGz(t, filepath.Join(installDir, "driver-superpower-skills.tar.gz"), map[string]string{
+		"using-superpowers/SKILL.md":       "---\nname: using-superpowers\n---\nUse skills.\n",
+		"test-driven-development/SKILL.md": "---\nname: test-driven-development\n---\nWrite tests first.\n",
+	})
+	writeLauncherTestTarGz(t, filepath.Join(installDir, "driver-codex-prompts.tar.gz"), map[string]string{
+		"prompts-codex/AGENTS.md": "# Multi-Agent Driver\n\nUse `role == \"slave\"`.\n",
+	})
+	return installDir
+}
+
+func launcherTestDriverSecrets(t *testing.T, dir string) secrets.Store {
+	t.Helper()
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	for key, value := range map[string]string{
+		"agentserver_ws_api_key":   "sandbox-proxy-token",
+		"agentserver_tunnel_token": "tunnel-token",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return sec
+}
+
+func launcherTestDriverState() *state.State {
+	st := &state.State{InstallID: "install-abcdef1234567890"}
+	st.Agentserver.SandboxID = "sb-1"
+	st.Agentserver.WorkspaceID = "ws-1"
+	st.Agentserver.WorkspaceName = "Readable workspace"
+	st.Agentserver.ShortID = "abc123"
+	return st
+}
+
+func resetCompletedDriverHooksForTest(t *testing.T) {
+	t.Helper()
+	origStart := startCompletedLoomDriverDaemon
+	t.Cleanup(func() {
+		startCompletedLoomDriverDaemon = origStart
+	})
 }
 
 func assertJSONField(t *testing.T, path, key, want string) {

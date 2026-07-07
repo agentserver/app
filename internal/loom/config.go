@@ -2,11 +2,13 @@ package loom
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -167,6 +169,9 @@ type driverBackgroundProcess struct {
 	process *os.Process
 	stdin   *os.File
 	done    chan struct{}
+	exe     string
+	args    []string
+	created string
 }
 
 var driverBackgroundProcesses = struct {
@@ -175,6 +180,31 @@ var driverBackgroundProcesses = struct {
 }{byKey: map[string]driverBackgroundProcess{}}
 
 var driverMCPStartupWait = 3 * time.Second
+
+type DriverProcessMetadata struct {
+	PID       int
+	Exe       string
+	Args      []string
+	CreatedAt string
+}
+
+var inspectDriverProcess = inspectOSDriverProcess
+var terminateDriverProcess = terminateOSDriverProcess
+
+func driverProcessKey(exe, mode, configPath string) string {
+	return exe + "\x00" + mode + "\x00" + configPath
+}
+
+func driverProcessMetadata(process *os.Process, exe string, args []string) DriverProcessMetadata {
+	meta := DriverProcessMetadata{Exe: exe, Args: append([]string(nil), args...)}
+	if process != nil {
+		meta.PID = process.Pid
+		if inspected, ok, err := inspectDriverProcess(process.Pid); err == nil && ok {
+			meta.CreatedAt = inspected.CreatedAt
+		}
+	}
+	return meta
+}
 
 func StartDriverMCPServer(exe, configPath string) error {
 	if exe == "" || configPath == "" {
@@ -186,7 +216,7 @@ func StartDriverMCPServer(exe, configPath string) error {
 		}
 		return err
 	}
-	key := exe + "\x00serve-mcp\x00" + configPath
+	key := driverProcessKey(exe, "serve-mcp", configPath)
 	driverBackgroundProcesses.Lock()
 	if existing, ok := driverBackgroundProcesses.byKey[key]; ok {
 		select {
@@ -204,7 +234,8 @@ func StartDriverMCPServer(exe, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("open driver mcp stdin pipe: %w", err)
 	}
-	cmd := exec.Command(exe, "serve-mcp", "--config", configPath)
+	args := []string{"serve-mcp", "--config", configPath}
+	cmd := exec.Command(exe, args...)
 	cmd.Stdin = stdinReader
 	cmd.Stdout = nil
 	stderr, err := cmd.StderrPipe()
@@ -221,7 +252,15 @@ func StartDriverMCPServer(exe, configPath string) error {
 	}
 	_ = stdinReader.Close()
 	done := make(chan struct{})
-	entry := driverBackgroundProcess{process: cmd.Process, stdin: stdinWriter, done: done}
+	meta := driverProcessMetadata(cmd.Process, exe, args)
+	entry := driverBackgroundProcess{
+		process: cmd.Process,
+		stdin:   stdinWriter,
+		done:    done,
+		exe:     meta.Exe,
+		args:    meta.Args,
+		created: meta.CreatedAt,
+	}
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 	markReady := func() {
@@ -295,17 +334,22 @@ func stopDriverBackgroundProcessesForTest() {
 }
 
 func StartDriverDaemon(exe, configPath string) error {
+	_, err := StartDriverDaemonManaged(exe, configPath)
+	return err
+}
+
+func StartDriverDaemonManaged(exe, configPath string) ([]DriverProcessMetadata, error) {
 	if exe == "" || configPath == "" {
-		return nil
+		return nil, nil
 	}
 	if _, err := os.Stat(exe); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	mcpErr := StartDriverMCPServer(exe, configPath)
-	key := exe + "\x00serve-daemon\x00" + configPath
+	key := driverProcessKey(exe, "serve-daemon", configPath)
 	driverBackgroundProcesses.Lock()
 	if existing, ok := driverBackgroundProcesses.byKey[key]; ok {
 		select {
@@ -313,21 +357,29 @@ func StartDriverDaemon(exe, configPath string) error {
 			delete(driverBackgroundProcesses.byKey, key)
 		default:
 			driverBackgroundProcesses.Unlock()
-			return mcpErr
+			return trackedDriverMetadata(exe, configPath), mcpErr
 		}
 	}
 	driverBackgroundProcesses.Unlock()
 
-	cmd := exec.Command(exe, "serve-daemon", "--config", configPath)
+	args := []string{"serve-daemon", "--config", configPath}
+	cmd := exec.Command(exe, args...)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	process.HideWindow(cmd)
 	if err := cmd.Start(); err != nil {
-		return err
+		return nil, err
 	}
 	done := make(chan struct{})
-	entry := driverBackgroundProcess{process: cmd.Process, done: done}
+	meta := driverProcessMetadata(cmd.Process, exe, args)
+	entry := driverBackgroundProcess{
+		process: cmd.Process,
+		done:    done,
+		exe:     meta.Exe,
+		args:    meta.Args,
+		created: meta.CreatedAt,
+	}
 	driverBackgroundProcesses.Lock()
 	if existing, ok := driverBackgroundProcesses.byKey[key]; ok {
 		driverBackgroundProcesses.Unlock()
@@ -335,9 +387,9 @@ func StartDriverDaemon(exe, configPath string) error {
 		_ = cmd.Wait()
 		select {
 		case <-existing.done:
-			return StartDriverDaemon(exe, configPath)
+			return StartDriverDaemonManaged(exe, configPath)
 		default:
-			return mcpErr
+			return trackedDriverMetadata(exe, configPath), mcpErr
 		}
 	}
 	driverBackgroundProcesses.byKey[key] = entry
@@ -352,7 +404,165 @@ func StartDriverDaemon(exe, configPath string) error {
 		driverBackgroundProcesses.Unlock()
 		close(done)
 	}()
-	return mcpErr
+	return trackedDriverMetadata(exe, configPath), mcpErr
+}
+
+func DriverDaemonRunning(exe, configPath string, persisted []DriverProcessMetadata) bool {
+	key := driverProcessKey(exe, "serve-daemon", configPath)
+	driverBackgroundProcesses.Lock()
+	if existing, ok := driverBackgroundProcesses.byKey[key]; ok {
+		select {
+		case <-existing.done:
+			delete(driverBackgroundProcesses.byKey, key)
+		default:
+			driverBackgroundProcesses.Unlock()
+			return true
+		}
+	}
+	driverBackgroundProcesses.Unlock()
+	for _, meta := range persisted {
+		if driverProcessMatches(exe, configPath, meta, "serve-daemon") {
+			return true
+		}
+	}
+	return false
+}
+
+func StopDriverDaemon(exe, configPath string, persisted []DriverProcessMetadata) error {
+	var errs []error
+	for _, mode := range []string{"serve-mcp", "serve-daemon"} {
+		if err := stopTrackedDriverProcess(driverProcessKey(exe, mode, configPath)); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, meta := range persisted {
+		mode, ok := driverProcessModeForConfig(configPath, meta)
+		if !ok {
+			continue
+		}
+		if mode != "serve-mcp" && mode != "serve-daemon" {
+			continue
+		}
+		if !driverProcessMatches(exe, configPath, meta, mode) {
+			continue
+		}
+		if !driverProcessMatches(exe, configPath, meta, mode) {
+			continue
+		}
+		if err := terminateDriverProcess(context.Background(), meta.PID); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func stopTrackedDriverProcess(key string) error {
+	driverBackgroundProcesses.Lock()
+	entry, ok := driverBackgroundProcesses.byKey[key]
+	if ok {
+		delete(driverBackgroundProcesses.byKey, key)
+	}
+	driverBackgroundProcesses.Unlock()
+	if !ok {
+		return nil
+	}
+	if entry.stdin != nil {
+		_ = entry.stdin.Close()
+	}
+	if entry.process != nil {
+		_ = entry.process.Kill()
+	}
+	select {
+	case <-entry.done:
+	case <-time.After(2 * time.Second):
+	}
+	return nil
+}
+
+func trackedDriverMetadata(exe, configPath string) []DriverProcessMetadata {
+	keys := []string{
+		driverProcessKey(exe, "serve-mcp", configPath),
+		driverProcessKey(exe, "serve-daemon", configPath),
+	}
+	driverBackgroundProcesses.Lock()
+	defer driverBackgroundProcesses.Unlock()
+	var out []DriverProcessMetadata
+	for _, key := range keys {
+		entry, ok := driverBackgroundProcesses.byKey[key]
+		if !ok || entry.process == nil {
+			continue
+		}
+		select {
+		case <-entry.done:
+			delete(driverBackgroundProcesses.byKey, key)
+			continue
+		default:
+		}
+		out = append(out, DriverProcessMetadata{
+			PID:       entry.process.Pid,
+			Exe:       entry.exe,
+			Args:      append([]string(nil), entry.args...),
+			CreatedAt: entry.created,
+		})
+	}
+	return out
+}
+
+func driverProcessMatches(exe, configPath string, persisted DriverProcessMetadata, mode string) bool {
+	if persisted.PID <= 0 || persisted.CreatedAt == "" {
+		return false
+	}
+	inspected, ok, err := inspectDriverProcess(persisted.PID)
+	if err != nil || !ok {
+		return false
+	}
+	if inspected.CreatedAt == "" || inspected.CreatedAt != persisted.CreatedAt {
+		return false
+	}
+	if !samePath(inspected.Exe, exe) || !samePath(persisted.Exe, exe) {
+		return false
+	}
+	if !driverArgsMatch(persisted.Args, mode, configPath) {
+		return false
+	}
+	if len(inspected.Args) > 0 && !driverArgsMatch(inspected.Args, mode, configPath) {
+		return false
+	}
+	return true
+}
+
+func driverProcessModeForConfig(configPath string, meta DriverProcessMetadata) (string, bool) {
+	for _, mode := range []string{"serve-mcp", "serve-daemon"} {
+		if driverArgsMatch(meta.Args, mode, configPath) {
+			return mode, true
+		}
+	}
+	return "", false
+}
+
+func driverArgsMatch(args []string, mode, configPath string) bool {
+	if len(args) != 3 || args[0] != mode || args[1] != "--config" {
+		return false
+	}
+	return samePath(args[2], configPath)
+}
+
+func samePath(a, b string) bool {
+	if strings.TrimSpace(a) == "" || strings.TrimSpace(b) == "" {
+		return false
+	}
+	aa, err := filepath.Abs(a)
+	if err != nil {
+		return false
+	}
+	bb, err := filepath.Abs(b)
+	if err != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(filepath.Clean(aa), filepath.Clean(bb))
+	}
+	return filepath.Clean(aa) == filepath.Clean(bb)
 }
 
 func quote(v string) string {

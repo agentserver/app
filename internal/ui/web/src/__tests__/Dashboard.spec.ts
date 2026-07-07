@@ -43,9 +43,19 @@ function consoleUpdate(overrides?: Partial<api.ConsoleUpdateState>): api.Console
   };
 }
 
+function consoleDriverDaemon(overrides?: Partial<api.ConsoleDriverDaemonState>): api.ConsoleDriverDaemonState {
+  return {
+    enabled: true,
+    running: true,
+    commander_url: 'https://loom.nj.cs.ac.cn:10062/commander',
+    ...overrides,
+  };
+}
+
 function mockConsoleState() {
   vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
   vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves());
+  vi.spyOn(api, 'getConsoleDriverDaemon').mockResolvedValue(consoleDriverDaemon());
 }
 
 async function setInput(w: ReturnType<typeof mount>, testId: string, value: string) {
@@ -72,6 +82,7 @@ describe('Dashboard', () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate());
+    vi.spyOn(api, 'getConsoleDriverDaemon').mockResolvedValue(consoleDriverDaemon());
   });
   afterEach(() => vi.useRealTimers());
 
@@ -354,6 +365,58 @@ describe('Dashboard', () => {
     expect(w.text()).toContain('Default workspace');
     expect(w.text()).toContain('5小时');
     expect(w.text()).toContain('剩余约 42%');
+  });
+
+  it('renders remote control panel with safe commander link', async () => {
+    mockConsoleState();
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(w.text()).toContain('远程控制');
+    expect(w.text()).toContain('https://loom.nj.cs.ac.cn:10062/commander');
+    const link = w.find('a[href="https://loom.nj.cs.ac.cn:10062/commander"]');
+    expect(link.exists()).toBe(true);
+    expect(link.attributes('target')).toBe('_blank');
+    expect(link.attributes('rel')).toBe('noopener noreferrer');
+  });
+
+  it('toggles remote control and ignores duplicate clicks while pending', async () => {
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(consoleState());
+    vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves());
+    vi.spyOn(api, 'getConsoleDriverDaemon').mockResolvedValue(consoleDriverDaemon({ enabled: true, running: true }));
+    const setDeferred = deferred<api.ConsoleDriverDaemonState>();
+    const setSpy = vi.spyOn(api, 'setConsoleDriverDaemon').mockReturnValue(setDeferred.promise);
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    const toggle = w.find('[data-test="driver-daemon-toggle"]');
+    expect(toggle.exists()).toBe(true);
+    await toggle.trigger('click');
+    await toggle.trigger('click');
+
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    expect(setSpy).toHaveBeenCalledWith(false);
+
+    setDeferred.resolve(consoleDriverDaemon({ enabled: false, running: false }));
+    await flushPromises();
+    expect(w.text()).toContain('本机远程控制已关闭');
+  });
+
+  it('displays sanitized remote control errors', async () => {
+    mockConsoleState();
+    vi.spyOn(api, 'getConsoleDriverDaemon').mockResolvedValue(consoleDriverDaemon({
+      enabled: true,
+      running: false,
+      last_error_code: 'daemon_start_failed',
+      last_error_message: '远程控制启动失败。',
+    }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    expect(w.text()).toContain('远程控制启动失败。');
+    expect(w.text()).not.toContain('driver-agent.exe');
   });
 
   it('does not expose raw workspace id when workspace name is missing', async () => {

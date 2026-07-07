@@ -28,6 +28,8 @@ type Deps struct {
 	AS                       *agentserver.Client
 	Slaves                   *slave.Manager
 	Updates                  *updater.Service
+	DriverDaemonStore        *DriverDaemonStore
+	DriverDaemonRuntime      DriverDaemonRuntime
 	PendingSlaveRestartsPath string
 	CodexConfigFile          string
 	ModelserverWebBaseURL    string
@@ -94,6 +96,7 @@ type Controller struct {
 	d               Deps
 	updateInstallMu sync.Mutex
 	refreshMu       sync.Mutex
+	driverDaemonMu  sync.Mutex
 }
 
 func NewController(d Deps) *Controller {

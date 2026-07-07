@@ -18,6 +18,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/oauth"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
 
@@ -63,8 +64,8 @@ func TestInstallDriverRegistersAgentAndMCPEntrypoint(t *testing.T) {
 		t.Fatalf("InstallDriver: %v", err)
 	}
 
-	if fakeAS.registerName != "host-星池指挥官" {
-		t.Fatalf("register name=%q, want host-星池指挥官", fakeAS.registerName)
+	if fakeAS.registerName != "host" {
+		t.Fatalf("register name=%q, want host", fakeAS.registerName)
 	}
 	if fakeAS.registerType != "custom" {
 		t.Fatalf("register type=%q, want custom", fakeAS.registerType)
@@ -100,6 +101,15 @@ func TestInstallDriverRegistersAgentAndMCPEntrypoint(t *testing.T) {
 			t.Fatalf("config missing %q:\n%s", want, config)
 		}
 	}
+	driverConfig := readTextFile(t, persistentDriverConfigPath(p))
+	for _, want := range []string{
+		`display_name: "host"`,
+		`description: "host 本地协作驱动。"`,
+	} {
+		if !strings.Contains(driverConfig, want) {
+			t.Fatalf("driver config missing %q:\n%s", want, driverConfig)
+		}
+	}
 }
 
 func TestServeDriverMCPWritesSessionConfigWithCurrentWorkdir(t *testing.T) {
@@ -120,6 +130,9 @@ func TestServeDriverMCPWritesSessionConfigWithCurrentWorkdir(t *testing.T) {
 		WorkspaceID:   "ws-1",
 		WorkspaceName: "Workspace One",
 	})
+	if _, err := slave.NewMachineStore(p.MachineFile).Ensure("host"); err != nil {
+		t.Fatal(err)
+	}
 	sessionDir := filepath.Join(temp, "repo")
 	if err := os.Mkdir(sessionDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -147,6 +160,9 @@ func TestServeDriverMCPWritesSessionConfigWithCurrentWorkdir(t *testing.T) {
 			wantWorkdir := `workdir: "` + filepath.ToSlash(sessionDir) + `"`
 			if !strings.Contains(body, wantWorkdir) {
 				t.Fatalf("config missing %q:\n%s", wantWorkdir, body)
+			}
+			if !strings.Contains(body, `display_name: "host"`) {
+				t.Fatalf("session config missing machine display name:\n%s", body)
 			}
 			return nil
 		},
@@ -920,6 +936,7 @@ func testDriverPaths(root string) paths.Paths {
 		InstallRoot:     installRoot,
 		StateFile:       filepath.Join(installRoot, "state.json"),
 		SecretsFile:     filepath.Join(installRoot, "secrets.json"),
+		MachineFile:     filepath.Join(installRoot, "machine.json"),
 		CodexConfigFile: filepath.Join(home, ".codex", "config.toml"),
 	}
 }
