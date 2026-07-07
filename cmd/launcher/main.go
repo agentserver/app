@@ -206,6 +206,9 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	if err != nil {
 		return err
 	}
+	if err := slaveManager.RefreshConfigs(ctx); err != nil {
+		log.Printf("launcher: refresh slave configs: %v", err)
+	}
 	updates := newCompletedUpdater(in.Paths)
 	if err := restorePendingSlaveRestarts(ctx, in.Paths.PendingSlaveRestartsFile, appversion.Version, func(ctx context.Context, id string) error {
 		_, err := slaveManager.Restart(ctx, id)
@@ -445,12 +448,21 @@ func completedSlaveManagerDeps(in completedServeInput) (slave.ManagerDeps, error
 	if _, err := machines.Ensure(completedComputerName()); err != nil {
 		return slave.ManagerDeps{}, fmt.Errorf("ensure machine identity: %w", err)
 	}
+	localProxyToken := ""
+	if strings.TrimSpace(in.Paths.InstallRoot) != "" {
+		token, err := modelaccess.EnsureLocalProxyToken(modelaccess.DefaultLocalProxyTokenPath(in.Paths.InstallRoot))
+		if err != nil {
+			return slave.ManagerDeps{}, fmt.Errorf("ensure local proxy token: %w", err)
+		}
+		localProxyToken = token
+	}
 	return slave.ManagerDeps{
-		Machines:  machines,
-		Registry:  slave.NewRegistry(in.Paths.SlavesFile, in.Paths.SlavesDir),
-		SlaveExe:  joinExe(in.InstallDir, "slave-agent.exe"),
-		ServerURL: "https://agent.cs.ac.cn",
-		CodexBin:  in.Paths.CodexExePath,
+		Machines:        machines,
+		Registry:        slave.NewRegistry(in.Paths.SlavesFile, in.Paths.SlavesDir),
+		SlaveExe:        joinExe(in.InstallDir, "slave-agent.exe"),
+		ServerURL:       "https://agent.cs.ac.cn",
+		CodexBin:        in.Paths.CodexExePath,
+		LocalProxyToken: localProxyToken,
 		OpenAuthURL: func(url string) {
 			_ = browser.Open(url)
 		},
@@ -929,7 +941,7 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 	if s.Agentserver.ShortID != "" {
 		serverName = "driver-" + s.Agentserver.ShortID
 	}
-	codexBin := completedDriverCodexBin(p, s)
+	codexBin := completedDriverCodexBin(p)
 	if err := loom.WriteDriverConfig(loomConfigPath, loom.DriverConfig{
 		ServerURL:     serverURL,
 		ServerName:    serverName,
@@ -943,6 +955,7 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 		Description:   "星池指挥官本地协作驱动。",
 		CodexBin:      codexBin,
 		CodexWorkDir:  p.UserHome,
+		CodexHome:     completedDriverCodexHome(p),
 	}); err != nil {
 		return fmt.Errorf("configure loom driver: %w", err)
 	}
@@ -966,18 +979,24 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 			return fmt.Errorf("configure codex mcp driver: %w", err)
 		}
 	}
+	_ = loom.StartDriverDaemon(driverPath, loomConfigPath)
 	return nil
 }
 
-func completedDriverCodexBin(p paths.Paths, s *state.State) string {
-	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeMinimalVSCode {
-		if p.CodexExePath != "" {
-			return p.CodexExePath
-		}
-		return "codex"
+func completedDriverCodexHome(p paths.Paths) string {
+	if strings.TrimSpace(p.CodexDir) != "" {
+		return p.CodexDir
 	}
-	// Codex Desktop owns its CLI runtime; do not point the driver at the
-	// VS Code helper codex.exe staged under agentserver-app.
+	if strings.TrimSpace(p.CodexConfigFile) != "" {
+		return filepath.Dir(p.CodexConfigFile)
+	}
+	return ""
+}
+
+func completedDriverCodexBin(p paths.Paths) string {
+	if p.CodexExePath != "" {
+		return p.CodexExePath
+	}
 	return "codex"
 }
 

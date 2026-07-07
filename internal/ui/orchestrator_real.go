@@ -33,9 +33,9 @@ import (
 )
 
 type Deps struct {
-	State                             *state.Store
-	Secrets                           secrets.Store
-	MS                                *modelserver.Client
+	State   *state.Store
+	Secrets secrets.Store
+	MS      *modelserver.Client
 	// MSProxy is the modelserver client pointed at the proxy gateway
 	// (code.ai.cs.ac.cn). The OAuth profile endpoint (PR #63) lives there,
 	// not on the admin API host MS targets (codeapi.cs.ac.cn).
@@ -516,7 +516,7 @@ func (r *realOrchestrator) configureLoomDriver() error {
 	if serverURL == "" {
 		serverURL = "https://agent.cs.ac.cn"
 	}
-	codexBin := r.loomDriverCodexBin(st)
+	codexBin := r.loomDriverCodexBin()
 	serverName := "driver-" + lastN(st.InstallID, 8)
 	if st.Agentserver.ShortID != "" {
 		serverName = "driver-" + st.Agentserver.ShortID
@@ -533,6 +533,7 @@ func (r *realOrchestrator) configureLoomDriver() error {
 		DisplayName:   "星池指挥官",
 		Description:   "星池指挥官本地协作驱动。",
 		CodexBin:      codexBin,
+		CodexHome:     filepath.Dir(r.d.CodexConfigPath),
 		CodexWorkDir: func() string {
 			if home, err := os.UserHomeDir(); err == nil {
 				return home
@@ -574,17 +575,13 @@ func codexUserHome(configPath string) string {
 	return ""
 }
 
-func (r *realOrchestrator) loomDriverCodexBin(st *state.State) string {
-	if state.NormalizeFrontendMode(st.FrontendMode) == state.FrontendModeMinimalVSCode {
-		if r.d.CodexAbsPath != "" {
-			return r.d.CodexAbsPath
-		}
-		return "codex"
-	}
+func (r *realOrchestrator) loomDriverCodexBin() string {
 	if r.d.CodexDesktopCodexPath != "" {
 		return r.d.CodexDesktopCodexPath
 	}
-	// Codex Desktop provides the CLI runtime for its own driver workflow.
+	if r.d.CodexAbsPath != "" {
+		return r.d.CodexAbsPath
+	}
 	return "codex"
 }
 

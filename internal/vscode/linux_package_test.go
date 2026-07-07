@@ -13,15 +13,15 @@ func TestLinuxPackageCommonPinsLoomAssets(t *testing.T) {
 	}
 	text := string(body)
 	for _, want := range []string{
-		`LOOM_RELEASE="v0.0.5"`,
+		`LOOM_RELEASE="v0.0.10"`,
 		`driver-agent.linux-amd64`,
 		`driver-agent.linux-arm64`,
 		`slave-agent.linux-amd64`,
 		`slave-agent.linux-arm64`,
-		`9dd94809801ff71d3e4c26581d48d44796c8e8be28be116b44d02cbd9fcb946c`,
-		`1c0a60bfb677a55159dea145dc46ead489b442d2cc55403dd451f3fadec4c7b5`,
-		`ce7d0b552a2ee880ef288d14c0d399630b961592fc73e78e98cece7a824ea965`,
-		`f7b0740cfb9d9a2c6fa1ad5f015b18c7ee4b3f618fe7082bb00bb828dc683ee6`,
+		`cc9467cde06f32b9dddb87946192bbf5f38f95008d5023836e3076af89734fd3`,
+		`15117e8a0326da2ec6a308e2836108f3be498615764a193c4ba6235ecac7d671`,
+		`67e6e79144e9e2c3cefdc7d3c0cbd67ebd87c55bd4116fe30b8d939412042910`,
+		`fad2c9ea341ad55283638da39dbe0ba4b17a941412d4af8e9aa1a09fd1fcb175`,
 		`driver-skills.tar.gz`,
 		`driver-superpower-skills.tar.gz`,
 		`driver-codex-prompts.tar.gz`,

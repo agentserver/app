@@ -255,10 +255,10 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 			name: "windows-package-common.sh",
 			path: "../../scripts/windows-package-common.sh",
 			want: []string{
-				"LOOM_RELEASE=\"v0.0.5\"",
-				"LOOM_DRIVER_SHA256=\"be3836eba3fabc5006d83a8edf687b0c0183e87beb493d2cb3c1799577f0c322\"",
-				"LOOM_SLAVE_SHA256=\"8e0dfe1b7ce57dac387207f19ed7ebe4f2ab3a398990fcb3acc6c0c2a52bd27d\"",
-				"LOOM_DRIVER_SKILLS_SHA256=\"4466b0342eaa90284dc4de0f0c03e6d08dbe02e4c12d0da6e7cb433c61ea1a0c\"",
+				"LOOM_RELEASE=\"v0.0.10\"",
+				"LOOM_DRIVER_SHA256=\"411ab9e7ed586a7db5cb51f4948acf1c880936ef7643db94044115340e8df527\"",
+				"LOOM_SLAVE_SHA256=\"ac6401a709ff2addc1f74aaaa3ac38a2d5f2807d1ceaf1fb71a52d48a3c34d3b\"",
+				"LOOM_DRIVER_SKILLS_SHA256=\"f9641c17e0a5105b4f97adf9ce70e186ee849fc4f03ad13fe3460cb54ec02ba9\"",
 				"LOOM_DRIVER_CACHE",
 				"LOOM_SLAVE_CACHE",
 				"LOOM_DRIVER_SKILLS_CACHE",
@@ -297,7 +297,7 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 				"uninstall.exe",
 				"token-refresher.exe",
 				"driver-agent.windows-amd64.exe",
-				"v0.0.5",
+				"v0.0.10",
 				"DestName: \"driver-agent.exe\"",
 				"slave-agent.windows-amd64.exe",
 				"DestName: \"slave-agent.exe\"",
@@ -1058,6 +1058,31 @@ func TestWindowsPortableInstallerDoesNotAbortWhenShortcutCreationFails(t *testin
 	tryBeforeShortcut := strings.LastIndex(s[:shortcut], "try {")
 	if tryBeforeShortcut < 0 || catch < save || catch > registry {
 		t.Fatal("install.ps1 should not abort installation when desktop shortcut creation fails")
+	}
+}
+
+func TestWindowsInstallersStopCodexDesktopBeforeReinstall(t *testing.T) {
+	for _, file := range []string{
+		"../../packaging/windows/install.ps1",
+		"../../packaging/windows/installer.iss",
+	} {
+		t.Run(file, func(t *testing.T) {
+			body, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := string(body)
+			for _, want := range []string{
+				"OpenAI.Codex_2p2nqsd0c76g0",
+				"WindowsApps",
+				"CommandLine",
+				"Stop-Process",
+			} {
+				if !strings.Contains(s, want) {
+					t.Fatalf("%s should stop running Codex Desktop before reinstall; missing %q", file, want)
+				}
+			}
+		})
 	}
 }
 

@@ -194,6 +194,134 @@ func TestManagerPauseRestartAndDelete(t *testing.T) {
 	}
 }
 
+func TestManagerRestartRefreshesCodexHomeToWorkDirWithoutClearingCredentials(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	runner := &fakeRunner{pid: 1111, authURL: "https://agent.cs.ac.cn/device?user_code=ABCD"}
+	manager := NewManager(ManagerDeps{
+		Machines:  NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:  NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:    runner,
+		SlaveExe:  filepath.Join(dir, "slave-agent.exe"),
+		ServerURL: "https://agent.cs.ac.cn",
+		CodexBin:  "codex",
+	})
+	_, _ = manager.Machines.Ensure("PC")
+	sl, err := manager.CreateAndStart(context.Background(), CreateInput{Folder: folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := readConfig(t, sl.ConfigPath)
+	cfg.Credentials = parsedCredentials{
+		SandboxID:   "sb-existing",
+		TunnelToken: "tunnel-existing",
+		ProxyToken:  "proxy-existing",
+		WorkspaceID: "ws-existing",
+		ShortID:     "short-existing",
+	}
+	cfg.Agent.CodexHome = ""
+	b, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sl.ConfigPath, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(folder); err != nil {
+		t.Fatal(err)
+	}
+
+	runner.pid = 2222
+	runner.authURL = ""
+	restarted, err := manager.Restart(context.Background(), sl.ID)
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if restarted.PID != 2222 {
+		t.Fatalf("restarted pid=%d, want 2222", restarted.PID)
+	}
+	refreshed := readConfig(t, sl.ConfigPath)
+	wantCodexHome := filepath.Join(folder, ".codex")
+	if refreshed.Agent.CodexHome != wantCodexHome {
+		t.Fatalf("agent.codex_home=%q, want %q", refreshed.Agent.CodexHome, wantCodexHome)
+	}
+	if refreshed.Credentials.ShortID != "short-existing" || refreshed.Credentials.ProxyToken != "proxy-existing" {
+		t.Fatalf("credentials not preserved: %+v", refreshed.Credentials)
+	}
+	if info, err := os.Stat(wantCodexHome); err != nil || !info.IsDir() {
+		t.Fatalf("codex_home/workdir was not recreated: info=%v err=%v", info, err)
+	}
+}
+
+func TestManagerRefreshConfigsUpdatesExistingSlavesToWorkDirWithoutClearingCredentials(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "repo")
+	_ = mkdir(folder)
+	manager := NewManager(ManagerDeps{
+		Machines:        NewMachineStore(filepath.Join(dir, "machine.json")),
+		Registry:        NewRegistry(filepath.Join(dir, "slaves.json"), filepath.Join(dir, "slaves")),
+		Runner:          &fakeRunner{},
+		SlaveExe:        filepath.Join(dir, "slave-agent.exe"),
+		ServerURL:       "https://agent.cs.ac.cn",
+		CodexBin:        "codex",
+		LocalProxyToken: "local-proxy-token",
+	})
+	_, _ = manager.Machines.Ensure("PC")
+	machine := Machine{MachineID: "machine-1", ComputerName: "PC"}
+	sl, err := manager.Registry.Create(machine, CreateInput{Folder: folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteConfig(sl, machine, ConfigInput{ServerURL: "https://agent.cs.ac.cn", CodexBin: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := readConfig(t, sl.ConfigPath)
+	cfg.Credentials = parsedCredentials{
+		SandboxID:   "sb-existing",
+		TunnelToken: "tunnel-existing",
+		ProxyToken:  "proxy-existing",
+		WorkspaceID: "ws-existing",
+		ShortID:     "short-existing",
+	}
+	cfg.Agent.CodexHome = filepath.Join(dir, ".codex")
+	b, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sl.ConfigPath, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	codexConfigPath := filepath.Join(folder, ".codex", "config.toml")
+
+	if err := manager.RefreshConfigs(context.Background()); err != nil {
+		t.Fatalf("RefreshConfigs: %v", err)
+	}
+
+	refreshed := readConfig(t, sl.ConfigPath)
+	wantCodexHome := filepath.Join(folder, ".codex")
+	if refreshed.Agent.CodexHome != wantCodexHome {
+		t.Fatalf("agent.codex_home=%q, want %q", refreshed.Agent.CodexHome, wantCodexHome)
+	}
+	if refreshed.Credentials.ShortID != "short-existing" || refreshed.Credentials.ProxyToken != "proxy-existing" {
+		t.Fatalf("credentials not preserved: %+v", refreshed.Credentials)
+	}
+	codexConfig, err := os.ReadFile(codexConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexText := string(codexConfig)
+	for _, want := range []string{
+		`model_provider = "modelserver"`,
+		`base_url = "http://127.0.0.1:53452/v1"`,
+		`experimental_bearer_token = "local-proxy-token"`,
+	} {
+		if !strings.Contains(codexText, want) {
+			t.Fatalf("slave codex config missing %q:\n%s", want, codexText)
+		}
+	}
+}
+
 func TestManagerRestartAndDeleteSameSlaveAreSerialized(t *testing.T) {
 	dir := t.TempDir()
 	folder := filepath.Join(dir, "repo")

@@ -12,9 +12,10 @@ import (
 
 func TestWriteConfigPublishesMachineSourceInAgentserverCardFields(t *testing.T) {
 	dir := t.TempDir()
+	folder := filepath.Join(dir, "project-a")
 	sl := Slave{
 		DisplayName: "61414-PC-前端调试",
-		Folder:      `C:\Users\61414\project-a`,
+		Folder:      folder,
 		ConfigPath:  filepath.Join(dir, "config.yaml"),
 	}
 	m := Machine{MachineID: "machine-1", ComputerName: "61414-PC"}
@@ -37,25 +38,22 @@ func TestWriteConfigPublishesMachineSourceInAgentserverCardFields(t *testing.T) 
 	if cfg.Agent.Kind != "codex" {
 		t.Fatalf("agent.kind=%q", cfg.Agent.Kind)
 	}
-	if cfg.Codex.Bin != `C:\Users\61414\AppData\Local\agentserver-app\bin\codex.exe` {
-		t.Fatalf("codex.bin=%q", cfg.Codex.Bin)
+	if cfg.Agent.Bin != `C:\Users\61414\AppData\Local\agentserver-app\bin\codex.exe` {
+		t.Fatalf("agent.bin=%q", cfg.Agent.Bin)
 	}
-	if cfg.Codex.WorkDir != `C:\Users\61414\project-a` {
-		t.Fatalf("codex.workdir=%q", cfg.Codex.WorkDir)
+	if cfg.Agent.WorkDir != folder {
+		t.Fatalf("agent.workdir=%q", cfg.Agent.WorkDir)
 	}
-	if len(cfg.Codex.ExtraArgs) != 0 {
-		t.Fatalf("codex.extra_args=%v", cfg.Codex.ExtraArgs)
+	if cfg.Agent.CodexHome != filepath.Join(folder, ".codex") {
+		t.Fatalf("agent.codex_home=%q", cfg.Agent.CodexHome)
 	}
-	if cfg.Claude.WorkDir != `C:\Users\61414\project-a` {
-		t.Fatalf("claude.workdir=%q", cfg.Claude.WorkDir)
-	}
-	if len(cfg.Claude.ExtraArgs) != 0 {
-		t.Fatalf("claude.extra_args=%v", cfg.Claude.ExtraArgs)
+	if len(cfg.Agent.ExtraArgs) != 0 {
+		t.Fatalf("agent.extra_args=%v", cfg.Agent.ExtraArgs)
 	}
 	if cfg.Discovery.DisplayName != "61414-PC-前端调试" {
 		t.Fatalf("discovery.display_name=%q", cfg.Discovery.DisplayName)
 	}
-	if cfg.Discovery.Description != `来自同一台电脑：61414-PC；工作目录：C:\Users\61414\project-a` {
+	if cfg.Discovery.Description != `来自同一台电脑：61414-PC；工作目录：`+folder {
 		t.Fatalf("discovery.description=%q", cfg.Discovery.Description)
 	}
 	wantSkills := []string{"chat", "bash", "powershell", "file", "permissions", "register_mcp", "unregister_mcp"}
@@ -71,6 +69,26 @@ func TestWriteConfigPublishesMachineSourceInAgentserverCardFields(t *testing.T) 
 	}
 	if cfg.Observer.URL != "https://loom.nj.cs.ac.cn:10062/" {
 		t.Fatalf("observer.url=%q", cfg.Observer.URL)
+	}
+}
+
+func TestWriteConfigDefaultsCodexHomeToWorkDirAndCreatesIt(t *testing.T) {
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "missing-workdir")
+	sl := Slave{DisplayName: "PC-worker", Folder: folder, ConfigPath: filepath.Join(dir, "config.yaml")}
+	m := Machine{MachineID: "machine-1", ComputerName: "PC"}
+
+	if err := WriteConfig(sl, m, ConfigInput{ServerURL: "https://agent.cs.ac.cn"}); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+
+	cfg := readConfig(t, sl.ConfigPath)
+	wantCodexHome := filepath.Join(folder, ".codex")
+	if cfg.Agent.CodexHome != wantCodexHome {
+		t.Fatalf("agent.codex_home=%q, want %q", cfg.Agent.CodexHome, wantCodexHome)
+	}
+	if info, err := os.Stat(wantCodexHome); err != nil || !info.IsDir() {
+		t.Fatalf("codex_home/workdir was not created: info=%v err=%v", info, err)
 	}
 }
 
@@ -98,6 +116,47 @@ func TestWriteConfigStartsWithoutCredentialsForReauth(t *testing.T) {
 	}
 	if cfg.Credentials.ShortID != "" {
 		t.Fatalf("credentials.short_id=%q", cfg.Credentials.ShortID)
+	}
+}
+
+func TestWriteConfigPreservesExistingCredentials(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	existing := []byte(`server:
+  url: "https://agent.cs.ac.cn"
+  name: "old"
+credentials:
+  sandbox_id: "sb-existing"
+  tunnel_token: "tunnel-existing"
+  proxy_token: "proxy-existing"
+  workspace_id: "ws-existing"
+  short_id: "short-existing"
+agent:
+  kind: "codex"
+  bin: "codex"
+  workdir: "old"
+  extra_args: []
+`)
+	if err := os.WriteFile(configPath, existing, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sl := Slave{DisplayName: "PC-worker", Folder: dir, ConfigPath: configPath}
+	m := Machine{MachineID: "machine-1", ComputerName: "PC"}
+
+	if err := WriteConfig(sl, m, ConfigInput{ServerURL: "https://agent.cs.ac.cn"}); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+
+	cfg := readConfig(t, configPath)
+	if cfg.Credentials.SandboxID != "sb-existing" ||
+		cfg.Credentials.TunnelToken != "tunnel-existing" ||
+		cfg.Credentials.ProxyToken != "proxy-existing" ||
+		cfg.Credentials.WorkspaceID != "ws-existing" ||
+		cfg.Credentials.ShortID != "short-existing" {
+		t.Fatalf("credentials not preserved: %+v", cfg.Credentials)
+	}
+	if cfg.Agent.CodexHome != filepath.Join(dir, ".codex") {
+		t.Fatalf("agent.codex_home=%q", cfg.Agent.CodexHome)
 	}
 }
 
@@ -244,8 +303,6 @@ type parsedLoomConfig struct {
 	Server      parsedServer      `yaml:"server"`
 	Credentials parsedCredentials `yaml:"credentials"`
 	Agent       parsedAgent       `yaml:"agent"`
-	Codex       parsedCodex       `yaml:"codex"`
-	Claude      parsedClaude      `yaml:"claude"`
 	Discovery   parsedDiscovery   `yaml:"discovery"`
 	Resources   parsedResources   `yaml:"resources"`
 	Observer    parsedObserver    `yaml:"observer"`
@@ -265,18 +322,10 @@ type parsedCredentials struct {
 }
 
 type parsedAgent struct {
-	Kind string `yaml:"kind"`
-}
-
-type parsedCodex struct {
+	Kind      string   `yaml:"kind"`
 	Bin       string   `yaml:"bin"`
 	WorkDir   string   `yaml:"workdir"`
-	ExtraArgs []string `yaml:"extra_args"`
-}
-
-type parsedClaude struct {
-	Bin       string   `yaml:"bin"`
-	WorkDir   string   `yaml:"workdir"`
+	CodexHome string   `yaml:"codex_home"`
 	ExtraArgs []string `yaml:"extra_args"`
 }
 
