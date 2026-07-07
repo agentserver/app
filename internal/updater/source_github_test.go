@@ -421,6 +421,47 @@ func (h *hangingBody) Read(p []byte) (int, error) {
 }
 func (h *hangingBody) Close() error { return nil }
 
+func TestGitHubSourceRejectsHeadersThenHangBodyProduction(t *testing.T) {
+	// Round-7 regression: production path (real *http.Transport) must
+	// enforce first-body-byte deadline. Prior code skipped
+	// firstByteDeadlineCtx for real transports, relying on
+	// ResponseHeaderTimeout — which only covers headers. A hostile
+	// server that sends headers immediately then hangs body would
+	// hang the client indefinitely in production.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Send headers + flush; body writer never writes bytes.
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		// Hold the connection open until client cancels.
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	policy := DefaultSourcePolicy()
+	policy.FirstByteTimeout = 150 * time.Millisecond
+	// Use real *http.Transport (with TLS skip) to exercise production path.
+	src := NewGitHubSource(testRepo, "https://example.invalid", insecureTLSClient(), policy).(*githubSource)
+	src.installerHostMatch = permissiveHost
+	src.rebuildClients()
+
+	body := []byte("x")
+	sum := sha256.Sum256(body)
+	m := Manifest{Version: "1.0.0", URL: srv.URL + "/setup.exe", SHA256: hex.EncodeToString(sum[:]), Size: 1000}
+	start := time.Now()
+	err := src.DownloadInstaller(context.Background(), m, io.Discard, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout — production path headers-then-hang must not succeed")
+	}
+	if !errors.Is(err, ErrFetchTimeout) {
+		t.Fatalf("err=%v; want ErrFetchTimeout via first-byte-deadline tripped", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("elapsed %v — first-body-byte deadline did not fire in production path", elapsed)
+	}
+}
+
 func TestGitHubSourceRejectsHeadersThenHangBody(t *testing.T) {
 	// Regression for the round-6 P1: headers-then-hang attack.
 	// Server sends headers instantly (passes ResponseHeaderTimeout),

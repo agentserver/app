@@ -314,9 +314,9 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 	dlCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Fallback-path first-body-byte deadline (test transports only).
-	// See cdnSource.firstByteDeadlineCtx for semantics.
-	reqCtx, markFirstByte, stopFB := s.firstByteDeadlineCtx(dlCtx)
+	// First-body-byte deadline armed on all paths (production +
+	// fallback). See cdnSource.firstByteDeadlineCtx for semantics.
+	reqCtx, markFirstByte, stopFB, fbTripped := s.firstByteDeadlineCtx(dlCtx)
 	defer stopFB()
 
 	var monitor *speedMonitor
@@ -336,7 +336,7 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 	s.setHeaders(req)
 	resp, err := s.installerClient().Do(req)
 	if err != nil {
-		return s.classifyDownload(ctx, monitor, err)
+		return s.classifyDownload(ctx, monitor, fbTripped, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -348,7 +348,7 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 	}
 	n, err := io.Copy(dst, body)
 	if err != nil {
-		return s.classifyDownload(ctx, monitor, err)
+		return s.classifyDownload(ctx, monitor, fbTripped, err)
 	}
 	if n > m.Size {
 		return fmt.Errorf("github download: response larger than declared size")
@@ -361,7 +361,7 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 // deadline fired, return ErrFetchTimeout; else honor parent cancellation;
 // else return err verbatim.
 func (s *githubSource) classifyFetch(parent context.Context, req context.Context, err error) error {
-	if req.Err() == context.DeadlineExceeded {
+	if errors.Is(req.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("%w: %v", ErrFetchTimeout, err)
 	}
 	if parent.Err() != nil {
@@ -371,32 +371,40 @@ func (s *githubSource) classifyFetch(parent context.Context, req context.Context
 }
 
 // firstByteDeadlineCtx: see cdnSource.firstByteDeadlineCtx for full
-// semantics. Returns ctx + markFirstByte + stop.
-func (s *githubSource) firstByteDeadlineCtx(parent context.Context) (ctx context.Context, markFirstByte, stop func()) {
-	if s.isRealTransport() || s.policy.FirstByteTimeout <= 0 {
-		return parent, func() {}, func() {}
+// semantics. Armed on all paths (production + fallback) because
+// ResponseHeaderTimeout only covers headers.
+func (s *githubSource) firstByteDeadlineCtx(parent context.Context) (ctx context.Context, markFirstByte func(), stop func(), tripped func() bool) {
+	if s.policy.FirstByteTimeout <= 0 {
+		return parent, func() {}, func() {}, func() bool { return false }
 	}
 	ctx, cancel := context.WithCancel(parent)
-	var gotFirstByte atomic.Bool
+	var decided atomic.Bool
+	var timerFired atomic.Bool
 	timer := time.AfterFunc(s.policy.FirstByteTimeout, func() {
-		if !gotFirstByte.Load() {
+		if decided.CompareAndSwap(false, true) {
+			timerFired.Store(true)
 			cancel()
 		}
 	})
 	markFirstByte = func() {
-		gotFirstByte.Store(true)
-		timer.Stop()
+		if decided.CompareAndSwap(false, true) {
+			timer.Stop()
+		}
 	}
 	stop = func() {
 		timer.Stop()
 		cancel()
 	}
-	return ctx, markFirstByte, stop
+	tripped = timerFired.Load
+	return
 }
 
-func (s *githubSource) classifyDownload(parent context.Context, monitor *speedMonitor, err error) error {
+func (s *githubSource) classifyDownload(parent context.Context, monitor *speedMonitor, fbTripped func() bool, err error) error {
 	if parent.Err() != nil {
 		return parent.Err()
+	}
+	if fbTripped != nil && fbTripped() {
+		return fmt.Errorf("%w: first-byte deadline elapsed", ErrFetchTimeout)
 	}
 	if monitor != nil && monitor.Tripped() {
 		return fmt.Errorf("%w: %v", ErrSlowDownload, err)

@@ -116,7 +116,9 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	// header receipt does NOT stop it — a server that sends headers
 	// then hangs the body indefinitely would otherwise escape both
 	// this deadline and the speed monitor's startNS-gated ticks.
-	reqCtx, markFirstByte, stopFB := s.firstByteDeadlineCtx(dlCtx)
+	// Armed on all paths, including production (ResponseHeaderTimeout
+	// only covers headers, not body).
+	reqCtx, markFirstByte, stopFB, fbTripped := s.firstByteDeadlineCtx(dlCtx)
 	defer stopFB()
 
 	var monitor *speedMonitor
@@ -135,7 +137,7 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	}
 	resp, err := s.installerClient().Do(req)
 	if err != nil {
-		return s.classify(ctx, monitor, err)
+		return s.classify(ctx, monitor, fbTripped, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -147,7 +149,7 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	}
 	n, err := io.Copy(dst, body)
 	if err != nil {
-		return s.classify(ctx, monitor, err)
+		return s.classify(ctx, monitor, fbTripped, err)
 	}
 	if n > m.Size {
 		return fmt.Errorf("cdn download: response larger than declared size")
@@ -159,58 +161,72 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 // returned ctx. Semantics:
 //   - If FirstByteTimeout elapses AND markFirstByte was not yet
 //     called, ctx is cancelled — request I/O returns context.Canceled
-//     and the source classifies as ErrFetchTimeout.
+//     and classify() wraps as ErrFetchTimeout via the tripped signal.
 //   - markFirstByte is invoked by speedMonitor's countingReader when
-//     the FIRST BODY BYTE arrives (not just headers). This closes
+//     the FIRST BODY BYTE arrives (NOT just headers). This closes
 //     the "headers-then-hang" attack where a hostile mirror sends
 //     headers immediately then stalls the body indefinitely.
-//   - stop is always called via defer and is a no-op after
-//     markFirstByte.
+//   - tripped() reports whether the timer won the race against
+//     markFirstByte, so classify() can wrap the resulting
+//     context.Canceled as ErrFetchTimeout for ops visibility.
+//   - stop is called via defer, no-op after markFirstByte or timer.
 //
-// Used only in the non-*Transport fallback (test path). Production
-// combines http.Transport.ResponseHeaderTimeout (for headers) with
-// the speed monitor's slow-download detection (for body).
+// Armed on ALL paths (including production *http.Transport) because
+// ResponseHeaderTimeout only covers HEADERS — headers-fast + body-
+// hangs would otherwise bypass every timeout in this package.
+// Compat mode (FirstByteTimeout <= 0) opts out with noop returns.
 //
-// Do NOT use context.WithTimeout's returned cancel to "release" —
-// cancelling the child ctx cancels the whole request, including
-// in-flight body reads (resp.Body is bound to req.Context()).
-func (s *cdnSource) firstByteDeadlineCtx(parent context.Context) (ctx context.Context, markFirstByte, stop func()) {
-	if s.isRealTransport() || s.policy.FirstByteTimeout <= 0 {
-		return parent, func() {}, func() {}
+// Uses CAS-single-winner between timer and markFirstByte to defeat
+// the tiny race where the timer fires the same instant the first
+// byte arrives — whichever CAS succeeds first wins.
+//
+// Do NOT use context.WithTimeout's cancel to "release" — cancelling
+// the child ctx cancels the whole request, including in-flight body
+// reads (resp.Body is bound to req.Context()).
+func (s *cdnSource) firstByteDeadlineCtx(parent context.Context) (ctx context.Context, markFirstByte func(), stop func(), tripped func() bool) {
+	if s.policy.FirstByteTimeout <= 0 {
+		return parent, func() {}, func() {}, func() bool { return false }
 	}
 	ctx, cancel := context.WithCancel(parent)
-	var gotFirstByte atomic.Bool
+	var decided atomic.Bool // single-winner: timer OR markFirstByte
+	var timerFired atomic.Bool
 	timer := time.AfterFunc(s.policy.FirstByteTimeout, func() {
-		if !gotFirstByte.Load() {
+		if decided.CompareAndSwap(false, true) {
+			timerFired.Store(true)
 			cancel()
 		}
 	})
 	markFirstByte = func() {
-		gotFirstByte.Store(true)
-		timer.Stop()
+		if decided.CompareAndSwap(false, true) {
+			timer.Stop()
+		}
 	}
 	stop = func() {
 		timer.Stop()
 		cancel()
 	}
-	return ctx, markFirstByte, stop
+	tripped = timerFired.Load
+	return
 }
 
-// classify implements the cancellation-precedence rule: parent ctx first,
-// then Tripped(). Safe with a nil monitor (compat mode never launches
-// one). A first-byte deadline that fired (fallback path) is wrapped
-// as ErrFetchTimeout so state reason distinguishes it from a raw dial
-// error.
-func (s *cdnSource) classify(parent context.Context, monitor *speedMonitor, err error) error {
+// classify implements the cancellation-precedence rule: parent ctx
+// first, then first-byte deadline tripped, then monitor.Tripped().
+// Safe with a nil monitor or nil fbTripped (either can be omitted
+// when the caller doesn't use them).
+func (s *cdnSource) classify(parent context.Context, monitor *speedMonitor, fbTripped func() bool, err error) error {
 	if parent.Err() != nil {
 		return parent.Err()
+	}
+	// First-byte deadline fired (headers-then-hang or slow initial
+	// header) — reported explicitly by the firstByteDeadlineCtx
+	// tripped signal, not by ctx error (which is context.Canceled
+	// from our internal cancel call, not DeadlineExceeded).
+	if fbTripped != nil && fbTripped() {
+		return fmt.Errorf("%w: first-byte deadline elapsed", ErrFetchTimeout)
 	}
 	if monitor != nil && monitor.Tripped() {
 		return fmt.Errorf("%w: %v", ErrSlowDownload, err)
 	}
-	// If the wrapped err is context.DeadlineExceeded (from our
-	// firstByteDeadlineCtx), classify as fetch timeout for ops
-	// visibility.
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("%w: %v", ErrFetchTimeout, err)
 	}
