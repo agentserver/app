@@ -101,3 +101,37 @@ func TestStateJSONOmitsZeroLastCheckedAt(t *testing.T) {
 		t.Fatalf("state JSON=%s, want no last_checked_at for zero time", data)
 	}
 }
+
+func TestStateSerializesFallbackFields(t *testing.T) {
+	s := State{
+		LastSourceUsed: "github",
+		LastFallbacks: []FallbackRecord{
+			{Source: "github", Stage: "manifest", Reason: "timeout", Tried: time.Unix(1_700_000_000, 0).UTC()},
+		},
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got State
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.LastSourceUsed != "github" {
+		t.Fatalf("LastSourceUsed=%q", got.LastSourceUsed)
+	}
+	if len(got.LastFallbacks) != 1 || got.LastFallbacks[0].Stage != "manifest" {
+		t.Fatalf("fallbacks not round-tripped: %+v", got.LastFallbacks)
+	}
+}
+
+func TestStateOmitsEmptyFallbackFields(t *testing.T) {
+	b, err := json.Marshal(State{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	if strings.Contains(got, "last_source_used") || strings.Contains(got, "last_fallbacks") {
+		t.Fatalf("empty state must not include new fields: %s", got)
+	}
+}

@@ -6,25 +6,14 @@ import (
 	"testing"
 )
 
-func TestManifestValidateAcceptsAssetsHTTPSInstaller(t *testing.T) {
+func TestManifestValidateAcceptsHTTPSInstaller(t *testing.T) {
+	// Post-v3: Validate is format-only; host allowlist moved to source_cdn.
 	m := Manifest{
 		Version: "0.1.2",
 		URL:     "https://assets.agent.cs.ac.cn/agentserver-app/windows/agentserver-app-0.1.2-setup.exe",
 		SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		Size:    123,
 		Notes:   "release notes",
-	}
-	if err := m.Validate(); err != nil {
-		t.Fatalf("Validate: %v", err)
-	}
-}
-
-func TestManifestValidateAcceptsMixedCaseAssetsHost(t *testing.T) {
-	m := Manifest{
-		Version: "0.1.2",
-		URL:     "https://ASSETS.AGENT.CS.AC.CN/agentserver-app.exe",
-		SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		Size:    123,
 	}
 	if err := m.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
@@ -141,28 +130,6 @@ func TestManifestValidateRejectsPaddedURL(t *testing.T) {
 	}
 }
 
-func TestManifestValidateRejectsAssetsHostSuffixBypass(t *testing.T) {
-	m := Manifest{
-		Version: "0.1.2",
-		URL:     "https://assets.agent.cs.ac.cn.evil.com/agentserver-app.exe",
-		SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-	}
-	if err := m.Validate(); err == nil {
-		t.Fatal("expected host allowlist error")
-	}
-}
-
-func TestManifestValidateRejectsAssetsHostUserinfoBypass(t *testing.T) {
-	m := Manifest{
-		Version: "0.1.2",
-		URL:     "https://assets.agent.cs.ac.cn@evil.com/agentserver-app.exe",
-		SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-	}
-	if err := m.Validate(); err == nil {
-		t.Fatal("expected host allowlist error")
-	}
-}
-
 func TestManifestValidateRejectsNegativeSize(t *testing.T) {
 	m := Manifest{
 		Version: "0.1.2",
@@ -172,17 +139,6 @@ func TestManifestValidateRejectsNegativeSize(t *testing.T) {
 	}
 	if err := m.Validate(); err == nil {
 		t.Fatal("expected negative size error")
-	}
-}
-
-func TestManifestValidateRejectsURLOutsideAssetsHost(t *testing.T) {
-	m := Manifest{
-		Version: "0.1.2",
-		URL:     "https://example.com/agentserver-app-0.1.2-setup.exe",
-		SHA256:  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-	}
-	if err := m.Validate(); err == nil {
-		t.Fatal("expected host allowlist error")
 	}
 }
 

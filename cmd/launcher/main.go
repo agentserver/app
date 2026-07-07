@@ -342,11 +342,13 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 }
 
 func newCompletedUpdater(p paths.Paths) *updater.Service {
+	cfg := updater.LoadUpgradeConfig(os.Getenv)
 	return &updater.Service{
 		CurrentVersion: appversion.Version,
 		ManifestURL:    updater.DefaultManifestURL,
 		CacheDir:       p.UpdatesCacheDir,
 		State:          updater.NewStateStore(p.UpdateStateFile),
+		Sources:        updater.BuildSources(cfg),
 	}
 }
 

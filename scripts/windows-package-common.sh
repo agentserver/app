@@ -205,3 +205,49 @@ copy_portable_payloads() {
     cp "$src" "$stage/$dest"
   done
 }
+
+# render_latest_json emits both latest-cdn.json and latest-github.json
+# from a built installer. Requires jq (composes JSON structurally so
+# free-form "notes" — quotes, backslashes, newlines — round-trips safely).
+#
+# Usage:
+#   render_latest_json <installer_path> <version> [notes]
+#
+# Env overrides:
+#   UPGRADE_GITHUB_REPO  (default: agentserver/app)
+render_latest_json() {
+  local installer_path="$1"
+  local version="$2"
+  local notes="${3:-}"
+  command -v jq >/dev/null || { echo "jq required" >&2; return 2; }
+
+  local size sha installer_name dist_dir
+  # GNU stat first (Linux/Git-Bash on Windows CI), BSD stat fallback (macOS).
+  size=$(stat -c%s "$installer_path" 2>/dev/null || stat -f%z "$installer_path")
+  sha=$(sha256sum "$installer_path" | cut -d' ' -f1)
+  installer_name=$(basename "$installer_path")
+  dist_dir=$(dirname "$installer_path")
+
+  local owner_repo="${UPGRADE_GITHUB_REPO:-agentserver/app}"
+  local tag="v${version}"
+  local cdn_url="https://assets.agent.cs.ac.cn/agentserver-app/windows/${installer_name}"
+  local gh_url="https://github.com/${owner_repo}/releases/download/${tag}/${installer_name}"
+
+  jq -n \
+    --arg version "$version" \
+    --arg url "$cdn_url" \
+    --arg sha "$sha" \
+    --arg notes "$notes" \
+    --argjson size "$size" \
+    '{version:$version, url:$url, sha256:$sha, size:$size, notes:$notes}' \
+    > "${dist_dir}/latest-cdn.json"
+
+  jq -n \
+    --arg version "$version" \
+    --arg url "$gh_url" \
+    --arg sha "$sha" \
+    --arg notes "$notes" \
+    --argjson size "$size" \
+    '{version:$version, url:$url, sha256:$sha, size:$size, notes:$notes}' \
+    > "${dist_dir}/latest-github.json"
+}

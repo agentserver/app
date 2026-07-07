@@ -1,0 +1,118 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  windows-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Ensure release exists and guard against re-run
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # `push: tags` alone does NOT create a GitHub release object;
+          # `gh release upload` requires one. Create as draft if missing
+          # so the upload steps below have a target. Left in draft until
+          # both .exe and latest.json land successfully.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            # Create as PUBLISHED (not draft). Draft assets aren't
+            # served via the public download URL, which would break
+            # the round-trip SHA verify below. During the brief window
+            # between .exe upload and latest.json upload, clients
+            # fetching latest.json will 404 and fall back to CDN —
+            # correct behavior.
+            gh release create "$TAG" --title "$TAG" --notes "Automated release for $TAG. Assets are uploaded by CI."
+          fi
+          # Fail-fast if the release already has a latest.json asset —
+          # re-running the workflow on the same tag would race the
+          # second build against the first and briefly point clients
+          # at a mismatched .exe. Delete the release manually if
+          # intentional re-publish is required.
+          if gh release view "$TAG" --json assets --jq '.assets[].name' 2>/dev/null | grep -qx 'latest.json'; then
+            echo "Refusing to re-publish: release $TAG already has latest.json"
+            exit 1
+          fi
+
+      - name: Build Windows installer
+        shell: bash
+        run: |
+          # The existing packaging entrypoint. Adjust if your repo uses
+          # a different entry (e.g. make package-windows).
+          ./scripts/package-windows.sh
+
+      - name: Render latest.json
+        shell: bash
+        env:
+          UPGRADE_GITHUB_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          source ./scripts/windows-package-common.sh
+          INSTALLER=$(ls dist/agentserver-app-*-setup.exe 2>/dev/null | head -1)
+          if [ -z "$INSTALLER" ]; then
+            echo "No installer found under dist/" >&2
+            exit 1
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          # P0 guard: package-windows.sh hard-codes VERSION and produces
+          # agentserver-app-<VERSION>-setup.exe. If that VERSION was not
+          # bumped to match the pushed tag, the manifest would advertise
+          # a NEW version pointing at OLD-VERSION bytes — clients would
+          # loop-install. Fail loudly instead.
+          EXE_NAME=$(basename "$INSTALLER")
+          if [[ "$EXE_NAME" != *"${VERSION}"* ]]; then
+            echo "FATAL: installer '$EXE_NAME' does not contain tag version '${VERSION}'." >&2
+            echo "       Bump VERSION in scripts/package-windows.sh to match tag '${GITHUB_REF_NAME}' and re-tag." >&2
+            exit 1
+          fi
+          render_latest_json "$INSTALLER" "$VERSION"
+          test -f dist/latest-github.json
+          test -f dist/latest-cdn.json
+
+      - name: Upload assets — installer first, latest.json last
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # Upload .exe first so latest.json never points at a missing
+          # or wrong asset. Do NOT use --clobber on .exe — a re-run
+          # would silently swap bytes under an already-published
+          # latest.json.
+          gh release upload "$TAG" dist/agentserver-app-*-setup.exe
+          # Round-trip verify: fetch the just-uploaded asset back and
+          # compare SHA against the local dist bytes. Catches CDN
+          # cache poisoning / mid-upload corruption before the manifest
+          # references it.
+          EXE_NAME=$(ls dist/agentserver-app-*-setup.exe | head -1 | xargs -n1 basename)
+          # GitHub's release CDN is eventually-consistent; a fresh
+          # asset can 404 or serve stale bytes for up to ~60s after
+          # the upload API returns. Retry aggressively so a transient
+          # CDN flake doesn't burn a tag.
+          curl -sSfL --retry 8 --retry-delay 5 --retry-all-errors \
+            -o /tmp/verify.exe \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${EXE_NAME}"
+          DIST_SHA=$(sha256sum "dist/${EXE_NAME}" | cut -d' ' -f1)
+          REMOTE_SHA=$(sha256sum /tmp/verify.exe | cut -d' ' -f1)
+          if [ "$DIST_SHA" != "$REMOTE_SHA" ]; then
+            echo "SHA mismatch: dist=$DIST_SHA remote=$REMOTE_SHA" >&2
+            exit 1
+          fi
+          # Only now publish the manifest — clients that fetch it are
+          # guaranteed to find a matching .exe.
+          cp dist/latest-github.json dist/latest.json
+          gh release upload "$TAG" dist/latest.json
