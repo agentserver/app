@@ -23,6 +23,13 @@ type speedMonitor struct {
 	bytes   atomic.Int64
 	tripped atomic.Bool
 
+	// startNS is nanoseconds since epoch (Unix) captured on the FIRST
+	// non-zero Read via countingReader. Zero means "no bytes yet, do
+	// not measure". This makes "elapsed" the time since transfer
+	// actually began — not since run() started — so dial + TLS +
+	// slow-start don't leak into the throughput calc.
+	startNS atomic.Int64
+
 	// samples is touched only inside run(); no lock needed.
 	samples []speedSampleRecord
 }
@@ -68,12 +75,22 @@ func (m *speedMonitor) run(ctx context.Context) {
 		defer t.Stop()
 		tick = t.C
 	}
-	start := m.now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-tick:
+			// Ticks that arrive before any byte is read are ignored —
+			// dial + TLS handshake time doesn't count against the
+			// window. countingReader.Read sets startNS on first byte.
+			startNS := m.startNS.Load()
+			if startNS == 0 {
+				if m.onSample != nil {
+					m.onSample(SpeedSample{})
+				}
+				continue
+			}
+			start := time.Unix(0, startNS)
 			m.recordTick(now, start)
 			if m.tripped.Load() {
 				return
@@ -145,6 +162,10 @@ type countingReader struct {
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	if n > 0 {
+		if c.m.startNS.Load() == 0 {
+			// CompareAndSwap ⇒ only the first non-zero read sets start.
+			c.m.startNS.CompareAndSwap(0, c.m.now().UnixNano())
+		}
 		c.m.bytes.Add(int64(n))
 	}
 	return n, err

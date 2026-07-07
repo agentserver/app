@@ -17,13 +17,26 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Guard against tag re-run
+      - name: Ensure release exists and guard against re-run
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
+          # `push: tags` alone does NOT create a GitHub release object;
+          # `gh release upload` requires one. Create as draft if missing
+          # so the upload steps below have a target. Left in draft until
+          # both .exe and latest.json land successfully.
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            # Create as PUBLISHED (not draft). Draft assets aren't
+            # served via the public download URL, which would break
+            # the round-trip SHA verify below. During the brief window
+            # between .exe upload and latest.json upload, clients
+            # fetching latest.json will 404 and fall back to CDN —
+            # correct behavior.
+            gh release create "$TAG" --title "$TAG" --notes "Automated release for $TAG. Assets are uploaded by CI."
+          fi
           # Fail-fast if the release already has a latest.json asset —
           # re-running the workflow on the same tag would race the
           # second build against the first and briefly point clients

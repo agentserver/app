@@ -3,6 +3,7 @@ package updater
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -119,13 +120,12 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 
 	// When the underlying Transport is not *http.Transport (test path),
 	// applyFirstByteTimeout returned an unmodified client. Fall back
-	// to a context deadline for the first byte via WithTimeout.
-	reqCtx := dlCtx
-	if !s.isRealTransport() && s.policy.FirstByteTimeout > 0 {
-		var reqCancel context.CancelFunc
-		reqCtx, reqCancel = context.WithTimeout(dlCtx, s.policy.FirstByteTimeout)
-		defer reqCancel()
-	}
+	// to a context that is cancelled either after FirstByteTimeout OR
+	// when the first response byte arrives (whichever comes first),
+	// matching the *Transport path's ResponseHeaderTimeout semantics
+	// so the deadline never bleeds into the body-read phase.
+	reqCtx, fbCancel := s.firstByteDeadlineCtx(dlCtx)
+	defer fbCancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, m.URL, nil)
 	if err != nil {
 		return err
@@ -134,6 +134,10 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	if err != nil {
 		return s.classify(ctx, monitor, err)
 	}
+	// First byte received (or at least headers) — release the
+	// first-byte deadline so slow body reads aren't punished by it.
+	// The speed monitor handles slow-body policy from here on.
+	fbCancel()
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("cdn download: unexpected status %s", resp.Status)
@@ -152,15 +156,37 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	return nil
 }
 
+// firstByteDeadlineCtx returns a child of parent that is cancelled at
+// FirstByteTimeout OR when the caller invokes the returned cancel.
+// Used only in the non-*Transport fallback (test path); production
+// clients get first-byte enforcement via
+// http.Transport.ResponseHeaderTimeout inside applyFirstByteTimeout.
+// If the policy disables FirstByteTimeout (compat mode), returns
+// parent + no-op cancel.
+func (s *cdnSource) firstByteDeadlineCtx(parent context.Context) (context.Context, context.CancelFunc) {
+	if s.isRealTransport() || s.policy.FirstByteTimeout <= 0 {
+		return parent, func() {}
+	}
+	return context.WithTimeout(parent, s.policy.FirstByteTimeout)
+}
+
 // classify implements the cancellation-precedence rule: parent ctx first,
 // then Tripped(). Safe with a nil monitor (compat mode never launches
-// one).
+// one). A first-byte deadline that fired (fallback path) is wrapped
+// as ErrFetchTimeout so state reason distinguishes it from a raw dial
+// error.
 func (s *cdnSource) classify(parent context.Context, monitor *speedMonitor, err error) error {
 	if parent.Err() != nil {
 		return parent.Err()
 	}
 	if monitor != nil && monitor.Tripped() {
 		return fmt.Errorf("%w: %v", ErrSlowDownload, err)
+	}
+	// If the wrapped err is context.DeadlineExceeded (from our
+	// firstByteDeadlineCtx), classify as fetch timeout for ops
+	// visibility.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %v", ErrFetchTimeout, err)
 	}
 	return err
 }
