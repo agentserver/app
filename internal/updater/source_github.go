@@ -22,7 +22,15 @@ type githubSource struct {
 
 	// installerHostMatch is the asset-host validator. Production value
 	// is githubAssetHost; tests override to accept httptest.Server hosts.
+	// When overridden by a test, memoized clients must be rebuilt —
+	// see rebuildClients.
 	installerHostMatch func(host string) bool
+
+	// Memoized redirect-pinned + first-byte-timeout clients. Built once
+	// at construction to avoid per-download Transport clone.
+	api       *http.Client
+	asset     *http.Client
+	installer *http.Client
 }
 
 // NewGitHubSource returns a Source backed by a public GitHub release.
@@ -37,13 +45,24 @@ func NewGitHubSource(repo, apiBase string, client *http.Client, policy SourcePol
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &githubSource{
+	s := &githubSource{
 		repo:               repo,
 		apiBase:            apiBase,
 		client:             client,
 		policy:             policy,
 		installerHostMatch: githubAssetHost,
 	}
+	s.rebuildClients()
+	return s
+}
+
+// rebuildClients (re)builds the three memoized clients. Called from
+// the constructor and, in tests only, after installerHostMatch is
+// swapped for a permissive matcher.
+func (s *githubSource) rebuildClients() {
+	s.api = s.redirectPinned(s.client, githubAPIHost)
+	s.asset = s.redirectPinned(s.client, s.installerHostMatch)
+	s.installer = applyFirstByteTimeout(s.asset, s.policy.FirstByteTimeout)
 }
 
 func (s *githubSource) Name() string { return "github" }
@@ -98,17 +117,9 @@ func (s *githubSource) setHeaders(req *http.Request) {
 	req.Header.Set("User-Agent", "agentserver-app/"+appversion.Version)
 }
 
-func (s *githubSource) apiClient() *http.Client {
-	return s.redirectPinned(s.client, githubAPIHost)
-}
-
-func (s *githubSource) assetClient() *http.Client {
-	return s.redirectPinned(s.client, s.installerHostMatch)
-}
-
-func (s *githubSource) installerClient() *http.Client {
-	return applyFirstByteTimeout(s.assetClient(), s.policy.FirstByteTimeout)
-}
+func (s *githubSource) apiClient() *http.Client       { return s.api }
+func (s *githubSource) assetClient() *http.Client     { return s.asset }
+func (s *githubSource) installerClient() *http.Client { return s.installer }
 
 func (s *githubSource) redirectPinned(base *http.Client, hostOK func(string) bool) *http.Client {
 	client := *base

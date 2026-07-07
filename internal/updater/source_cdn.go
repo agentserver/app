@@ -14,6 +14,12 @@ type cdnSource struct {
 	manifestURL string
 	client      *http.Client
 	policy      SourcePolicy
+
+	// pinned + install are memoized at construction time to avoid
+	// per-download clone of *http.Transport (and its connection pool)
+	// on every DownloadInstaller call.
+	pinned  *http.Client
+	install *http.Client
 }
 
 // NewCDNSource returns a Source backed by the internal CDN
@@ -27,7 +33,10 @@ func NewCDNSource(manifestURL string, client *http.Client, policy SourcePolicy) 
 	if client == nil {
 		client = http.DefaultClient
 	}
-	return &cdnSource{manifestURL: manifestURL, client: client, policy: policy}
+	s := &cdnSource{manifestURL: manifestURL, client: client, policy: policy}
+	s.pinned = s.buildPinnedClient()
+	s.install = applyFirstByteTimeout(s.pinned, s.policy.FirstByteTimeout)
+	return s
 }
 
 func (s *cdnSource) Name() string { return "cdn" }
@@ -156,17 +165,17 @@ func (s *cdnSource) classify(parent context.Context, monitor *speedMonitor, err 
 	return err
 }
 
-// pinnedClient returns a client whose CheckRedirect validates each hop
-// against the CDN's installer whitelist.
-func (s *cdnSource) pinnedClient() *http.Client {
-	return s.redirectPinned(s.client)
-}
+// pinnedClient returns the memoized redirect-pinned client.
+func (s *cdnSource) pinnedClient() *http.Client { return s.pinned }
 
-// installerClient enforces FirstByteTimeout via ResponseHeaderTimeout
-// when the base Transport is *http.Transport; else returns the pinned
-// client unchanged and the caller uses a request context deadline.
-func (s *cdnSource) installerClient() *http.Client {
-	return applyFirstByteTimeout(s.pinnedClient(), s.policy.FirstByteTimeout)
+// installerClient returns the memoized installer client (pinned +
+// FirstByteTimeout applied).
+func (s *cdnSource) installerClient() *http.Client { return s.install }
+
+// buildPinnedClient constructs the CheckRedirect-wrapped client once.
+// Called from the constructor; do not call per-request.
+func (s *cdnSource) buildPinnedClient() *http.Client {
+	return s.redirectPinned(s.client)
 }
 
 func (s *cdnSource) redirectPinned(base *http.Client) *http.Client {

@@ -31,19 +31,33 @@ const testRepo = "agentserver/app"
 // githubMock serves both the /repos/.../releases/latest endpoint and
 // the browser_download_url assets in one httptest.Server.
 type githubMock struct {
-	t                 *testing.T
-	server            *httptest.Server
-	installerBody     []byte
-	manifestBody      []byte // rendered latest.json; setManifest fills it
-	manifestStatus    int
-	slowManifestAsset bool // when true, /assets/latest.json sleeps 500ms
-	requireHeaders    bool // when true, /repos/.../releases/latest 403s missing Accept+UA
+	t                    *testing.T
+	server               *httptest.Server
+	installerBody        []byte
+	manifestBody         []byte // rendered latest.json; setManifest fills it
+	manifestStatus       int
+	slowManifestAsset    bool          // when true, /assets/latest.json sleeps slowManifestAssetDelay
+	slowManifestAssetDur time.Duration // default 500ms when slowManifestAsset is set
+	slowReleaseAPI       bool          // when true, /repos/.../releases/latest sleeps slowReleaseAPIDur
+	slowReleaseAPIDur    time.Duration
+	requireHeaders       bool // when true, /repos/.../releases/latest 403s missing Accept+UA
 }
 
 func newGitHubMock(t *testing.T) *githubMock {
 	m := &githubMock{t: t, manifestStatus: http.StatusOK}
 	mux := http.NewServeMux()
 	mux.HandleFunc(fmt.Sprintf("/repos/%s/releases/latest", testRepo), func(w http.ResponseWriter, r *http.Request) {
+		if m.slowReleaseAPI {
+			d := m.slowReleaseAPIDur
+			if d <= 0 {
+				d = 500 * time.Millisecond
+			}
+			select {
+			case <-time.After(d):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if m.requireHeaders {
 			if r.Header.Get("Accept") != "application/vnd.github+json" ||
 				!strings.HasPrefix(r.Header.Get("User-Agent"), "agentserver-app/") {
@@ -69,8 +83,12 @@ func newGitHubMock(t *testing.T) *githubMock {
 	})
 	mux.HandleFunc("/assets/latest.json", func(w http.ResponseWriter, r *http.Request) {
 		if m.slowManifestAsset {
+			d := m.slowManifestAssetDur
+			if d <= 0 {
+				d = 500 * time.Millisecond
+			}
 			select {
-			case <-time.After(500 * time.Millisecond):
+			case <-time.After(d):
 			case <-r.Context().Done():
 				return
 			}
@@ -126,6 +144,7 @@ func TestGitHubSourceHappyPath(t *testing.T) {
 	mock.setManifest(mock.server.URL+"/assets/setup.exe", body)
 	src := newTestGitHubSource(mock)
 	src.installerHostMatch = permissiveHost
+	src.rebuildClients()
 
 	m, err := src.FetchManifest(context.Background())
 	if err != nil {
@@ -150,6 +169,7 @@ func TestGitHubSourceSendsAcceptAndUserAgent(t *testing.T) {
 	mock.setManifest(mock.server.URL+"/assets/setup.exe", body)
 	src := newTestGitHubSource(mock)
 	src.installerHostMatch = permissiveHost
+	src.rebuildClients()
 
 	if _, err := src.FetchManifest(context.Background()); err != nil {
 		t.Fatalf("FetchManifest expected to succeed with headers: %v", err)
@@ -207,23 +227,44 @@ func TestGitHubSourceManifestTimeoutFires(t *testing.T) {
 }
 
 func TestGitHubSourceManifestTimeoutIsPerRequest(t *testing.T) {
+	// Distinguish per-hop from shared budget:
+	//   - Budget: 200ms
+	//   - Hop 1 (release API): sleeps 150ms
+	//   - Hop 2 (latest.json):  sleeps 100ms
+	//
+	// Per-hop budget: both hops fit under 200ms individually
+	//   → total elapsed ≈ 250ms, request SUCCEEDS.
+	// Shared budget: hop 1 consumes 150ms of shared 200ms
+	//   → hop 2 has only 50ms left, times out at ~200ms elapsed
+	//   → request FAILS with ErrFetchTimeout.
 	mock := newGitHubMock(t)
+	mock.slowReleaseAPI = true
+	mock.slowReleaseAPIDur = 150 * time.Millisecond
 	mock.slowManifestAsset = true
+	mock.slowManifestAssetDur = 100 * time.Millisecond
 	body := []byte("payload")
 	mock.setManifest(mock.server.URL+"/assets/setup.exe", body)
 	policy := DefaultSourcePolicy()
-	policy.ManifestTimeout = 50 * time.Millisecond
+	policy.ManifestTimeout = 200 * time.Millisecond
 	src := NewGitHubSource(testRepo, mock.server.URL, insecureTLSClient(), policy).(*githubSource)
 	src.installerHostMatch = permissiveHost
+	src.rebuildClients()
 
 	start := time.Now()
-	_, err := src.FetchManifest(context.Background())
+	m, err := src.FetchManifest(context.Background())
 	elapsed := time.Since(start)
-	if err == nil || !errors.Is(err, ErrFetchTimeout) {
-		t.Fatalf("err=%v; want ErrFetchTimeout on slow second hop", err)
+	if err != nil {
+		t.Fatalf("FetchManifest err=%v after %v — timeout is shared across hops, not per-hop", err, elapsed)
 	}
-	if elapsed > 300*time.Millisecond {
-		t.Fatalf("elapsed %v — timeout appears shared across hops", elapsed)
+	if m.Version == "" {
+		t.Fatalf("empty manifest returned")
+	}
+	// Sanity: elapsed should be ~250ms (150 + 100). Both hops ran.
+	if elapsed < 200*time.Millisecond {
+		t.Fatalf("elapsed %v — hops did not both run sequentially", elapsed)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("elapsed %v — took too long, something else broke", elapsed)
 	}
 }
 
@@ -283,6 +324,7 @@ func TestGitHubSourceRejectsInstallerURLWithUserinfo(t *testing.T) {
 	mock.setManifest("https://good@github.com/setup.exe", body)
 	src := newTestGitHubSource(mock)
 	src.installerHostMatch = permissiveHost // even if host allowed, userinfo rejected
+	src.rebuildClients()
 
 	_, err := src.FetchManifest(context.Background())
 	if err == nil || !errors.Is(err, ErrHostNotAllowed) {
@@ -305,6 +347,7 @@ func TestGitHubSourceRejectsInstallerLargerThanSize(t *testing.T) {
 	mock.installerBody = realBody
 	src := newTestGitHubSource(mock)
 	src.installerHostMatch = permissiveHost
+	src.rebuildClients()
 
 	got, err := src.FetchManifest(context.Background())
 	if err != nil {
@@ -330,6 +373,7 @@ func TestGitHubSourcePreservesHeadersAcrossRedirect(t *testing.T) {
 
 	src := NewGitHubSource(testRepo, "", insecureTLSClient(), DefaultSourcePolicy()).(*githubSource)
 	src.installerHostMatch = permissiveHost
+	src.rebuildClients()
 
 	body := []byte("body")
 	sum := sha256.Sum256(body)
