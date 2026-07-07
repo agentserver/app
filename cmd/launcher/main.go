@@ -68,6 +68,11 @@ type launcherOptions struct {
 	OpenFrontend bool
 }
 
+var startCompletedLoomDriverDaemon = func(exe, configPath string) error {
+	_, err := loom.StartDriverDaemonManaged(exe, configPath)
+	return err
+}
+
 func parseLauncherOptions(args []string) launcherOptions {
 	opts := launcherOptions{OpenPage: true, OpenFrontend: true}
 	for _, arg := range args {
@@ -233,6 +238,8 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		AS:                       agentserver.New("https://agent.cs.ac.cn"),
 		Slaves:                   slaveManager,
 		Updates:                  updates,
+		DriverDaemonStore:        console.NewDriverDaemonStore(driverDaemonStatePath(in.Paths)),
+		DriverDaemonRuntime:      completedDriverDaemonRuntime(in.Paths, in.InstallDir),
 		PendingSlaveRestartsPath: in.Paths.PendingSlaveRestartsFile,
 		CodexConfigFile:          in.Paths.CodexConfigFile,
 		ModelserverWebBaseURL:    "https://code.cs.ac.cn",
@@ -467,6 +474,63 @@ func completedSlaveManagerDeps(in completedServeInput) (slave.ManagerDeps, error
 	}, nil
 }
 
+type loomDriverRuntime struct {
+	exe        string
+	configPath string
+}
+
+func completedDriverDaemonRuntime(p paths.Paths, installDir string) console.DriverDaemonRuntime {
+	if strings.TrimSpace(installDir) == "" || strings.TrimSpace(p.UserHome) == "" {
+		return nil
+	}
+	return loomDriverRuntime{
+		exe:        joinExe(installDir, "driver-agent.exe"),
+		configPath: filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml"),
+	}
+}
+
+func (r loomDriverRuntime) Running(_ context.Context, records []console.DriverProcessRecord) (bool, error) {
+	return loom.DriverDaemonRunning(r.exe, r.configPath, consoleRecordsToLoom(records)), nil
+}
+
+func (r loomDriverRuntime) Start(context.Context) ([]console.DriverProcessRecord, error) {
+	records, err := loom.StartDriverDaemonManaged(r.exe, r.configPath)
+	if err != nil {
+		return nil, err
+	}
+	return loomRecordsToConsole(records), nil
+}
+
+func (r loomDriverRuntime) Stop(_ context.Context, records []console.DriverProcessRecord) error {
+	return loom.StopDriverDaemon(r.exe, r.configPath, consoleRecordsToLoom(records))
+}
+
+func loomRecordsToConsole(in []loom.DriverProcessMetadata) []console.DriverProcessRecord {
+	out := make([]console.DriverProcessRecord, 0, len(in))
+	for _, record := range in {
+		out = append(out, console.DriverProcessRecord{
+			PID:       record.PID,
+			Exe:       record.Exe,
+			Args:      append([]string(nil), record.Args...),
+			CreatedAt: record.CreatedAt,
+		})
+	}
+	return out
+}
+
+func consoleRecordsToLoom(in []console.DriverProcessRecord) []loom.DriverProcessMetadata {
+	out := make([]loom.DriverProcessMetadata, 0, len(in))
+	for _, record := range in {
+		out = append(out, loom.DriverProcessMetadata{
+			PID:       record.PID,
+			Exe:       record.Exe,
+			Args:      append([]string(nil), record.Args...),
+			CreatedAt: record.CreatedAt,
+		})
+	}
+	return out
+}
+
 func completedComputerName() string {
 	if name := strings.TrimSpace(os.Getenv("COMPUTERNAME")); name != "" {
 		return name
@@ -603,6 +667,7 @@ func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestra
 		CodexAbsPath:                      in.Paths.CodexExePath,
 		LoomDriverPath:                    loomDriverPath,
 		LoomConfigPath:                    loomConfigPath,
+		MachineFile:                       in.Paths.MachineFile,
 		OpenBrowser:                       in.OpenBrowser,
 		TokenRefresherExePath:             in.TokenRefresherExePath,
 	})
@@ -735,6 +800,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		CodexManifestPath:                 joinExe(installDir, "codex-manifest.json"),
 		LoomDriverPath:                    joinExe(installDir, "driver-agent.exe"),
 		LoomConfigPath:                    filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml"),
+		MachineFile:                       p.MachineFile,
 		LauncherExePath:                   joinExe(installDir, "launcher.exe"),
 		OpenFolderExePath:                 joinExe(installDir, "open-folder.exe"),
 		TokenRefresherExePath:             joinExe(installDir, "token-refresher.exe"),
@@ -940,6 +1006,7 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 		serverName = "driver-" + s.Agentserver.ShortID
 	}
 	codexBin := completedDriverCodexBin(p)
+	displayName := completedDriverComputerName(p, s)
 	if err := loom.WriteDriverConfig(loomConfigPath, loom.DriverConfig{
 		ServerURL:     serverURL,
 		ServerName:    serverName,
@@ -949,8 +1016,8 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 		WorkspaceID:   s.Agentserver.WorkspaceID,
 		WorkspaceName: s.Agentserver.WorkspaceName,
 		ShortID:       s.Agentserver.ShortID,
-		DisplayName:   "星池指挥官",
-		Description:   "星池指挥官本地协作驱动。",
+		DisplayName:   displayName,
+		Description:   displayName + " 本地协作驱动。",
 		CodexBin:      codexBin,
 		CodexWorkDir:  p.UserHome,
 		CodexHome:     completedDriverCodexHome(p),
@@ -977,8 +1044,41 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 			return fmt.Errorf("configure codex mcp driver: %w", err)
 		}
 	}
-	_ = loom.StartDriverDaemon(driverPath, loomConfigPath)
+	if completedDriverDaemonEnabled(p) {
+		_ = startCompletedLoomDriverDaemon(driverPath, loomConfigPath)
+	}
 	return nil
+}
+
+func driverDaemonStatePath(p paths.Paths) string {
+	if strings.TrimSpace(p.InstallRoot) == "" {
+		return ""
+	}
+	return filepath.Join(p.InstallRoot, "driver-daemon.json")
+}
+
+func completedDriverDaemonEnabled(p paths.Paths) bool {
+	path := driverDaemonStatePath(p)
+	if path == "" {
+		return true
+	}
+	st, err := console.NewDriverDaemonStore(path).Load()
+	if err != nil {
+		return false
+	}
+	return st.Enabled
+}
+
+func completedDriverComputerName(p paths.Paths, s *state.State) string {
+	if strings.TrimSpace(p.MachineFile) != "" {
+		if m, err := slave.NewMachineStore(p.MachineFile).Ensure(completedComputerName()); err == nil {
+			return m.ComputerName
+		}
+	}
+	if s != nil && strings.TrimSpace(s.InstallID) != "" {
+		return "local-computer-" + lastN(s.InstallID, 10)
+	}
+	return completedComputerName()
 }
 
 func completedDriverCodexHome(p paths.Paths) string {

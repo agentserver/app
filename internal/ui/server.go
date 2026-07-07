@@ -78,6 +78,7 @@ func NewServerWithConsoleToken(o Orchestrator, c ConsoleController, token string
 	mux.HandleFunc("/api/console/open-subscription", s.handleConsoleOpenSubscription)
 	mux.HandleFunc("/api/console/logout-modelserver", s.handleConsoleLogoutModelserver)
 	mux.HandleFunc("/api/console/model", s.handleConsoleSetModel)
+	mux.HandleFunc("/api/console/driver-daemon", s.handleConsoleDriverDaemon)
 	mux.HandleFunc("/api/console/quit", s.handleConsoleQuit)
 	mux.HandleFunc("/api/console/select-folder", s.handleConsoleSelectFolder)
 	mux.HandleFunc("/api/console/slaves", s.handleConsoleSlaves)
@@ -179,7 +180,9 @@ func trustedConsoleMutationRequest(r *http.Request) bool {
 func trustedConsoleMutationRequestWithToken(r *http.Request, token string) bool {
 	if token != "" {
 		got := strings.TrimSpace(r.Header.Get(ConsoleInstanceTokenHeader))
-		return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1
+		if subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+			return false
+		}
 	}
 	fetchSite := strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")))
 	switch fetchSite {
@@ -586,6 +589,37 @@ func (s *server) handleConsoleSlave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, sl)
+}
+
+func (s *server) handleConsoleDriverDaemon(w http.ResponseWriter, r *http.Request) {
+	if !requireMethods(w, r, "GET, POST", http.MethodGet, http.MethodPost) {
+		return
+	}
+	if r.Method == http.MethodGet {
+		st, err := s.c.DriverDaemonState(r.Context())
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, st)
+		return
+	}
+	if !s.requireTrustedConsoleMutation(w, r) {
+		return
+	}
+	var in struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	st, err := s.c.SetDriverDaemonEnabled(r.Context(), in.Enabled)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "driver daemon mutation failed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 func (s *server) handleConsoleOpenFrontend(w http.ResponseWriter, r *http.Request) {

@@ -19,6 +19,8 @@ type ConsoleController interface {
 	PauseSlave(context.Context, string) (slave.Slave, error)
 	OpenSlaveRemote(context.Context, string) (console.SlaveRemoteOpenResult, error)
 	DeleteSlave(context.Context, string) error
+	DriverDaemonState(context.Context) (console.DriverDaemonState, error)
+	SetDriverDaemonEnabled(context.Context, bool) (console.DriverDaemonState, error)
 	Healthy(context.Context) bool
 	OpenFrontend(context.Context) error
 	OpenSubscription(context.Context) error
@@ -58,6 +60,18 @@ func (noopConsoleController) OpenSlaveRemote(context.Context, string) (console.S
 }
 func (noopConsoleController) DeleteSlave(context.Context, string) error {
 	return errors.New("console: slave manager unavailable")
+}
+func (noopConsoleController) DriverDaemonState(context.Context) (console.DriverDaemonState, error) {
+	return console.DriverDaemonState{
+		Enabled:          false,
+		Running:          false,
+		CommanderURL:     console.DefaultCommanderURL,
+		LastErrorCode:    console.DriverDaemonUnavailable,
+		LastErrorMessage: "远程控制暂不可用。",
+	}, nil
+}
+func (noopConsoleController) SetDriverDaemonEnabled(context.Context, bool) (console.DriverDaemonState, error) {
+	return console.DriverDaemonState{}, errors.New("console: driver daemon unavailable")
 }
 func (noopConsoleController) Healthy(context.Context) bool           { return false }
 func (noopConsoleController) OpenFrontend(context.Context) error     { return nil }

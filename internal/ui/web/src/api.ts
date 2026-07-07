@@ -113,6 +113,14 @@ export interface OpenConsoleSlaveRemoteResponse {
   url?: string;
 }
 
+export interface ConsoleDriverDaemonState {
+  enabled: boolean;
+  running: boolean;
+  commander_url: string;
+  last_error_code?: string;
+  last_error_message?: string;
+}
+
 export type ConsoleUpdateStatus =
   'idle'
   | 'checking'
@@ -257,6 +265,16 @@ export const openConsoleSlaveRemote = (id: string) =>
 
 export const deleteConsoleSlave = (id: string) =>
   request<{ state: 'deleted' }>(`/api/console/slaves/${encodeURIComponent(id)}`, withConsoleToken({ method: 'DELETE' }));
+
+export const getConsoleDriverDaemon = () =>
+  request<ConsoleDriverDaemonState>('/api/console/driver-daemon');
+
+export const setConsoleDriverDaemon = (enabled: boolean) =>
+  request<ConsoleDriverDaemonState>('/api/console/driver-daemon', withConsoleToken({
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  }));
 
 export const getConsoleUpdate = () =>
   request<ConsoleUpdateState>('/api/console/update');

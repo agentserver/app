@@ -1,6 +1,7 @@
 package loom
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -193,12 +194,240 @@ func TestStartDriverDaemonDoesNotStartDuplicateDaemonForSameConfig(t *testing.T)
 	}
 }
 
+func TestStopDriverDaemonStopsTrackedMCPAndDaemonForConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell helper")
+	}
+	dir := t.TempDir()
+	daemonPIDsPath := filepath.Join(dir, "daemon-pids.txt")
+	exe := filepath.Join(dir, "driver-agent")
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"serve-mcp\" ]; then\n" +
+		"  echo 'driver: tunnel connected' >&2\n" +
+		"  cat >/dev/null\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"if [ \"$1\" = \"serve-daemon\" ]; then\n" +
+		"  echo $$ >> " + strconv.Quote(daemonPIDsPath) + "\n" +
+		"  trap 'exit 0' TERM INT\n" +
+		"  while :; do sleep 1; done\n" +
+		"fi\n"
+	if err := os.WriteFile(exe, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stopDriverBackgroundProcessesForTest()
+	t.Cleanup(stopDriverBackgroundProcessesForTest)
+
+	configPath := filepath.Join(dir, "driver.yaml")
+	if _, err := StartDriverDaemonManaged(exe, configPath); err != nil {
+		t.Fatalf("StartDriverDaemonManaged: %v", err)
+	}
+	pid := parsePID(t, strings.TrimSpace(waitForFile(t, daemonPIDsPath)))
+	if !DriverDaemonRunning(exe, configPath, nil) {
+		t.Fatal("DriverDaemonRunning=false, want true")
+	}
+	if err := StopDriverDaemon(exe, configPath, nil); err != nil {
+		t.Fatalf("StopDriverDaemon: %v", err)
+	}
+	if processExistsForTest(pid) {
+		t.Fatalf("daemon pid %d still exists after stop", pid)
+	}
+	if DriverDaemonRunning(exe, configPath, nil) {
+		t.Fatal("DriverDaemonRunning=true after stop")
+	}
+}
+
+func TestStopDriverDaemonRefusesPersistedPIDWithNonMatchingExecutable(t *testing.T) {
+	resetDriverProcessHooksForTest(t)
+	calledTerminate := false
+	inspectDriverProcess = func(pid int) (DriverProcessMetadata, bool, error) {
+		return DriverProcessMetadata{
+			PID:       pid,
+			Exe:       "/other/driver-agent.exe",
+			Args:      []string{"serve-daemon", "--config", "/tmp/driver.yaml"},
+			CreatedAt: "linux:boot:1",
+		}, true, nil
+	}
+	terminateDriverProcess = func(context.Context, int) error {
+		calledTerminate = true
+		return nil
+	}
+
+	err := StopDriverDaemon("/expected/driver-agent.exe", "/tmp/driver.yaml", []DriverProcessMetadata{{
+		PID:       123,
+		Exe:       "/expected/driver-agent.exe",
+		Args:      []string{"serve-daemon", "--config", "/tmp/driver.yaml"},
+		CreatedAt: "linux:boot:1",
+	}})
+	if err != nil {
+		t.Fatalf("StopDriverDaemon: %v", err)
+	}
+	if calledTerminate {
+		t.Fatal("terminated non-matching executable")
+	}
+}
+
+func TestStopDriverDaemonRefusesPersistedPIDWithNonMatchingArgv(t *testing.T) {
+	resetDriverProcessHooksForTest(t)
+	calledTerminate := false
+	inspectDriverProcess = func(pid int) (DriverProcessMetadata, bool, error) {
+		return DriverProcessMetadata{
+			PID:       pid,
+			Exe:       "/expected/driver-agent.exe",
+			Args:      []string{"serve-daemon", "--config", "/tmp/other.yaml"},
+			CreatedAt: "linux:boot:1",
+		}, true, nil
+	}
+	terminateDriverProcess = func(context.Context, int) error {
+		calledTerminate = true
+		return nil
+	}
+
+	err := StopDriverDaemon("/expected/driver-agent.exe", "/tmp/driver.yaml", []DriverProcessMetadata{{
+		PID:       123,
+		Exe:       "/expected/driver-agent.exe",
+		Args:      []string{"serve-daemon", "--config", "/tmp/driver.yaml"},
+		CreatedAt: "linux:boot:1",
+	}})
+	if err != nil {
+		t.Fatalf("StopDriverDaemon: %v", err)
+	}
+	if calledTerminate {
+		t.Fatal("terminated process with non-matching argv")
+	}
+}
+
+func TestStopDriverDaemonRefusesPersistedPIDWithMismatchedCreationTime(t *testing.T) {
+	resetDriverProcessHooksForTest(t)
+	calledTerminate := false
+	inspectDriverProcess = func(pid int) (DriverProcessMetadata, bool, error) {
+		return DriverProcessMetadata{
+			PID:       pid,
+			Exe:       "/expected/driver-agent.exe",
+			Args:      []string{"serve-daemon", "--config", "/tmp/driver.yaml"},
+			CreatedAt: "linux:boot:2",
+		}, true, nil
+	}
+	terminateDriverProcess = func(context.Context, int) error {
+		calledTerminate = true
+		return nil
+	}
+
+	err := StopDriverDaemon("/expected/driver-agent.exe", "/tmp/driver.yaml", []DriverProcessMetadata{{
+		PID:       123,
+		Exe:       "/expected/driver-agent.exe",
+		Args:      []string{"serve-daemon", "--config", "/tmp/driver.yaml"},
+		CreatedAt: "linux:boot:1",
+	}})
+	if err != nil {
+		t.Fatalf("StopDriverDaemon: %v", err)
+	}
+	if calledTerminate {
+		t.Fatal("terminated process with mismatched creation time")
+	}
+}
+
+func TestStopDriverDaemonRevalidatesPersistedPIDImmediatelyBeforeTerminate(t *testing.T) {
+	resetDriverProcessHooksForTest(t)
+	inspectCalls := 0
+	calledTerminate := false
+	inspectDriverProcess = func(pid int) (DriverProcessMetadata, bool, error) {
+		inspectCalls++
+		if inspectCalls == 1 {
+			return DriverProcessMetadata{
+				PID:       pid,
+				Exe:       "/expected/driver-agent.exe",
+				Args:      []string{"serve-daemon", "--config", "/tmp/driver.yaml"},
+				CreatedAt: "linux:boot:1",
+			}, true, nil
+		}
+		return DriverProcessMetadata{
+			PID:       pid,
+			Exe:       "/other/driver-agent.exe",
+			Args:      []string{"serve-daemon", "--config", "/tmp/driver.yaml"},
+			CreatedAt: "linux:boot:2",
+		}, true, nil
+	}
+	terminateDriverProcess = func(context.Context, int) error {
+		calledTerminate = true
+		return nil
+	}
+
+	err := StopDriverDaemon("/expected/driver-agent.exe", "/tmp/driver.yaml", []DriverProcessMetadata{{
+		PID:       123,
+		Exe:       "/expected/driver-agent.exe",
+		Args:      []string{"serve-daemon", "--config", "/tmp/driver.yaml"},
+		CreatedAt: "linux:boot:1",
+	}})
+	if err != nil {
+		t.Fatalf("StopDriverDaemon: %v", err)
+	}
+	if calledTerminate {
+		t.Fatal("terminated after pre-terminate revalidation changed")
+	}
+	if inspectCalls < 2 {
+		t.Fatalf("inspectCalls=%d, want pre-terminate revalidation", inspectCalls)
+	}
+}
+
+func TestDriverDaemonRunningReportsFalseForPersistedPIDWithNonMatchingExecutable(t *testing.T) {
+	resetDriverProcessHooksForTest(t)
+	inspectDriverProcess = func(pid int) (DriverProcessMetadata, bool, error) {
+		return DriverProcessMetadata{
+			PID:       pid,
+			Exe:       "/other/driver-agent.exe",
+			Args:      []string{"serve-daemon", "--config", "/tmp/driver.yaml"},
+			CreatedAt: "linux:boot:1",
+		}, true, nil
+	}
+
+	if DriverDaemonRunning("/expected/driver-agent.exe", "/tmp/driver.yaml", []DriverProcessMetadata{{
+		PID:       123,
+		Exe:       "/expected/driver-agent.exe",
+		Args:      []string{"serve-daemon", "--config", "/tmp/driver.yaml"},
+		CreatedAt: "linux:boot:1",
+	}}) {
+		t.Fatal("DriverDaemonRunning=true for non-matching executable")
+	}
+}
+
 func readFileIfExists(path string) string {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
 	return string(b)
+}
+
+func parsePID(t *testing.T, text string) int {
+	t.Helper()
+	lines := nonEmptyLines(text)
+	if len(lines) == 0 {
+		t.Fatalf("no pid in %q", text)
+	}
+	pid, err := strconv.Atoi(lines[len(lines)-1])
+	if err != nil {
+		t.Fatalf("parse pid %q: %v", lines[len(lines)-1], err)
+	}
+	return pid
+}
+
+func processExistsForTest(pid int) bool {
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join("/proc", strconv.Itoa(pid)))
+	return err == nil
+}
+
+func resetDriverProcessHooksForTest(t *testing.T) {
+	t.Helper()
+	origInspect := inspectDriverProcess
+	origTerminate := terminateDriverProcess
+	t.Cleanup(func() {
+		inspectDriverProcess = origInspect
+		terminateDriverProcess = origTerminate
+	})
 }
 
 func nonEmptyLines(text string) []string {

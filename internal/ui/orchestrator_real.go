@@ -27,6 +27,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/opencodedesktop"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
 	"github.com/agentserver/agentserver-pkg/internal/shortcut"
+	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tokenrefresh"
 	"github.com/agentserver/agentserver-pkg/internal/vscode"
@@ -56,6 +57,7 @@ type Deps struct {
 	CodexRuntimeEnsure                func(context.Context, string, string, string) error
 	LoomDriverPath                    string
 	LoomConfigPath                    string
+	MachineFile                       string
 	// CodexDesktopCodexPath is the codex CLI used by loom's internal planner.
 	// Minimal VS Code mode uses CodexAbsPath when this is empty.
 	CodexDesktopCodexPath string
@@ -521,6 +523,7 @@ func (r *realOrchestrator) configureLoomDriver() error {
 	if st.Agentserver.ShortID != "" {
 		serverName = "driver-" + st.Agentserver.ShortID
 	}
+	displayName := r.loomDriverDisplayName(st)
 	if err := loom.WriteDriverConfig(r.d.LoomConfigPath, loom.DriverConfig{
 		ServerURL:     serverURL,
 		ServerName:    serverName,
@@ -530,8 +533,8 @@ func (r *realOrchestrator) configureLoomDriver() error {
 		WorkspaceID:   st.Agentserver.WorkspaceID,
 		WorkspaceName: st.Agentserver.WorkspaceName,
 		ShortID:       st.Agentserver.ShortID,
-		DisplayName:   "星池指挥官",
-		Description:   "星池指挥官本地协作驱动。",
+		DisplayName:   displayName,
+		Description:   displayName + " 本地协作驱动。",
 		CodexBin:      codexBin,
 		CodexHome:     filepath.Dir(r.d.CodexConfigPath),
 		CodexWorkDir: func() string {
@@ -573,6 +576,30 @@ func codexUserHome(configPath string) string {
 		return home
 	}
 	return ""
+}
+
+func (r *realOrchestrator) loomDriverDisplayName(st *state.State) string {
+	if strings.TrimSpace(r.d.MachineFile) != "" {
+		if m, err := slave.NewMachineStore(r.d.MachineFile).Ensure(driverComputerNameFallback(st)); err == nil {
+			return m.ComputerName
+		}
+	}
+	return driverComputerNameFallback(st)
+}
+
+func driverComputerNameFallback(st *state.State) string {
+	if st != nil && strings.TrimSpace(st.InstallID) != "" {
+		return "local-computer-" + lastN(st.InstallID, 10)
+	}
+	if name := strings.TrimSpace(os.Getenv("COMPUTERNAME")); name != "" {
+		return name
+	}
+	if hostname, err := os.Hostname(); err == nil {
+		if name := strings.TrimSpace(hostname); name != "" {
+			return name
+		}
+	}
+	return "local-computer"
 }
 
 func (r *realOrchestrator) loomDriverCodexBin() string {

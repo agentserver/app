@@ -88,7 +88,11 @@ func ServeDriverMCP(ctx context.Context, opts DriverMCPOptions) error {
 		return err
 	}
 	sessionConfig := filepath.Join(sessionDir, fmt.Sprintf("driver-%d.yaml", os.Getpid()))
-	if err := writeDriverConfig(sessionConfig, st, proxyToken, tunnelToken, workDir); err != nil {
+	displayName, err := resolveDriverComputerName(opts.Paths, "")
+	if err != nil {
+		return err
+	}
+	if err := writeDriverConfig(sessionConfig, st, proxyToken, tunnelToken, workDir, displayName); err != nil {
 		return err
 	}
 	defer func() {
@@ -204,13 +208,9 @@ type registeredDriverAgent struct {
 }
 
 func registerDriver(ctx context.Context, opts DriverOptions) (registeredDriverAgent, error) {
-	computerName := strings.TrimSpace(opts.ComputerName)
-	if computerName == "" {
-		hostname, err := os.Hostname()
-		if err != nil {
-			return registeredDriverAgent{}, fmt.Errorf("hostname: %w", err)
-		}
-		computerName = hostname
+	computerName, err := resolveDriverComputerName(opts.Paths, opts.ComputerName)
+	if err != nil {
+		return registeredDriverAgent{}, err
 	}
 	ch, err := opts.RequestDeviceCode(ctx, opts.ASOAuth)
 	if err != nil {
@@ -221,7 +221,7 @@ func registerDriver(ctx context.Context, opts DriverOptions) (registeredDriverAg
 	if err != nil {
 		return registeredDriverAgent{}, fmt.Errorf("poll agentserver token: %w", err)
 	}
-	reg, err := opts.AS.RegisterAgent(ctx, tok.AccessToken, computerName+"-星池指挥官", "custom")
+	reg, err := opts.AS.RegisterAgent(ctx, tok.AccessToken, computerName, "custom")
 	if err != nil {
 		return registeredDriverAgent{}, fmt.Errorf("register agentserver agent: %w", err)
 	}
@@ -364,7 +364,11 @@ func refreshDriverFiles(p paths.Paths, pkg Package, sec secrets.Store) error {
 	if err != nil {
 		return err
 	}
-	if err := writeDriverConfig(persistentDriverConfigPath(p), st, proxyToken, tunnelToken, driverUserHome(p)); err != nil {
+	displayName, err := resolveDriverComputerName(p, "")
+	if err != nil {
+		return err
+	}
+	if err := writeDriverConfig(persistentDriverConfigPath(p), st, proxyToken, tunnelToken, driverUserHome(p), displayName); err != nil {
 		return err
 	}
 	if err := loom.InstallDriverSupport(loom.DriverSupportInput{
@@ -401,9 +405,13 @@ func driverSecrets(sec secrets.Store) (string, string, error) {
 	return proxyToken, tunnelToken, nil
 }
 
-func writeDriverConfig(path string, st *state.State, proxyToken, tunnelToken, workDir string) error {
+func writeDriverConfig(path string, st *state.State, proxyToken, tunnelToken, workDir, displayName string) error {
 	if st == nil {
 		return errors.New("driver state required")
+	}
+	displayName = strings.TrimSpace(displayName)
+	if displayName == "" {
+		displayName = "local-computer"
 	}
 	if err := loom.WriteDriverConfig(path, loom.DriverConfig{
 		ServerURL:     defaultString(st.Agentserver.BaseURL, defaultAgentserverEndpoint),
@@ -414,14 +422,36 @@ func writeDriverConfig(path string, st *state.State, proxyToken, tunnelToken, wo
 		WorkspaceID:   st.Agentserver.WorkspaceID,
 		WorkspaceName: st.Agentserver.WorkspaceName,
 		ShortID:       defaultString(st.Agentserver.ShortID, st.Agentserver.SandboxID),
-		DisplayName:   "星池指挥官",
-		Description:   "星池指挥官本地协作驱动。",
+		DisplayName:   displayName,
+		Description:   displayName + " 本地协作驱动。",
 		CodexBin:      "codex",
 		CodexWorkDir:  workDir,
 	}); err != nil {
 		return fmt.Errorf("configure loom driver: %w", err)
 	}
 	return nil
+}
+
+func resolveDriverComputerName(p paths.Paths, preferred string) (string, error) {
+	name := strings.TrimSpace(preferred)
+	if name == "" {
+		hostname, err := os.Hostname()
+		if err != nil {
+			return "", fmt.Errorf("hostname: %w", err)
+		}
+		name = strings.TrimSpace(hostname)
+	}
+	if name == "" {
+		return "", errors.New("computer name required")
+	}
+	if strings.TrimSpace(p.MachineFile) == "" {
+		return name, nil
+	}
+	m, err := slave.NewMachineStore(p.MachineFile).Ensure(name)
+	if err != nil {
+		return "", fmt.Errorf("ensure machine identity: %w", err)
+	}
+	return m.ComputerName, nil
 }
 
 func execDriverMCP(ctx context.Context, exe string, args []string) error {

@@ -12,6 +12,7 @@ const updateError = ref('');
 const frontendError = ref('');
 const subscriptionError = ref('');
 const logoutModelserverError = ref('');
+const driverDaemonError = ref('');
 const refreshing = ref(false);
 const checkingUpdate = ref(false);
 const installingUpdate = ref(false);
@@ -38,8 +39,12 @@ const creatingSlave = ref(false);
 const selectingSlaveFolder = ref(false);
 const slaveBusy = ref<Record<string, boolean>>({});
 const slaveRemoteDeleteOpened = ref<Record<string, boolean>>({});
+const driverDaemonState = ref<api.ConsoleDriverDaemonState | null>(null);
+const loadingDriverDaemon = ref(false);
+const togglingDriverDaemon = ref(false);
 let updateLoadSeq = 0;
 let slaveLoadSeq = 0;
+let driverDaemonLoadSeq = 0;
 const slavePollIntervalMs = 3000;
 let slavePollTimer: number | undefined;
 let dashboardMounted = false;
@@ -50,6 +55,7 @@ const visibleErrors = computed(() => [
   { key: 'frontend', message: frontendError.value },
   { key: 'subscription', message: subscriptionError.value },
   { key: 'logout-modelserver', message: logoutModelserverError.value },
+  { key: 'driver-daemon', message: driverDaemonError.value },
   { key: 'model-switch', message: modelSwitchError.value },
   { key: 'reconnect', message: reconnectError.value },
   { key: 'agentserver-reconnect', message: agentserverReconnectError.value },
@@ -95,6 +101,20 @@ const updateDetailError = computed(() => {
   const update = updateState.value;
   if (!update?.last_error) return '';
   return update.status === 'error' ? '' : update.last_error;
+});
+
+const driverDaemonStatusText = computed(() => {
+  const driver = driverDaemonState.value;
+  if (!driver) return '正在读取远程控制状态';
+  if (!driver.enabled) return '本机远程控制已关闭';
+  if (driver.running) return '本机远程控制已开启';
+  return '远程控制已启用，但 daemon 未运行';
+});
+
+const driverDaemonToggleText = computed(() => {
+  const driver = driverDaemonState.value;
+  if (!driver) return '读取中';
+  return driver.enabled ? '关闭远程控制' : '开启远程控制';
 });
 
 function shortId(id: string) {
@@ -157,6 +177,24 @@ async function loadSlaves() {
     if (seq !== slaveLoadSeq) return;
     slaveError.value = errorMessage(e);
     syncSlavePolling();
+  }
+}
+
+async function loadDriverDaemon() {
+  const seq = ++driverDaemonLoadSeq;
+  loadingDriverDaemon.value = true;
+  try {
+    const driver = await api.getConsoleDriverDaemon();
+    if (!dashboardMounted) return;
+    if (seq !== driverDaemonLoadSeq) return;
+    driverDaemonState.value = driver;
+    driverDaemonError.value = driver.last_error_message || '';
+  } catch (e) {
+    if (!dashboardMounted) return;
+    if (seq !== driverDaemonLoadSeq) return;
+    driverDaemonError.value = errorMessage(e);
+  } finally {
+    if (dashboardMounted) loadingDriverDaemon.value = false;
   }
 }
 
@@ -299,6 +337,21 @@ async function logoutModelserver() {
     logoutModelserverError.value = errorMessage(e);
   } finally {
     loggingOutModelserver.value = false;
+  }
+}
+
+async function toggleDriverDaemon() {
+  const current = driverDaemonState.value;
+  if (!current || togglingDriverDaemon.value) return;
+  togglingDriverDaemon.value = true;
+  try {
+    const next = await api.setConsoleDriverDaemon(!current.enabled);
+    driverDaemonState.value = next;
+    driverDaemonError.value = next.last_error_message || '';
+  } catch (e) {
+    driverDaemonError.value = errorMessage(e);
+  } finally {
+    togglingDriverDaemon.value = false;
   }
 }
 
@@ -533,6 +586,7 @@ onMounted(() => {
   void load();
   void loadUpdate();
   void loadSlaves();
+  void loadDriverDaemon();
 });
 
 onBeforeUnmount(() => {
@@ -633,6 +687,36 @@ onBeforeUnmount(() => {
       <div class="info-block">
         <span>agentserver 工作空间</span>
         <strong>{{ workspaceDisplayName }}</strong>
+      </div>
+    </section>
+
+    <section class="remote-control-panel">
+      <div class="section-head">
+        <h2>远程控制</h2>
+        <p>
+          <a
+            :href="driverDaemonState?.commander_url || 'https://loom.nj.cs.ac.cn:10062/commander'"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {{ driverDaemonState?.commander_url || 'https://loom.nj.cs.ac.cn:10062/commander' }}
+          </a>
+        </p>
+      </div>
+      <div class="remote-control-row">
+        <div class="remote-control-summary">
+          <strong>{{ driverDaemonStatusText }}</strong>
+          <span v-if="driverDaemonState?.last_error_message">{{ driverDaemonState.last_error_message }}</span>
+        </div>
+        <el-button
+          data-test="driver-daemon-toggle"
+          type="primary"
+          :loading="loadingDriverDaemon || togglingDriverDaemon"
+          :disabled="!driverDaemonState || loadingDriverDaemon || togglingDriverDaemon"
+          @click="toggleDriverDaemon"
+        >
+          {{ driverDaemonToggleText }}
+        </el-button>
       </div>
     </section>
 
@@ -900,6 +984,7 @@ onBeforeUnmount(() => {
 }
 
 .model-panel,
+.remote-control-panel,
 .update-panel,
 .slave-panel {
   display: flex;
@@ -932,6 +1017,30 @@ onBeforeUnmount(() => {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
+}
+
+.remote-control-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.remote-control-summary {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.remote-control-summary strong,
+.remote-control-summary span {
+  overflow-wrap: anywhere;
+}
+
+.remote-control-summary span {
+  color: #606266;
+  font-size: 13px;
 }
 
 .update-summary {
@@ -1052,6 +1161,7 @@ onBeforeUnmount(() => {
 
 .slave-actions :deep(.el-button),
 .slave-create :deep(.el-button),
+.remote-control-row :deep(.el-button),
 .update-actions :deep(.el-button) {
   margin-left: 0;
   white-space: nowrap;
@@ -1069,6 +1179,7 @@ onBeforeUnmount(() => {
 
   .slave-create,
   .slave-row,
+  .remote-control-row,
   .update-row {
     grid-template-columns: 1fr;
   }
