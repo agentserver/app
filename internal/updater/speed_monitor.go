@@ -55,6 +55,12 @@ func (m *speedMonitor) Tripped() bool { return m.tripped.Load() }
 
 // run blocks until ctx is done. If no tick channel was injected, it
 // creates a 1s ticker. Tests inject their own.
+//
+// Callers that don't want the per-download goroutine (compat mode
+// where the monitor is disabled AND no progress reporter is wired)
+// should skip newSpeedMonitor+run entirely. run() itself always
+// executes the loop so onSample fires — the trip check inside
+// recordTick is what short-circuits when the policy disables it.
 func (m *speedMonitor) run(ctx context.Context) {
 	tick := m.tick
 	if tick == nil {

@@ -226,14 +226,20 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 	if err := m.Validate(); err != nil {
 		return s.saveError(now, err)
 	}
-	// Caller-manifest version guard — PRESERVED from today's behavior.
-	// A UI bug that replays a stale manifest must not trigger download.
-	cmp, err := CompareVersions(m.Version, s.CurrentVersion)
-	if err != nil {
-		return s.saveError(now, fmt.Errorf("invalid current version: %w", err))
-	}
-	if cmp <= 0 {
-		return s.saveError(now, fmt.Errorf("update version %s is not newer than current version %s", m.Version, s.CurrentVersion))
+	// Caller-manifest version guard — enforced ONLY in compat mode.
+	// In multi-source mode each source re-fetches its own manifest and
+	// runs its own per-source version check; aborting here on the
+	// caller's (possibly stale) manifest would defeat the "fallback
+	// survives caller drift" property. Compat mode has no re-fetch,
+	// so the guard remains the only safety net there.
+	if len(s.Sources) == 0 {
+		cmp, err := CompareVersions(m.Version, s.CurrentVersion)
+		if err != nil {
+			return s.saveError(now, fmt.Errorf("invalid current version: %w", err))
+		}
+		if cmp <= 0 {
+			return s.saveError(now, fmt.Errorf("update version %s is not newer than current version %s", m.Version, s.CurrentVersion))
+		}
 	}
 	if s.CacheDir == "" {
 		return s.saveError(now, fmt.Errorf("cache dir is required"))
@@ -263,9 +269,29 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 	sources := s.effectiveSources()
 	compatMode := len(s.Sources) == 0
 
+	// fallbacks accumulates across per-source attempts; tryOneSource
+	// reads it (via closure) to build terminal-state save calls.
 	var fallbacks []FallbackRecord
 	var lastErr error
-	for _, src := range sources {
+
+	// attemptOutcome describes what tryOneSource decided. Exactly one
+	// of terminalState (source succeeded / a hard error to bubble up
+	// as a terminal state), fallback (record and try next), or done
+	// (nothing more to try, error came from ctx) is set per call.
+	type attemptOutcome struct {
+		terminalState *State // set ⇒ return this state
+		terminalErr   error  // if terminalState set, paired error (may be nil on success)
+		fallbackSet   bool   // true ⇒ record fallback + continue loop
+		fallbackStage string
+		fallbackErr   error
+		continueLoop  bool // false ⇒ break out of loop with lastErr
+	}
+
+	// tryOneSource runs a single source attempt end-to-end. Its
+	// own function scope means the per-attempt `defer os.Remove(tempPath)`
+	// fires at attempt exit, not accumulating across loop iterations —
+	// safe to add a 3rd source later without unbounded defer stack.
+	tryOneSource := func(src Source) attemptOutcome {
 		var freshM Manifest
 		if compatMode {
 			freshM = m
@@ -274,40 +300,36 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 			freshM, err = src.FetchManifest(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
-					return s.saveErrorWithFallbacks(now, ctx.Err(), prior.LastFallbacks, fallbacks)
+					st, ie := s.saveErrorWithFallbacks(now, ctx.Err(), prior.LastFallbacks, fallbacks)
+					return attemptOutcome{terminalState: &st, terminalErr: ie}
 				}
-				fallbacks = s.appendFallback(fallbacks, src.Name(), "manifest", err)
-				lastErr = err
-				continue
+				return attemptOutcome{fallbackSet: true, fallbackStage: "manifest", fallbackErr: err, continueLoop: true}
 			}
 		}
 		vcmp, err := CompareVersions(freshM.Version, s.CurrentVersion)
 		if err != nil {
-			fallbacks = s.appendFallback(fallbacks, src.Name(), "version", err)
-			lastErr = err
-			continue
+			return attemptOutcome{fallbackSet: true, fallbackStage: "version", fallbackErr: err, continueLoop: true}
 		}
 		if vcmp <= 0 {
-			fallbacks = s.appendFallback(fallbacks, src.Name(), "version",
-				fmt.Errorf("source manifest version %s not newer than current %s", freshM.Version, s.CurrentVersion))
-			lastErr = fmt.Errorf("source %s has no newer version", src.Name())
-			continue
+			return attemptOutcome{fallbackSet: true, fallbackStage: "version",
+				fallbackErr: fmt.Errorf("source manifest version %s not newer than current %s", freshM.Version, s.CurrentVersion),
+				continueLoop: true}
 		}
 
 		finalPath, err := installerCachePath(s.CacheDir, freshM)
 		if err != nil {
-			return s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
+			st, ie := s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
+			return attemptOutcome{terminalState: &st, terminalErr: ie}
 		}
 		temp, err := os.CreateTemp(s.CacheDir, filepath.Base(finalPath)+".*.tmp")
 		if err != nil {
-			return s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
+			st, ie := s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
+			return attemptOutcome{terminalState: &st, terminalErr: ie}
 		}
 		tempPath := temp.Name()
-		// promoted/defer PRESERVED from today's behavior — covers every
-		// unhappy exit from replaceFile / BeforeInstallerStart / start
-		// / terminal-return path. Multiple sources means at most N
-		// leftover temps on disk between failing continue and function
-		// return (bounded by source count, currently 2).
+		// Per-attempt cleanup: fires when tryOneSource returns, not on
+		// enclosing DownloadAndStart exit. Bounded to ONE outstanding
+		// temp file at a time regardless of how many sources exist.
 		promoted := false
 		defer func() {
 			if !promoted {
@@ -316,31 +338,32 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 		}()
 
 		attemptCtx, cancel := context.WithCancel(ctx)
-		err = src.DownloadInstaller(attemptCtx, freshM, temp, noopProgress)
+		// nil onProgress ⇒ sources may skip the monitor goroutine when
+		// policy also disables trip detection (compat mode).
+		err = src.DownloadInstaller(attemptCtx, freshM, temp, nil)
 		cancel()
 		if closeErr := temp.Close(); closeErr != nil && err == nil {
 			err = closeErr
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return s.saveErrorWithFallbacks(now, ctx.Err(), prior.LastFallbacks, fallbacks)
+				st, ie := s.saveErrorWithFallbacks(now, ctx.Err(), prior.LastFallbacks, fallbacks)
+				return attemptOutcome{terminalState: &st, terminalErr: ie}
 			}
-			fallbacks = s.appendFallback(fallbacks, src.Name(), "download", err)
-			lastErr = err
-			continue
+			return attemptOutcome{fallbackSet: true, fallbackStage: "download", fallbackErr: err, continueLoop: true}
 		}
 		if err := verifyInstaller(tempPath, freshM); err != nil {
-			fallbacks = s.appendFallback(fallbacks, src.Name(), "verify",
-				fmt.Errorf("%w: %v", ErrSHA256Mismatch, err))
-			lastErr = err
-			continue
+			return attemptOutcome{fallbackSet: true, fallbackStage: "verify",
+				fallbackErr: fmt.Errorf("%w: %v", ErrSHA256Mismatch, err), continueLoop: true}
 		}
 		if err := replaceFile(tempPath, finalPath); err != nil {
-			return s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
+			st, ie := s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
+			return attemptOutcome{terminalState: &st, terminalErr: ie}
 		}
 		if s.BeforeInstallerStart != nil {
 			if err := s.BeforeInstallerStart(ctx, freshM, finalPath); err != nil {
-				return s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
+				st, ie := s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
+				return attemptOutcome{terminalState: &st, terminalErr: ie}
 			}
 		}
 		start := s.StartInstaller
@@ -350,7 +373,8 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 			startContext = context.Background()
 		}
 		if err := start(startContext, finalPath); err != nil {
-			return s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
+			st, ie := s.saveErrorWithFallbacks(now, err, prior.LastFallbacks, fallbacks)
+			return attemptOutcome{terminalState: &st, terminalErr: ie}
 		}
 		promoted = true
 		state := State{
@@ -360,7 +384,22 @@ func (s Service) DownloadAndStart(ctx context.Context, m Manifest) (State, error
 			LastSourceUsed: src.Name(),
 			LastFallbacks:  mergeFallbacks(prior.LastFallbacks, fallbacks),
 		}
-		return s.saveFinalState(now, state)
+		st, ie := s.saveFinalState(now, state)
+		return attemptOutcome{terminalState: &st, terminalErr: ie}
+	}
+
+	for _, src := range sources {
+		out := tryOneSource(src)
+		if out.terminalState != nil {
+			return *out.terminalState, out.terminalErr
+		}
+		if out.fallbackSet {
+			fallbacks = s.appendFallback(fallbacks, src.Name(), out.fallbackStage, out.fallbackErr)
+			lastErr = out.fallbackErr
+		}
+		if !out.continueLoop {
+			break
+		}
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no sources configured")

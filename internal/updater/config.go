@@ -63,15 +63,29 @@ func LoadUpgradeConfig(env func(string) string) UpgradeConfig {
 
 // BuildSources returns nil when GitHub is disabled — Service's compat
 // shortcut then builds [cdnSource] lazily from ManifestURL + Client.
-// When enabled, returns [githubSource, cdnSource] with the CDN source
-// built from DefaultManifestURL and http.DefaultClient using the
-// full DefaultSourcePolicy (unlike compat mode which uses zero policy).
+// When enabled, returns [githubSource, cdnSource]. Each source gets
+// its OWN *http.Client with its OWN *http.Transport — sharing
+// http.DefaultTransport would mean applyFirstByteTimeout's
+// ResponseHeaderTimeout mutation on one source's clone bleeds into
+// the other's connection pool (spec requirement: "Two sources do
+// not share Transports").
 func BuildSources(cfg UpgradeConfig) []Source {
 	if !cfg.GitHubEnabled {
 		return nil
 	}
 	return []Source{
-		NewGitHubSource(cfg.GitHubRepo, "", http.DefaultClient, cfg.GitHubPolicy),
-		NewCDNSource(DefaultManifestURL, http.DefaultClient, DefaultSourcePolicy()),
+		NewGitHubSource(cfg.GitHubRepo, "", newIsolatedHTTPClient(), cfg.GitHubPolicy),
+		NewCDNSource(DefaultManifestURL, newIsolatedHTTPClient(), DefaultSourcePolicy()),
 	}
+}
+
+// newIsolatedHTTPClient returns a client with a fresh Transport cloned
+// from http.DefaultTransport — inherits sensible defaults (dialer,
+// keep-alive, proxy) but is safe to mutate per-source.
+func newIsolatedHTTPClient() *http.Client {
+	transport := &http.Transport{}
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = dt.Clone()
+	}
+	return &http.Client{Transport: transport}
 }

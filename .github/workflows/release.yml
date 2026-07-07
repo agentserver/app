@@ -54,6 +54,17 @@ jobs:
             exit 1
           fi
           VERSION="${GITHUB_REF_NAME#v}"
+          # P0 guard: package-windows.sh hard-codes VERSION and produces
+          # agentserver-app-<VERSION>-setup.exe. If that VERSION was not
+          # bumped to match the pushed tag, the manifest would advertise
+          # a NEW version pointing at OLD-VERSION bytes — clients would
+          # loop-install. Fail loudly instead.
+          EXE_NAME=$(basename "$INSTALLER")
+          if [[ "$EXE_NAME" != *"${VERSION}"* ]]; then
+            echo "FATAL: installer '$EXE_NAME' does not contain tag version '${VERSION}'." >&2
+            echo "       Bump VERSION in scripts/package-windows.sh to match tag '${GITHUB_REF_NAME}' and re-tag." >&2
+            exit 1
+          fi
           render_latest_json "$INSTALLER" "$VERSION"
           test -f dist/latest-github.json
           test -f dist/latest-cdn.json
@@ -75,7 +86,13 @@ jobs:
           # cache poisoning / mid-upload corruption before the manifest
           # references it.
           EXE_NAME=$(ls dist/agentserver-app-*-setup.exe | head -1 | xargs -n1 basename)
-          curl -sSfL -o /tmp/verify.exe "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${EXE_NAME}"
+          # GitHub's release CDN is eventually-consistent; a fresh
+          # asset can 404 or serve stale bytes for up to ~60s after
+          # the upload API returns. Retry aggressively so a transient
+          # CDN flake doesn't burn a tag.
+          curl -sSfL --retry 8 --retry-delay 5 --retry-all-errors \
+            -o /tmp/verify.exe \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${EXE_NAME}"
           DIST_SHA=$(sha256sum "dist/${EXE_NAME}" | cut -d' ' -f1)
           REMOTE_SHA=$(sha256sum /tmp/verify.exe | cut -d' ' -f1)
           if [ "$DIST_SHA" != "$REMOTE_SHA" ]; then

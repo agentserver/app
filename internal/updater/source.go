@@ -65,8 +65,23 @@ type Source interface {
 	DownloadInstaller(ctx context.Context, m Manifest, dst io.Writer, onProgress func(SpeedSample)) error
 }
 
-// noopProgress is the scheduler's default onProgress callback.
+// noopProgress is a shared no-op sample handler used by tests and any
+// call site that must pass a non-nil function but does not want
+// samples. Sources that don't need the monitor should pass nil
+// instead — see monitorRequired.
 func noopProgress(SpeedSample) {}
+
+// monitorRequired reports whether a source should spawn a speed monitor
+// for this download attempt. False iff the policy fully disables trip
+// detection AND the caller passed nil for onProgress — nobody's
+// watching the samples. Compat mode uses this to avoid ticker goroutine
+// overhead on every download.
+func monitorRequired(policy SourcePolicy, onProgress func(SpeedSample)) bool {
+	if policy.MinSpeedBytesPerSec > 0 && policy.SpeedWindow > 0 {
+		return true
+	}
+	return onProgress != nil
+}
 
 // Sentinel errors. Sources wrap these; the scheduler records the wrapped
 // kind in FallbackRecord.Reason. Callers that want to programmatically

@@ -92,16 +92,21 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	if err := s.validateInstallerURL(m.URL); err != nil {
 		return err
 	}
+	needMonitor := monitorRequired(s.policy, onProgress)
 	if onProgress == nil {
 		onProgress = noopProgress
 	}
 	dlCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	monitor := newSpeedMonitor(s.policy, cancel, onProgress)
-	monitorDone := make(chan struct{})
-	go func() { monitor.run(dlCtx); close(monitorDone) }()
-	defer func() { cancel(); <-monitorDone }()
+	var monitor *speedMonitor
+	var monitorDone chan struct{}
+	if needMonitor {
+		monitor = newSpeedMonitor(s.policy, cancel, onProgress)
+		monitorDone = make(chan struct{})
+		go func() { monitor.run(dlCtx); close(monitorDone) }()
+		defer func() { cancel(); <-monitorDone }()
+	}
 
 	// When the underlying Transport is not *http.Transport (test path),
 	// applyFirstByteTimeout returned an unmodified client. Fall back
@@ -124,7 +129,10 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("cdn download: unexpected status %s", resp.Status)
 	}
-	body := monitor.wrap(io.LimitReader(resp.Body, m.Size+1))
+	var body io.Reader = io.LimitReader(resp.Body, m.Size+1)
+	if monitor != nil {
+		body = monitor.wrap(body)
+	}
 	n, err := io.Copy(dst, body)
 	if err != nil {
 		return s.classify(ctx, monitor, err)
@@ -136,12 +144,13 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 }
 
 // classify implements the cancellation-precedence rule: parent ctx first,
-// then Tripped().
+// then Tripped(). Safe with a nil monitor (compat mode never launches
+// one).
 func (s *cdnSource) classify(parent context.Context, monitor *speedMonitor, err error) error {
 	if parent.Err() != nil {
 		return parent.Err()
 	}
-	if monitor.Tripped() {
+	if monitor != nil && monitor.Tripped() {
 		return fmt.Errorf("%w: %v", ErrSlowDownload, err)
 	}
 	return err

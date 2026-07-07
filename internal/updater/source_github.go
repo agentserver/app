@@ -114,6 +114,15 @@ func (s *githubSource) redirectPinned(base *http.Client, hostOK func(string) boo
 	client := *base
 	prior := base.CheckRedirect
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		// P1: enforce https on every hop. A 302 to http:// downgrades
+		// the next leg to cleartext. The installer's SHA256 protects
+		// the final bytes only IF the manifest itself was fetched
+		// over TLS — a poisoned latest.json served over http could
+		// point at any allowlisted GitHub binary the attacker knows
+		// the SHA of.
+		if req.URL.Scheme != "https" {
+			return fmt.Errorf("%w: redirect scheme %q, only https allowed", ErrHostNotAllowed, req.URL.Scheme)
+		}
 		if req.URL.User != nil {
 			return fmt.Errorf("%w: userinfo not permitted", ErrHostNotAllowed)
 		}
@@ -274,6 +283,7 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 	if !s.installerHostMatch(u.Hostname()) {
 		return fmt.Errorf("%w: installer host %s", ErrHostNotAllowed, u.Hostname())
 	}
+	needMonitor := monitorRequired(s.policy, onProgress)
 	if onProgress == nil {
 		onProgress = noopProgress
 	}
@@ -281,10 +291,14 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 	dlCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	monitor := newSpeedMonitor(s.policy, cancel, onProgress)
-	monitorDone := make(chan struct{})
-	go func() { monitor.run(dlCtx); close(monitorDone) }()
-	defer func() { cancel(); <-monitorDone }()
+	var monitor *speedMonitor
+	var monitorDone chan struct{}
+	if needMonitor {
+		monitor = newSpeedMonitor(s.policy, cancel, onProgress)
+		monitorDone = make(chan struct{})
+		go func() { monitor.run(dlCtx); close(monitorDone) }()
+		defer func() { cancel(); <-monitorDone }()
+	}
 
 	reqCtx := dlCtx
 	if !s.isRealTransport() && s.policy.FirstByteTimeout > 0 {
@@ -305,7 +319,10 @@ func (s *githubSource) DownloadInstaller(ctx context.Context, m Manifest, dst io
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("github download: unexpected status %s", resp.Status)
 	}
-	body := monitor.wrap(io.LimitReader(resp.Body, m.Size+1))
+	var body io.Reader = io.LimitReader(resp.Body, m.Size+1)
+	if monitor != nil {
+		body = monitor.wrap(body)
+	}
 	n, err := io.Copy(dst, body)
 	if err != nil {
 		return s.classifyDownload(ctx, monitor, err)
@@ -334,7 +351,7 @@ func (s *githubSource) classifyDownload(parent context.Context, monitor *speedMo
 	if parent.Err() != nil {
 		return parent.Err()
 	}
-	if monitor.Tripped() {
+	if monitor != nil && monitor.Tripped() {
 		return fmt.Errorf("%w: %v", ErrSlowDownload, err)
 	}
 	return err
