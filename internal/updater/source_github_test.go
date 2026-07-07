@@ -319,6 +319,112 @@ func TestGitHubSourceRejectsAssetURLWithoutHTTPS(t *testing.T) {
 	}
 }
 
+// slowHeadersRT is a custom http.RoundTripper (NOT *http.Transport) that
+// sleeps `delay` before returning headers, then streams `body` byte-by-byte
+// with `chunkDelay` between each byte. Used to exercise
+// firstByteDeadlineCtx on the non-*Transport fallback path — the only
+// path where the timeout is enforced via ctx cancellation.
+type slowHeadersRT struct {
+	delay      time.Duration
+	body       []byte
+	chunkDelay time.Duration
+}
+
+func (r *slowHeadersRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	select {
+	case <-time.After(r.delay):
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Status:     "200 OK",
+		Header:     http.Header{"Content-Length": []string{fmt.Sprintf("%d", len(r.body))}},
+		Body:       &slowBody{data: r.body, chunkDelay: r.chunkDelay, ctx: req.Context()},
+		Request:    req,
+	}, nil
+}
+
+type slowBody struct {
+	data       []byte
+	pos        int
+	chunkDelay time.Duration
+	ctx        context.Context
+}
+
+func (b *slowBody) Read(p []byte) (int, error) {
+	if b.pos >= len(b.data) {
+		return 0, io.EOF
+	}
+	if b.chunkDelay > 0 {
+		select {
+		case <-time.After(b.chunkDelay):
+		case <-b.ctx.Done():
+			return 0, b.ctx.Err()
+		}
+	}
+	p[0] = b.data[b.pos]
+	b.pos++
+	return 1, nil
+}
+
+func (b *slowBody) Close() error { return nil }
+
+func TestGitHubSourceFirstByteTimeoutFiresBeforeHeaders(t *testing.T) {
+	// Custom RT delays 500ms before headers; FirstByteTimeout=50ms.
+	// firstByteDeadlineCtx must cancel BEFORE headers arrive.
+	rt := &slowHeadersRT{delay: 500 * time.Millisecond, body: []byte("payload")}
+	client := &http.Client{Transport: rt}
+	policy := DefaultSourcePolicy()
+	policy.FirstByteTimeout = 50 * time.Millisecond
+	policy.SpeedWindow = 0 // disable monitor to isolate first-byte behavior
+	policy.MinSpeedBytesPerSec = 0
+	src := NewGitHubSource(testRepo, "https://example.invalid", client, policy).(*githubSource)
+	src.installerHostMatch = permissiveHost
+	src.rebuildClients()
+
+	body := []byte("payload")
+	sum := sha256.Sum256(body)
+	m := Manifest{Version: "1.0.0", URL: "https://cdn.githubusercontent.com/x/setup.exe", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(body))}
+	start := time.Now()
+	err := src.DownloadInstaller(context.Background(), m, io.Discard, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected first-byte timeout error")
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Fatalf("elapsed %v — first-byte deadline did not fire", elapsed)
+	}
+}
+
+func TestGitHubSourceFirstByteTimeoutDoesNotCancelBodyReads(t *testing.T) {
+	// Custom RT returns headers instantly, then streams body one byte
+	// at a time with 30ms per byte (100 bytes → 3s). FirstByteTimeout
+	// is 100ms — must NOT cancel the body streaming. Body must
+	// arrive complete.
+	body := []byte(strings.Repeat("x", 100))
+	rt := &slowHeadersRT{delay: 0, body: body, chunkDelay: 30 * time.Millisecond}
+	client := &http.Client{Transport: rt}
+	policy := DefaultSourcePolicy()
+	policy.FirstByteTimeout = 100 * time.Millisecond
+	policy.SpeedWindow = 0 // disable monitor so we isolate the fbCancel bug
+	policy.MinSpeedBytesPerSec = 0
+	src := NewGitHubSource(testRepo, "https://example.invalid", client, policy).(*githubSource)
+	src.installerHostMatch = permissiveHost
+	src.rebuildClients()
+
+	sum := sha256.Sum256(body)
+	m := Manifest{Version: "1.0.0", URL: "https://cdn.githubusercontent.com/x/setup.exe", SHA256: hex.EncodeToString(sum[:]), Size: int64(len(body))}
+	var buf strings.Builder
+	err := src.DownloadInstaller(context.Background(), m, &buf, nil)
+	if err != nil {
+		t.Fatalf("DownloadInstaller err=%v — first-byte deadline is bleeding into body reads", err)
+	}
+	if buf.Len() != len(body) {
+		t.Fatalf("body len=%d want %d", buf.Len(), len(body))
+	}
+}
+
 func TestGithubAssetHostMatcher(t *testing.T) {
 	cases := []struct {
 		host string

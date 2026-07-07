@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 type cdnSource struct {
@@ -119,13 +121,14 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	}
 
 	// When the underlying Transport is not *http.Transport (test path),
-	// applyFirstByteTimeout returned an unmodified client. Fall back
-	// to a context that is cancelled either after FirstByteTimeout OR
-	// when the first response byte arrives (whichever comes first),
-	// matching the *Transport path's ResponseHeaderTimeout semantics
-	// so the deadline never bleeds into the body-read phase.
-	reqCtx, fbCancel := s.firstByteDeadlineCtx(dlCtx)
-	defer fbCancel()
+	// applyFirstByteTimeout returned an unmodified client. Arm a
+	// first-byte-only cancellation: a timer that cancels reqCtx iff
+	// the "headers received" flag hasn't been set. Once client.Do
+	// returns (headers received), mark the flag and stop the timer —
+	// body reads then proceed under the parent dlCtx alone. This
+	// mirrors production's ResponseHeaderTimeout scope.
+	reqCtx, markHeadersReceived, stopFB := s.firstByteDeadlineCtx(dlCtx)
+	defer stopFB()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, m.URL, nil)
 	if err != nil {
 		return err
@@ -134,10 +137,7 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	if err != nil {
 		return s.classify(ctx, monitor, err)
 	}
-	// First byte received (or at least headers) — release the
-	// first-byte deadline so slow body reads aren't punished by it.
-	// The speed monitor handles slow-body policy from here on.
-	fbCancel()
+	markHeadersReceived()
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("cdn download: unexpected status %s", resp.Status)
@@ -156,18 +156,44 @@ func (s *cdnSource) DownloadInstaller(ctx context.Context, m Manifest, dst io.Wr
 	return nil
 }
 
-// firstByteDeadlineCtx returns a child of parent that is cancelled at
-// FirstByteTimeout OR when the caller invokes the returned cancel.
-// Used only in the non-*Transport fallback (test path); production
-// clients get first-byte enforcement via
-// http.Transport.ResponseHeaderTimeout inside applyFirstByteTimeout.
-// If the policy disables FirstByteTimeout (compat mode), returns
-// parent + no-op cancel.
-func (s *cdnSource) firstByteDeadlineCtx(parent context.Context) (context.Context, context.CancelFunc) {
+// firstByteDeadlineCtx arms a first-byte-only cancellation on the
+// returned ctx. Semantics:
+//   - If FirstByteTimeout elapses AND markHeadersReceived was not
+//     yet called, the ctx is cancelled — future request I/O returns
+//     context.Canceled.
+//   - If markHeadersReceived is called first, the timer is stopped
+//     and the ctx is NEVER cancelled by this helper — body reads
+//     proceed under the parent (dlCtx) alone.
+//   - stop is always called via defer and is a no-op after
+//     markHeadersReceived.
+//
+// Used only in the non-*Transport fallback (test path). Production
+// gets first-byte enforcement via http.Transport.ResponseHeaderTimeout
+// inside applyFirstByteTimeout, so this helper is a no-op there.
+//
+// Do NOT use context.WithTimeout's returned cancel — cancelling a
+// child ctx cancels the whole request, including in-flight body
+// reads (resp.Body is bound to req.Context()).
+func (s *cdnSource) firstByteDeadlineCtx(parent context.Context) (ctx context.Context, markHeadersReceived, stop func()) {
 	if s.isRealTransport() || s.policy.FirstByteTimeout <= 0 {
-		return parent, func() {}
+		return parent, func() {}, func() {}
 	}
-	return context.WithTimeout(parent, s.policy.FirstByteTimeout)
+	ctx, cancel := context.WithCancel(parent)
+	var gotHeaders atomic.Bool
+	timer := time.AfterFunc(s.policy.FirstByteTimeout, func() {
+		if !gotHeaders.Load() {
+			cancel()
+		}
+	})
+	markHeadersReceived = func() {
+		gotHeaders.Store(true)
+		timer.Stop()
+	}
+	stop = func() {
+		timer.Stop()
+		cancel()
+	}
+	return ctx, markHeadersReceived, stop
 }
 
 // classify implements the cancellation-precedence rule: parent ctx first,
