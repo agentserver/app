@@ -293,6 +293,32 @@ func TestGitHubSourceRejectsUnwhitelistedInstallerHost(t *testing.T) {
 	}
 }
 
+func TestGitHubSourceRejectsAssetURLWithoutHTTPS(t *testing.T) {
+	// If the release API ever returns an http:// browser_download_url
+	// (compromised release, hostile MITM), the source must reject
+	// BEFORE the first request — the redirect callback alone doesn't
+	// cover the initial hop.
+	shim := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		latest := map[string]any{
+			"tag_name": "v1.0.0",
+			"assets":   []map[string]any{{"name": "latest.json", "browser_download_url": "http://insecure.example.com/latest.json"}},
+		}
+		_ = json.NewEncoder(w).Encode(latest)
+	}))
+	t.Cleanup(shim.Close)
+	src := NewGitHubSource(testRepo, shim.URL, insecureTLSClient(), DefaultSourcePolicy()).(*githubSource)
+	src.installerHostMatch = permissiveHost // even with permissive host, scheme must fail
+	src.rebuildClients()
+
+	_, err := src.FetchManifest(context.Background())
+	if err == nil || !errors.Is(err, ErrHostNotAllowed) {
+		t.Fatalf("err=%v; want ErrHostNotAllowed for http asset URL", err)
+	}
+	if !strings.Contains(err.Error(), "scheme") {
+		t.Fatalf("err message should mention scheme, got: %v", err)
+	}
+}
+
 func TestGithubAssetHostMatcher(t *testing.T) {
 	cases := []struct {
 		host string

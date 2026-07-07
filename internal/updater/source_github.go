@@ -190,6 +190,15 @@ func (s *githubSource) FetchManifest(ctx context.Context) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, fmt.Errorf("invalid asset url: %w", err)
 	}
+	// Defense-in-depth: enforce https on the asset URL BEFORE the
+	// first request. Manifest.Validate() only runs on m (the parsed
+	// latest.json body); assetURL comes from the API response and
+	// has no other trust boundary before we hit it. The redirect
+	// callback also blocks http:// on subsequent hops, but a first
+	// hop to plaintext would already have been sent by then.
+	if assetU.Scheme != "https" {
+		return Manifest{}, fmt.Errorf("%w: asset scheme %q, only https allowed", ErrHostNotAllowed, assetU.Scheme)
+	}
 	if assetU.User != nil {
 		return Manifest{}, fmt.Errorf("%w: asset url has userinfo", ErrHostNotAllowed)
 	}
