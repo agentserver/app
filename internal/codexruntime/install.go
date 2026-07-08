@@ -138,7 +138,7 @@ func versionMatches(versionOutput, pinnedVersion, platform string) bool {
 }
 
 const (
-	defaultDownloadAttemptTimeout = 45 * time.Second
+	defaultDownloadAttemptTimeout = 10 * time.Minute
 	defaultResponseHeaderTimeout  = 15 * time.Second
 	defaultDownloadIdleTimeout    = 30 * time.Second
 )

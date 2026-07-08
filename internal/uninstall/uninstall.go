@@ -526,6 +526,8 @@ func installProcessNames() []string {
 	return []string{
 		"launcher.exe",
 		"onboarding-server.exe",
+		"agentctl.exe",
+		"codex-debug-wrapper.exe",
 		"open-folder.exe",
 		"slave-agent.exe",
 		"driver-agent.exe",

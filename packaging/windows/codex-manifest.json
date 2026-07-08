@@ -1,7 +1,7 @@
 {
   "package": "@openai/codex",
   "platform": "win32-x64",
-  "pinned_version": "0.136.0-win32-x64",
+  "pinned_version": "0.142.5-win32-x64",
   "strip_prefix": "vendor/x86_64-pc-windows-msvc/",
   "codex_exe": "bin/codex.exe",
   "required_files": [
@@ -11,22 +11,12 @@
     "codex-resources/codex-windows-sandbox-setup.exe"
   ],
   "pinned": {
-    "integrity": "sha512-zS6DAmvjdWeAB1CL9KTUMkwzTwfXtxHy8GAtePw2a93jIqawoG07fBxAXuyoHZ3QXQkwEgqBx1zEEh33gdIKAw==",
-    "shasum": "b1eddf5e906d5e23a35db293d96e0cc8390e5563",
+    "integrity": "sha512-a+wI4PEx9a2fg6V5ueTTDkOkr1XpEvA5RFXIbo/L2hOfzMmGtyRnbG24bCGu5Q2RSgVxSQV0aLkdb3vdYMNH9A==",
+    "shasum": "a49a474ac281bf72128d490c1dd8dac1886479b4",
     "urls": [
-      "https://registry.npmmirror.com/@openai/codex/-/codex-0.136.0-win32-x64.tgz",
-      "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.136.0-win32-x64.tgz"
+      "https://registry.npmjs.org/@openai/codex/-/codex-0.142.5-win32-x64.tgz",
+      "https://registry.npmmirror.com/@openai/codex/-/codex-0.142.5-win32-x64.tgz",
+      "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.142.5-win32-x64.tgz"
     ]
-  },
-  "fallback_pinned": [
-    {
-      "version": "0.139.0-win32-x64",
-      "integrity": "sha512-lQrVLNz+90wdvWVNFDvCkHQRiAK9ZllmkTka3c8eqSDqdJk35Gpgppfv9Xtw5M2ZBtTq0sBdWBiCMyzGDBSpmQ==",
-      "shasum": "63514296579a97d2d69c8a7684dc9c67b6b17ae8",
-      "urls": [
-        "https://registry.npmmirror.com/@openai/codex/-/codex-0.139.0-win32-x64.tgz",
-        "https://npmreg.proxy.ustclug.org/@openai/codex/-/codex-0.139.0-win32-x64.tgz"
-      ]
-    }
-  ]
+  }
 }

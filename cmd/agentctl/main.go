@@ -23,6 +23,8 @@ func main() {
 		if err := runInstallCodex(os.Args[2:]); err != nil {
 			die(err)
 		}
+	case "codex-debug-wrapper":
+		os.Exit(runCodexDebugWrapper(os.Args[2:]))
 	case "set-model":
 		runSetModel(os.Args[2:])
 	case "test-install-vscode":
@@ -56,6 +58,8 @@ USAGE:
   agentctl logs                   print last 200 lines of launcher log
   agentctl install-codex --manifest <path>
                                   download and install Codex runtime from npm mirrors
+  agentctl codex-debug-wrapper --codex <path> [args...]
+                                  run Codex and print safe resume diagnostics on failure
   agentctl set-model <name>      set the Codex model (gpt-5.5 / deepseek-v4-pro / glm-5.2)
 
 P13.4 verification subcommands (skip the OAuth steps, exercise everything else):

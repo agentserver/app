@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -108,6 +109,7 @@ func runWithOptions(ctx context.Context, opts launcherOptions) error {
 	}
 
 	if s.Onboarding.Status == state.StatusComplete {
+		preferredConsoleInstance := preferredCompletedConsoleInstance(p.ConsolePortFile)
 		err := runCompletedConsole(ctx, completedConsoleDeps{
 			Options:     opts,
 			PortFile:    p.ConsolePortFile,
@@ -121,11 +123,12 @@ func runWithOptions(ctx context.Context, opts launcherOptions) error {
 			return err
 		}
 		return serveCompletedConsole(ctx, completedServeInput{
-			Paths:      p,
-			State:      store,
-			Secrets:    secrets.New(p.SecretsFile),
-			InstallDir: installDir,
-			Options:    opts,
+			Paths:                    p,
+			State:                    store,
+			Secrets:                  secrets.New(p.SecretsFile),
+			InstallDir:               installDir,
+			Options:                  opts,
+			PreferredConsoleInstance: preferredConsoleInstance,
 		})
 	}
 
@@ -170,6 +173,64 @@ func runCompletedConsole(ctx context.Context, d completedConsoleDeps) error {
 	return errNoRunningConsole
 }
 
+func preferredCompletedConsoleInstance(path string) console.InstanceInfo {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return console.InstanceInfo{}
+	}
+	b = bytes.TrimPrefix(b, []byte{0xEF, 0xBB, 0xBF})
+	var info console.InstanceInfo
+	if err := json.Unmarshal(b, &info); err != nil {
+		return console.InstanceInfo{}
+	}
+	if !validTCPPort(info.Port) {
+		return console.InstanceInfo{}
+	}
+	return info
+}
+
+func listenCompletedConsole(preferredPort int) (net.Listener, error) {
+	return listenCompletedConsoleWithRetry(preferredPort, 5*time.Second, 100*time.Millisecond)
+}
+
+func listenCompletedConsoleWithRetry(preferredPort int, wait time.Duration, interval time.Duration) (net.Listener, error) {
+	if validTCPPort(preferredPort) {
+		addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(preferredPort))
+		deadline := time.Now().Add(wait)
+		var lastErr error
+		for {
+			ln, err := net.Listen("tcp", addr)
+			if err == nil {
+				return ln, nil
+			}
+			lastErr = err
+			if wait <= 0 || !time.Now().Before(deadline) {
+				break
+			}
+			if interval <= 0 {
+				interval = 100 * time.Millisecond
+			}
+			time.Sleep(interval)
+		}
+		log.Printf("launcher: preferred console port %d unavailable after %s: %v", preferredPort, wait, lastErr)
+	}
+	return net.Listen("tcp", "127.0.0.1:0")
+}
+
+func validTCPPort(port int) bool {
+	return port > 0 && port <= 65535
+}
+
+func completedConsoleToken(preferred console.InstanceInfo, actualPort int) (string, error) {
+	if preferred.Port == actualPort {
+		token := strings.TrimSpace(preferred.Token)
+		if token != "" {
+			return token, nil
+		}
+	}
+	return console.NewInstanceToken()
+}
+
 func postConsole(ctx context.Context, url, token string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
 	if err != nil {
@@ -190,12 +251,13 @@ func postConsole(ctx context.Context, url, token string) error {
 }
 
 type completedServeInput struct {
-	Paths       paths.Paths
-	State       *state.Store
-	Secrets     secrets.Store
-	InstallDir  string
-	Options     launcherOptions
-	OpenBrowser func(string) error
+	Paths                    paths.Paths
+	State                    *state.Store
+	Secrets                  secrets.Store
+	InstallDir               string
+	Options                  launcherOptions
+	OpenBrowser              func(string) error
+	PreferredConsoleInstance console.InstanceInfo
 }
 
 func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
@@ -214,6 +276,9 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	if err := slaveManager.RefreshConfigs(ctx); err != nil {
 		log.Printf("launcher: refresh slave configs: %v", err)
 	}
+	if err := refreshCompletedLoomDriverOnConsoleStart(in.Paths, in.State, sec, in.InstallDir); err != nil {
+		log.Printf("launcher: refresh loom driver config: %v", err)
+	}
 	updates := newCompletedUpdater(in.Paths)
 	if err := restorePendingSlaveRestarts(ctx, in.Paths.PendingSlaveRestartsFile, appversion.Version, func(ctx context.Context, id string) error {
 		_, err := slaveManager.Restart(ctx, id)
@@ -225,7 +290,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	defer stopConsole()
 	scheduleAutomaticUpdateCheck(consoleCtx, updates, 30*time.Second)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := listenCompletedConsole(in.PreferredConsoleInstance.Port)
 	if err != nil {
 		return err
 	}
@@ -268,7 +333,8 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 			go srv.Shutdown(context.Background())
 		},
 	})
-	token, err := console.NewInstanceToken()
+	port := ln.Addr().(*net.TCPAddr).Port
+	token, err := completedConsoleToken(in.PreferredConsoleInstance, port)
 	if err != nil {
 		ln.Close()
 		return err
@@ -283,7 +349,6 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		TokenRefresherExePath: joinExe(in.InstallDir, "token-refresher.exe"),
 	}), ctrl, token)
 
-	port := ln.Addr().(*net.TCPAddr).Port
 	info := console.InstanceInfo{Port: port, PID: os.Getpid(), Token: token}
 	if err := console.WriteInstanceInfo(in.Paths.ConsolePortFile, info); err != nil {
 		ln.Close()
@@ -667,6 +732,7 @@ func newCompletedConsoleOrchestrator(in completedOrchestratorInput) ui.Orchestra
 		CodexDesktopGlobalStatePath:       in.Paths.CodexDesktopGlobalStateFile,
 		CodexDesktopComputerUseConfigPath: in.Paths.CodexDesktopComputerUseConfigFile,
 		CodexAbsPath:                      in.Paths.CodexExePath,
+		CodexDesktopCodexPath:             in.Paths.CodexDesktopCodexPath,
 		LoomDriverPath:                    loomDriverPath,
 		LoomConfigPath:                    loomConfigPath,
 		MachineFile:                       in.Paths.MachineFile,
@@ -800,6 +866,7 @@ func serveOnboarding(p paths.Paths, store *state.Store) error {
 		CodexAbsPath:                      p.CodexExePath,
 		BundledCodexPath:                  joinExe(installDir, "codex.exe"),
 		CodexManifestPath:                 joinExe(installDir, "codex-manifest.json"),
+		CodexDesktopCodexPath:             p.CodexDesktopCodexPath,
 		LoomDriverPath:                    joinExe(installDir, "driver-agent.exe"),
 		LoomConfigPath:                    filepath.Join(p.UserHome, ".config", "multi-agent", "driver.yaml"),
 		MachineFile:                       p.MachineFile,
@@ -1007,22 +1074,26 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 	if s.Agentserver.ShortID != "" {
 		serverName = "driver-" + s.Agentserver.ShortID
 	}
-	codexBin := completedDriverCodexBin(p)
+	codexBin, codexExtraArgs, err := completedDriverCodexInvocation(p, s, installDir)
+	if err != nil {
+		return err
+	}
 	displayName := completedDriverComputerName(p, s)
 	if err := loom.WriteDriverConfig(loomConfigPath, loom.DriverConfig{
-		ServerURL:     serverURL,
-		ServerName:    serverName,
-		SandboxID:     s.Agentserver.SandboxID,
-		TunnelToken:   tunnelToken,
-		ProxyToken:    proxyToken,
-		WorkspaceID:   s.Agentserver.WorkspaceID,
-		WorkspaceName: s.Agentserver.WorkspaceName,
-		ShortID:       s.Agentserver.ShortID,
-		DisplayName:   displayName,
-		Description:   displayName + " 本地协作驱动。",
-		CodexBin:      codexBin,
-		CodexWorkDir:  p.UserHome,
-		CodexHome:     completedDriverCodexHome(p),
+		ServerURL:      serverURL,
+		ServerName:     serverName,
+		SandboxID:      s.Agentserver.SandboxID,
+		TunnelToken:    tunnelToken,
+		ProxyToken:     proxyToken,
+		WorkspaceID:    s.Agentserver.WorkspaceID,
+		WorkspaceName:  s.Agentserver.WorkspaceName,
+		ShortID:        s.Agentserver.ShortID,
+		DisplayName:    displayName,
+		Description:    displayName + " 本地协作驱动。",
+		CodexBin:       codexBin,
+		CodexExtraArgs: codexExtraArgs,
+		CodexWorkDir:   p.UserHome,
+		CodexHome:      completedDriverCodexHome(p),
 	}); err != nil {
 		return fmt.Errorf("configure loom driver: %w", err)
 	}
@@ -1050,6 +1121,17 @@ func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Sto
 		_ = startCompletedLoomDriverDaemon(driverPath, loomConfigPath)
 	}
 	return nil
+}
+
+func refreshCompletedLoomDriverOnConsoleStart(p paths.Paths, store *state.Store, sec secrets.Store, installDir string) error {
+	if store == nil {
+		return nil
+	}
+	current, err := store.Load()
+	if err != nil {
+		return err
+	}
+	return configureCompletedLoomDriver(p, current, sec, installDir)
 }
 
 func driverDaemonStatePath(p paths.Paths) string {
@@ -1093,11 +1175,26 @@ func completedDriverCodexHome(p paths.Paths) string {
 	return ""
 }
 
-func completedDriverCodexBin(p paths.Paths) string {
+func completedDriverCodexBin(p paths.Paths, s *state.State) string {
+	if s != nil && state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeCodexDesktop && p.CodexDesktopCodexPath != "" {
+		return p.CodexDesktopCodexPath
+	}
 	if p.CodexExePath != "" {
 		return p.CodexExePath
 	}
 	return "codex"
+}
+
+func completedDriverCodexInvocation(p paths.Paths, s *state.State, installDir string) (string, []string, error) {
+	realCodexBin := completedDriverCodexBin(p, s)
+	wrapperPath := joinExe(installDir, "codex-debug-wrapper.exe")
+	bin, extraArgs := loom.CodexDebugWrapperInvocation(wrapperPath, realCodexBin)
+	if bin == wrapperPath {
+		if err := loom.WriteCodexDebugWrapperConfig(wrapperPath, realCodexBin); err != nil {
+			return "", nil, err
+		}
+	}
+	return bin, extraArgs, nil
 }
 
 func getSecretIfPresent(sec secrets.Store, key string) string {

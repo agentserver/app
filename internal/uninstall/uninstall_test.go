@@ -510,7 +510,7 @@ func TestRunStopsLocalSlaveAndInstallProcessesBeforeRemovingState(t *testing.T) 
 	if !ok {
 		t.Fatalf("fallback calls=%+v, want app dir %s", fallbackCalls, appDir)
 	}
-	for _, want := range []string{"slave-agent.exe", "driver-agent.exe", "token-refresher.exe"} {
+	for _, want := range []string{"slave-agent.exe", "driver-agent.exe", "token-refresher.exe", "codex-debug-wrapper.exe"} {
 		if !containsString(appCall.names, want) {
 			t.Fatalf("fallback process names missing %q: %v", want, appCall.names)
 		}

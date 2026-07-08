@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -273,8 +274,10 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 				"packaging/windows/machine.ps1",
 				"codex-desktop-installer.exe",
 				"slave-agent.exe",
+				"dist/windows/codex-debug-wrapper.exe",
 				"dist/windows/uninstall.exe",
 				"dist/windows/token-refresher.exe",
+				"dist/windows/codex-debug-wrapper.exe::codex-debug-wrapper.exe",
 				"$CODEX_DESKTOP_CACHE::codex-desktop-installer.exe",
 				"$LOOM_DRIVER_CACHE::driver-agent.exe",
 				"$LOOM_SLAVE_CACHE::slave-agent.exe",
@@ -296,6 +299,7 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 			want: []string{
 				"uninstall.exe",
 				"token-refresher.exe",
+				"codex-debug-wrapper.exe",
 				"driver-agent.windows-amd64.exe",
 				"v0.0.10",
 				"DestName: \"driver-agent.exe\"",
@@ -624,6 +628,7 @@ func TestWindowsPackageScriptsUseSharedPayloadManifest(t *testing.T) {
 		"PORTABLE_PAYLOADS=(",
 		"fetch_windows_package_assets()",
 		"copy_portable_payloads()",
+		"dist/windows/codex-debug-wrapper.exe::codex-debug-wrapper.exe",
 		"dist/windows/token-refresher.exe::token-refresher.exe",
 		"packaging/windows/codex-manifest.json::codex-manifest.json",
 		"$LOOM_DRIVER_CODEX_PROMPTS_CACHE::driver-codex-prompts.tar.gz",
@@ -986,6 +991,176 @@ func TestWindowsMachineScriptCreatesStableMachineIDAndUpdatesComputerName(t *tes
 	}
 }
 
+func TestWindowsMachineScriptReadsExistingMachineJsonAsUTF8(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/machine.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"$utf8NoBom = New-Object System.Text.UTF8Encoding $false",
+		"[System.IO.File]::ReadAllText($MachinePath, $utf8NoBom)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("machine.ps1 must read existing machine.json as UTF-8 without BOM; missing %q", want)
+		}
+	}
+	if strings.Contains(s, "Get-Content -Raw -LiteralPath $MachinePath | ConvertFrom-Json") {
+		t.Fatal("machine.ps1 must not read machine.json with Windows PowerShell's ANSI default encoding")
+	}
+}
+
+func TestWindowsMachineScriptBacksUpCorruptMachineJsonInsteadOfFailingInstall(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/machine.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"function Backup-InvalidMachineJson",
+		"Move-Item -LiteralPath $MachinePath -Destination $backupPath -Force",
+		"Backed up invalid machine identity",
+		"try {",
+		"} catch {",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("machine.ps1 should recover from a corrupt existing machine.json; missing %q", want)
+		}
+	}
+	if strings.Contains(s, "throw \"Existing machine identity is incomplete: $MachinePath\"") {
+		t.Fatal("machine.ps1 should not abort reinstall when an existing machine.json is incomplete")
+	}
+}
+
+func TestWindowsMachineScriptCanPreserveExistingComputerName(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/machine.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"[switch]$PreserveExistingComputerName",
+		"$explicitComputerName = $false",
+		"$explicitComputerName = $true",
+		"if ($PreserveExistingComputerName -and -not $explicitComputerName)",
+		"$ComputerName = $existingComputerName.Trim()",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("machine.ps1 should preserve an existing computer name during silent reinstall; missing %q", want)
+		}
+	}
+}
+
+func TestWindowsMachineScriptExecPreservesUtf8AndRecoversSmartQuoteJson(t *testing.T) {
+	powerShell := powerShellForScriptTest(t)
+	scriptPath := filepath.Clean("../../packaging/windows/machine.ps1")
+	t.Run("preserve valid UTF-8 Chinese computer name", func(t *testing.T) {
+		dir := t.TempDir()
+		machinePath := filepath.Join(dir, "machine.json")
+		initial := map[string]string{
+			"machine_id":     "stable-id-utf8",
+			"computer_name":  "测试电脑1",
+			"extra_property": "kept",
+		}
+		initialJSON, err := json.Marshal(initial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(machinePath, append(initialJSON, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		runPowerShellScript(t, powerShell, scriptPath, "-MachinePath", machinePath, "-ComputerName", "fallback-host", "-PreserveExistingComputerName")
+
+		got := readMachineJSONForTest(t, machinePath)
+		if got["machine_id"] != "stable-id-utf8" {
+			t.Fatalf("machine_id=%q", got["machine_id"])
+		}
+		if got["computer_name"] != "测试电脑1" {
+			t.Fatalf("computer_name=%q", got["computer_name"])
+		}
+		if got["extra_property"] != "kept" {
+			t.Fatalf("extra_property=%q", got["extra_property"])
+		}
+	})
+
+	t.Run("backup invalid smart-quote JSON instead of failing", func(t *testing.T) {
+		dir := t.TempDir()
+		machinePath := filepath.Join(dir, "machine.json")
+		badJSON := `{"machine_id":"old-id","computer_name”:"测试电脑1"}` + "\n"
+		if err := os.WriteFile(machinePath, []byte(badJSON), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		runPowerShellScript(t, powerShell, scriptPath, "-MachinePath", machinePath, "-ComputerName", "fallback-host", "-PreserveExistingComputerName")
+
+		got := readMachineJSONForTest(t, machinePath)
+		if got["machine_id"] == "" {
+			t.Fatalf("machine_id was not initialized: %#v", got)
+		}
+		if got["computer_name"] != "fallback-host" {
+			t.Fatalf("computer_name=%q", got["computer_name"])
+		}
+		matches, err := filepath.Glob(machinePath + ".bad-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(matches) != 1 {
+			t.Fatalf("backup count=%d, matches=%v", len(matches), matches)
+		}
+		backup, err := os.ReadFile(matches[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(backup) != badJSON {
+			t.Fatalf("backup content changed: %q", string(backup))
+		}
+	})
+}
+
+func powerShellForScriptTest(t *testing.T) string {
+	t.Helper()
+	candidates := []string{"pwsh", "powershell.exe"}
+	if runtime.GOOS == "windows" {
+		candidates = []string{"powershell.exe", "pwsh"}
+	}
+	for _, candidate := range candidates {
+		path, err := exec.LookPath(candidate)
+		if err == nil {
+			return path
+		}
+	}
+	t.Skip("PowerShell is not available")
+	return ""
+}
+
+func runPowerShellScript(t *testing.T, powerShell, scriptPath string, args ...string) {
+	t.Helper()
+	commandArgs := []string{"-NoProfile"}
+	if runtime.GOOS == "windows" {
+		commandArgs = append(commandArgs, "-ExecutionPolicy", "Bypass")
+	}
+	commandArgs = append(commandArgs, "-File", scriptPath)
+	commandArgs = append(commandArgs, args...)
+	out, err := exec.Command(powerShell, commandArgs...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s failed: %v\n%s", powerShell, strings.Join(commandArgs, " "), err, out)
+	}
+}
+
+func readMachineJSONForTest(t *testing.T, path string) map[string]string {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("machine.json is not valid JSON: %v\n%s", err, body)
+	}
+	return got
+}
+
 func TestWindowsMachineScriptDoesNotExitCaller(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/machine.ps1")
 	if err != nil {
@@ -1023,6 +1198,25 @@ func TestWindowsPortableInstallerInitializesMachineBeforeFrontend(t *testing.T) 
 	frontend := strings.Index(s, "Writing install mode")
 	if machine < 0 || frontend < 0 || machine > frontend {
 		t.Fatal("install.ps1 should initialize machine identity before writing frontend install mode")
+	}
+}
+
+func TestWindowsPortableInstallerReadsExistingMachineNameAsUTF8(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/install.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"$utf8NoBom = New-Object System.Text.UTF8Encoding $false",
+		"[System.IO.File]::ReadAllText($MachinePath, $utf8NoBom)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("install.ps1 should read existing machine.json as UTF-8 before showing the default computer name; missing %q", want)
+		}
+	}
+	if strings.Contains(s, "Get-Content -Raw -LiteralPath $MachinePath | ConvertFrom-Json") {
+		t.Fatal("install.ps1 must not read machine.json with Windows PowerShell's ANSI default encoding")
 	}
 }
 
@@ -1099,12 +1293,10 @@ func TestWindowsInnoInstallerInitializesMachineBeforeFrontend(t *testing.T) {
 		"WizardSilent",
 		"GetInitialComputerName",
 		"GetMachinePath",
-		"LoadStringsFromFile",
-		"JsonStringValue",
-		"computer_name",
 		"machine.ps1",
 		"-MachinePath",
 		"-ComputerNamePath",
+		"-PreserveExistingComputerName",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("installer.iss should prompt for and initialize machine identity; missing %q", want)
@@ -1116,6 +1308,48 @@ func TestWindowsInnoInstallerInitializesMachineBeforeFrontend(t *testing.T) {
 	alternateFrontend := strings.Index(s, "RunEstimatedPowerShellStep('vscode-mode'")
 	if machine < 0 || frontend < 0 || alternateFrontend < 0 || machine > frontend || machine > alternateFrontend {
 		t.Fatal("installer.iss should initialize machine identity before frontend mode setup")
+	}
+}
+
+func TestWindowsInnoInstallerDoesNotParseMachineJsonInPascal(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, notWant := range []string{
+		"LoadStringsFromFile(GetMachinePath()",
+		"JsonStringValue",
+	} {
+		if strings.Contains(s, notWant) {
+			t.Fatalf("installer.iss must not parse UTF-8 machine.json in Pascal Script with ANSI defaults; found %q", notWant)
+		}
+	}
+	if !strings.Contains(s, "MachineArgs := '-MachinePath ' + PowerShellQuote(MachinePath)") {
+		t.Fatal("installer.iss should build machine.ps1 args explicitly")
+	}
+	if !strings.Contains(s, "-PreserveExistingComputerName") {
+		t.Fatal("silent Inno install should let machine.ps1 preserve an existing UTF-8 computer name")
+	}
+}
+
+func TestWindowsInnoInstallerReadsExistingComputerNameViaPowerShell(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"function GetExistingComputerName(): String",
+		"[System.IO.File]::ReadAllText($machinePath, $utf8NoBom)",
+		"$machine = $text | ConvertFrom-Json",
+		"New-ItemProperty -Path $regPath -Name ''ExistingComputerName''",
+		"RegQueryStringValue(HKCU, 'Software\\AgentServerApp\\Installer', 'ExistingComputerName'",
+		"RegDeleteValue(HKCU, 'Software\\AgentServerApp\\Installer', 'ExistingComputerName')",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("installer.iss should read valid machine.json computer_name through PowerShell/registry; missing %q", want)
+		}
 	}
 }
 
@@ -1154,17 +1388,22 @@ func TestWindowsInnoInstallerDefaultsComputerNamePageFromMachineJson(t *testing.
 		t.Fatal(err)
 	}
 	s := string(body)
-	existing := strings.Index(s, "GetExistingComputerName")
 	initial := strings.Index(s, "function GetInitialComputerName")
 	pageValue := strings.Index(s, "ComputerNamePage.Values[0] := GetInitialComputerName()")
-	if existing < 0 || initial < 0 || pageValue < 0 {
-		t.Fatal("installer.iss should default the editable computer-name page from machine.json")
+	if initial < 0 || pageValue < 0 {
+		t.Fatal("installer.iss should default the editable computer-name page")
 	}
-	if existing > initial || initial > pageValue {
-		t.Fatal("installer.iss should read existing machine name before initializing the page value")
+	if initial > pageValue {
+		t.Fatal("installer.iss should initialize the page value from GetInitialComputerName")
 	}
 	if strings.Contains(s, "ShouldSkipPage") {
 		t.Fatal("installer.iss should not skip the computer-name page when machine.json exists")
+	}
+	if !strings.Contains(s, "ExistingComputerName := GetExistingComputerName()") {
+		t.Fatal("installer.iss should read valid existing machine.json computer_name for the page default")
+	}
+	if !strings.Contains(s, "if ExistingComputerName <> '' then begin") {
+		t.Fatal("installer.iss should use existing machine name only when it is valid and non-empty")
 	}
 }
 
@@ -1283,6 +1522,7 @@ func TestWindowsInnoInstallerStopsRunningAppProcessesBeforeReplacingFiles(t *tes
 		"StopRunningAgentserverProcesses",
 		"Get-CimInstance Win32_Process",
 		"token-refresher",
+		"codex-debug-wrapper",
 		"launcher",
 		"onboarding-server",
 		"open-folder",
@@ -1328,6 +1568,7 @@ func TestWindowsPortableInstallerStopsRunningProcessesBeforeCopy(t *testing.T) {
 		"$localAppDataRoot = Join-Path $env:LOCALAPPDATA 'agentserver-app'",
 		"$codexBin = Join-Path $localAppDataRoot 'bin\\codex.exe'",
 		"$exe -ieq $codexBin",
+		"codex-debug-wrapper.exe",
 		"\nStop-RunningAgentserverProcesses\n",
 	} {
 		if !strings.Contains(s, want) {
@@ -1346,7 +1587,7 @@ func TestMakefileBuildsWindowsHelperExecutables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"uninstall", "token-refresher"} {
+	for _, want := range []string{"uninstall", "token-refresher", "codex-debug-wrapper"} {
 		if !strings.Contains(string(body), want) {
 			t.Fatalf("Makefile should include %q so cross-windows builds %s.exe", want, want)
 		}

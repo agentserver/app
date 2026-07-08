@@ -30,6 +30,7 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/slave"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/tray"
+	"github.com/agentserver/agentserver-pkg/internal/ui"
 	"github.com/agentserver/agentserver-pkg/internal/updater"
 )
 
@@ -188,6 +189,69 @@ func TestCompletedSlaveManagerDepsRecoversBadMachineIdentity(t *testing.T) {
 	}
 	if got.ComputerName != "RECOVERED-PC" || got.MachineID == "" {
 		t.Fatalf("machine=%+v", got)
+	}
+}
+
+func TestServeCompletedConsoleRefreshesLoomDriverFromChineseMachineName(t *testing.T) {
+	dir := t.TempDir()
+	installDir := createLauncherTestDriverInstall(t, dir)
+	p := paths.Paths{
+		UserHome:                 dir,
+		InstallRoot:              filepath.Join(dir, ".agentserver-app"),
+		MachineFile:              filepath.Join(dir, ".agentserver-app", "machine.json"),
+		SlavesFile:               filepath.Join(dir, ".agentserver-app", "slaves.json"),
+		SlavesDir:                filepath.Join(dir, ".agentserver-app", "slaves"),
+		ConsolePortFile:          filepath.Join(dir, ".agentserver-app", "console-port.json"),
+		PendingSlaveRestartsFile: filepath.Join(dir, ".agentserver-app", "pending-slave-restarts.json"),
+		ConsoleNotificationsFile: filepath.Join(dir, ".agentserver-app", "console-notifications.json"),
+		UpdateStateFile:          filepath.Join(dir, ".agentserver-app", "update-state.json"),
+		UpdatesCacheDir:          filepath.Join(dir, ".agentserver-app", "updates"),
+		CodexExePath:             filepath.Join(dir, "bin", "codex.exe"),
+		CodexConfigFile:          filepath.Join(dir, ".codex", "config.toml"),
+	}
+	if _, err := slave.NewMachineStore(p.MachineFile).Ensure("测试电脑"); err != nil {
+		t.Fatal(err)
+	}
+	st := launcherTestDriverState()
+	st.SchemaVersion = state.CurrentSchemaVersion
+	st.Onboarding.Status = state.StatusComplete
+	store := state.NewStore(filepath.Join(p.InstallRoot, "state.json"))
+	if err := store.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	if err := console.NewDriverDaemonStore(driverDaemonStatePath(p)).Save(console.DriverDaemonPersistedState{Enabled: false}); err != nil {
+		t.Fatal(err)
+	}
+	loomPath := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
+	if err := os.MkdirAll(filepath.Dir(loomPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(loomPath, []byte(`display_name: "WIN-8650DR8KQKD"`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sec := launcherTestDriverSecrets(t, dir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serveCompletedConsole(ctx, completedServeInput{
+			Paths:      p,
+			State:      store,
+			Secrets:    sec,
+			InstallDir: installDir,
+			Options:    launcherOptions{OpenPage: false, OpenFrontend: false},
+			OpenBrowser: func(string) error {
+				return nil
+			},
+		})
+	}()
+	info := waitConsolePortForTest(t, p.ConsolePortFile, errCh)
+	defer stopConsoleForTest(t, info, errCh)
+
+	text := waitFileContainsForTest(t, loomPath, `display_name: "测试电脑"`)
+	if !strings.Contains(text, `description: "测试电脑 本地协作驱动。"`) {
+		t.Fatalf("driver.yaml missing Chinese description:\n%s", text)
 	}
 }
 
@@ -517,6 +581,76 @@ func waitAutomaticUpdateCheckStopped(t *testing.T, done <-chan struct{}) {
 	}
 }
 
+func waitConsolePortForTest(t *testing.T, path string, errCh <-chan error) console.InstanceInfo {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-errCh:
+			t.Fatalf("serveCompletedConsole returned before writing port file: %v", err)
+		default:
+		}
+		b, err := os.ReadFile(path)
+		if err == nil {
+			var info console.InstanceInfo
+			if json.Unmarshal(b, &info) == nil && info.Port > 0 && info.Token != "" {
+				return info
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for console port file %s", path)
+	return console.InstanceInfo{}
+}
+
+func stopConsoleForTest(t *testing.T, info console.InstanceInfo, errCh <-chan error) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(info.Port)+"/api/console/quit", nil)
+	if err != nil {
+		t.Errorf("create console quit request: %v", err)
+		return
+	}
+	req.Header.Set(ui.ConsoleInstanceTokenHeader, info.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Errorf("post console quit: %v", err)
+	} else {
+		resp.Body.Close()
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("serveCompletedConsole returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Errorf("serveCompletedConsole did not stop")
+	}
+}
+
+func waitFileContainsForTest(t *testing.T, path, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last string
+	var lastErr error
+	for time.Now().Before(deadline) {
+		body, err := os.ReadFile(path)
+		if err == nil {
+			last = string(body)
+			if strings.Contains(last, want) {
+				return last
+			}
+		} else {
+			lastErr = err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if lastErr != nil && last == "" {
+		t.Fatalf("timed out waiting for %s in %s: %v", want, path, lastErr)
+	}
+	t.Fatalf("timed out waiting for %s in %s:\n%s", want, path, last)
+	return ""
+}
+
 func TestRestorePendingSlaveRestartsCallsManager(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pending-slave-restarts.json")
@@ -834,6 +968,113 @@ func TestStopTrayAndWaitTimesOut(t *testing.T) {
 	}
 	if !cancelCalled {
 		t.Fatal("cancel was not called")
+	}
+}
+
+func TestPreferredCompletedConsoleInstanceReadsStaleInstanceFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "console-port.json")
+	if err := console.WriteInstanceInfo(path, console.InstanceInfo{Port: 58212, PID: 123, Token: "old-token"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := preferredCompletedConsoleInstance(path)
+	if got.Port != 58212 || got.Token != "old-token" {
+		t.Fatalf("preferredCompletedConsoleInstance=%+v, want port 58212 and old token", got)
+	}
+}
+
+func TestPreferredCompletedConsoleInstanceAcceptsUTF8BOM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "console-port.json")
+	body := append([]byte{0xEF, 0xBB, 0xBF}, []byte(`{"port":58212,"pid":123,"token":"old-token"}`)...)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := preferredCompletedConsoleInstance(path)
+	if got.Port != 58212 || got.Token != "old-token" {
+		t.Fatalf("preferredCompletedConsoleInstance with BOM=%+v, want port 58212 and old token", got)
+	}
+}
+
+func TestCompletedConsoleTokenReusesPreferredTokenForSamePort(t *testing.T) {
+	got, err := completedConsoleToken(console.InstanceInfo{Port: 58212, Token: "old-token"}, 58212)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "old-token" {
+		t.Fatalf("completedConsoleToken=%q, want old token", got)
+	}
+}
+
+func TestCompletedConsoleTokenRegeneratesWhenPortChanges(t *testing.T) {
+	got, err := completedConsoleToken(console.InstanceInfo{Port: 58212, Token: "old-token"}, 58213)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == "" || got == "old-token" {
+		t.Fatalf("completedConsoleToken=%q, want a new non-empty token", got)
+	}
+}
+
+func TestListenCompletedConsoleReusesPreferredPort(t *testing.T) {
+	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := reserved.Addr().(*net.TCPAddr).Port
+	if err := reserved.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := listenCompletedConsole(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	if got := ln.Addr().(*net.TCPAddr).Port; got != port {
+		t.Fatalf("listenCompletedConsole port=%d, want preferred %d", got, port)
+	}
+}
+
+func TestListenCompletedConsoleWaitsForPreferredPortRelease(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := busy.Addr().(*net.TCPAddr).Port
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		_ = busy.Close()
+	}()
+
+	ln, err := listenCompletedConsoleWithRetry(port, time.Second, 5*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	if got := ln.Addr().(*net.TCPAddr).Port; got != port {
+		t.Fatalf("listenCompletedConsoleWithRetry port=%d, want released preferred %d", got, port)
+	}
+}
+
+func TestListenCompletedConsoleFallsBackWhenPreferredPortBusy(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	port := busy.Addr().(*net.TCPAddr).Port
+
+	ln, err := listenCompletedConsoleWithRetry(port, 10*time.Millisecond, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	if got := ln.Addr().(*net.TCPAddr).Port; got == port {
+		t.Fatalf("listenCompletedConsole reused busy port %d", port)
 	}
 }
 
@@ -1252,6 +1493,111 @@ func TestConfigureCompletedLoomDriverUsesMachineComputerName(t *testing.T) {
 	}
 }
 
+func TestConfigureCompletedLoomDriverUsesAgentctlCodexDebugWrapper(t *testing.T) {
+	dir := t.TempDir()
+	installDir := createLauncherTestDriverInstall(t, dir)
+	sec := launcherTestDriverSecrets(t, dir)
+	st := launcherTestDriverState()
+	p := paths.Paths{
+		UserHome:        dir,
+		InstallRoot:     filepath.Join(dir, ".agentserver-app"),
+		CodexExePath:    filepath.Join(dir, "bin", "codex.exe"),
+		CodexConfigFile: filepath.Join(dir, ".codex", "config.toml"),
+	}
+
+	if err := configureCompletedLoomDriver(p, st, sec, installDir); err != nil {
+		t.Fatalf("configureCompletedLoomDriver: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, ".config", "multi-agent", "driver.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`bin: "` + filepath.ToSlash(filepath.Join(installDir, "codex-debug-wrapper.exe")) + `"`,
+		`extra_args: []`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("driver.yaml missing %q:\n%s", want, text)
+		}
+	}
+	wrapperConfig, err := os.ReadFile(filepath.Join(installDir, "codex-debug-wrapper.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wrapperConfig), strconv.Quote(p.CodexExePath)) {
+		t.Fatalf("wrapper config should point at real codex path %q:\n%s", p.CodexExePath, wrapperConfig)
+	}
+}
+
+func TestConfigureCompletedLoomDriverCodexDesktopUsesCodexDesktopCodexPath(t *testing.T) {
+	dir := t.TempDir()
+	installDir := createLauncherTestDriverInstall(t, dir)
+	sec := launcherTestDriverSecrets(t, dir)
+	st := launcherTestDriverState()
+	st.FrontendMode = state.FrontendModeCodexDesktop
+	desktopCodexPath := filepath.Join(dir, "Microsoft", "WindowsApps", "codex.exe")
+	p := paths.Paths{
+		UserHome:              dir,
+		InstallRoot:           filepath.Join(dir, ".agentserver-app"),
+		CodexExePath:          filepath.Join(dir, "agentserver-app", "bin", "codex.exe"),
+		CodexDesktopCodexPath: desktopCodexPath,
+		CodexConfigFile:       filepath.Join(dir, ".codex", "config.toml"),
+	}
+
+	if err := configureCompletedLoomDriver(p, st, sec, installDir); err != nil {
+		t.Fatalf("configureCompletedLoomDriver: %v", err)
+	}
+
+	wrapperConfig, err := os.ReadFile(filepath.Join(installDir, "codex-debug-wrapper.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wrapperConfig), strconv.Quote(desktopCodexPath)) {
+		t.Fatalf("wrapper config should point at Codex Desktop CLI %q:\n%s", desktopCodexPath, wrapperConfig)
+	}
+	if strings.Contains(string(wrapperConfig), strconv.Quote(p.CodexExePath)) {
+		t.Fatalf("wrapper config should not point at managed Codex runtime %q:\n%s", p.CodexExePath, wrapperConfig)
+	}
+}
+
+func TestConfigureCompletedLoomDriverUsesChineseMachineComputerName(t *testing.T) {
+	dir := t.TempDir()
+	installDir := createLauncherTestDriverInstall(t, dir)
+	sec := launcherTestDriverSecrets(t, dir)
+	st := launcherTestDriverState()
+	p := paths.Paths{
+		UserHome:        dir,
+		InstallRoot:     filepath.Join(dir, ".agentserver-app"),
+		MachineFile:     filepath.Join(dir, ".agentserver-app", "machine.json"),
+		CodexExePath:    filepath.Join(dir, "bin", "codex.exe"),
+		CodexConfigFile: filepath.Join(dir, ".codex", "config.toml"),
+	}
+	if _, err := slave.NewMachineStore(p.MachineFile).Ensure("测试电脑"); err != nil {
+		t.Fatal(err)
+	}
+	resetCompletedDriverHooksForTest(t)
+
+	if err := configureCompletedLoomDriver(p, st, sec, installDir); err != nil {
+		t.Fatalf("configureCompletedLoomDriver: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, ".config", "multi-agent", "driver.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`display_name: "测试电脑"`,
+		`description: "测试电脑 本地协作驱动。"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("driver.yaml missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestConfigureCompletedLoomDriverFallbackDisplayNameHasStableSuffix(t *testing.T) {
 	st := &state.State{InstallID: "install-abcdef1234567890"}
 	got := completedDriverComputerName(paths.Paths{}, st)
@@ -1364,18 +1710,34 @@ func TestConfigureCompletedLoomDriverMinimalVSCodeUsesVSCodeCodexPath(t *testing
 	}
 }
 
-func TestCompletedDriverCodexBinCodexDesktopUsesManagedCodexAbsolutePath(t *testing.T) {
+func TestCompletedDriverCodexBinCodexDesktopUsesCodexDesktopPath(t *testing.T) {
 	dir := t.TempDir()
 	p := paths.Paths{
-		CodexExePath: filepath.Join(dir, "agentserver-app", "bin", "codex.exe"),
+		CodexExePath:          filepath.Join(dir, "agentserver-app", "bin", "codex.exe"),
+		CodexDesktopCodexPath: filepath.Join(dir, "Microsoft", "WindowsApps", "codex.exe"),
 	}
+	st := &state.State{FrontendMode: state.FrontendModeCodexDesktop}
 
-	got := completedDriverCodexBin(p)
-	if got != p.CodexExePath {
-		t.Fatalf("codex bin=%q, want managed Codex runtime %q", got, p.CodexExePath)
+	got := completedDriverCodexBin(p, st)
+	if got != p.CodexDesktopCodexPath {
+		t.Fatalf("codex bin=%q, want Codex Desktop CLI %q", got, p.CodexDesktopCodexPath)
 	}
 	if got == "codex" {
 		t.Fatalf("Codex Desktop driver must not rely on PATH command: %q", got)
+	}
+}
+
+func TestCompletedDriverCodexBinMinimalVSCodeUsesManagedCodexPath(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		CodexExePath:          filepath.Join(dir, "agentserver-app", "bin", "codex.exe"),
+		CodexDesktopCodexPath: filepath.Join(dir, "Microsoft", "WindowsApps", "codex.exe"),
+	}
+	st := &state.State{FrontendMode: state.FrontendModeMinimalVSCode}
+
+	got := completedDriverCodexBin(p, st)
+	if got != p.CodexExePath {
+		t.Fatalf("codex bin=%q, want managed Codex runtime %q", got, p.CodexExePath)
 	}
 }
 
@@ -1488,6 +1850,12 @@ func createLauncherTestDriverInstall(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(installDir, "driver-agent.exe"), []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "agentctl.exe"), []byte("agentctl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "codex-debug-wrapper.exe"), []byte("wrapper"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	writeLauncherTestTarGz(t, filepath.Join(installDir, "driver-skills.tar.gz"), map[string]string{

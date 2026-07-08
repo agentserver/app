@@ -111,6 +111,7 @@ function Stop-RunningAgentserverProcesses {
         'launcher.exe',
         'onboarding-server.exe',
         'agentctl.exe',
+        'codex-debug-wrapper.exe',
         'open-folder.exe',
         'token-refresher.exe',
         'driver-agent.exe',
@@ -210,6 +211,7 @@ $required = @(
     'launcher.exe',
     'onboarding-server.exe',
     'agentctl.exe',
+    'codex-debug-wrapper.exe',
     'open-folder.exe',
     'uninstall.exe',
     'token-refresher.exe',
@@ -282,7 +284,9 @@ $MachinePath = Join-Path $env:USERPROFILE '.agentserver-app\machine.json'
 $InitialComputerName = $env:COMPUTERNAME
 if (Test-Path -LiteralPath $MachinePath) {
     try {
-        $existing = Get-Content -Raw -LiteralPath $MachinePath | ConvertFrom-Json
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        $existingText = [System.IO.File]::ReadAllText($MachinePath, $utf8NoBom)
+        $existing = $existingText | ConvertFrom-Json
         $existingComputerName = [string]$existing.computer_name
         if (-not [string]::IsNullOrWhiteSpace($existingComputerName)) {
             $InitialComputerName = $existingComputerName.Trim()

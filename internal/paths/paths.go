@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 )
 
 type Paths struct {
@@ -36,8 +38,9 @@ type Paths struct {
 	CodexDesktopComputerUseConfigFile string
 
 	// LocalAppData root (Windows) for binaries
-	LocalAppDataRoot string
-	CodexExePath     string
+	LocalAppDataRoot      string
+	CodexExePath          string
+	CodexDesktopCodexPath string
 }
 
 func Default() (Paths, error) {
@@ -79,6 +82,7 @@ func Default() (Paths, error) {
 		}
 		p.LocalAppDataRoot = filepath.Join(lad, "agentserver-app")
 		p.CodexExePath = filepath.Join(p.LocalAppDataRoot, "bin", "codex.exe")
+		p.CodexDesktopCodexPath = codexdesktop.DefaultCLIPath(lad)
 	default:
 		p.LocalAppDataRoot = filepath.Join(root, "bin-root")
 		p.CodexExePath = filepath.Join(p.LocalAppDataRoot, "bin", "codex")

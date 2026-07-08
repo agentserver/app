@@ -54,6 +54,12 @@ func TestEnsureInstallsPinnedRuntimeFromFirstGoodMirror(t *testing.T) {
 	}
 }
 
+func TestDefaultDownloadAttemptTimeoutAllowsLargeRuntimeOnSlowLinks(t *testing.T) {
+	if got, wantMin := (Options{}).downloadAttemptTimeout(), 10*time.Minute; got < wantMin {
+		t.Fatalf("downloadAttemptTimeout=%s, want at least %s for 100MB+ Codex runtime", got, wantMin)
+	}
+}
+
 func TestEnsureDoesNotFetchUnpinnedMetadataWhenPinnedReturns404(t *testing.T) {
 	metadataHits := 0
 	mux := http.NewServeMux()
