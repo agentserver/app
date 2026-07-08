@@ -15,6 +15,12 @@ interface MenuContribution {
 
 interface PackageManifest {
   description: string;
+  license?: string;
+  repository?: {
+    type?: string;
+    url?: string;
+  };
+  scripts: Record<string, string>;
   contributes: {
     commands: CommandContribution[];
     configuration: {
@@ -32,6 +38,20 @@ function readManifest(): PackageManifest {
 }
 
 suite('package manifest', () => {
+  test('declares marketplace packaging metadata', () => {
+    const manifest = readManifest();
+
+    assert.strictEqual(manifest.license, 'UNLICENSED');
+    assert.deepStrictEqual(manifest.repository, {
+      type: 'git',
+      url: 'https://github.com/agentserver/app.git',
+    });
+    assert.ok(
+      manifest.scripts.package.includes('--skip-license'),
+      'vsce package command should explicitly acknowledge the extension package has no standalone license file',
+    );
+  });
+
   test('uses user-facing command titles', () => {
     const manifest = readManifest();
     const byCommand = new Map(manifest.contributes.commands.map(c => [c.command, c.title]));

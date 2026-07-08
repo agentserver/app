@@ -1,8 +1,11 @@
-.PHONY: all build test test-unit test-integration lint clean cross-windows cross-linux package package-linux help ui-build ui-test
+.PHONY: all build test test-unit test-integration lint clean cross-windows cross-linux package package-linux npm-audit help ui-build ui-test
 
 GO        ?= go
 GOFLAGS   ?= -trimpath
 LDFLAGS   ?= -s -w
+NPM       ?= npm
+NPM_CI_FLAGS ?= --audit=false --fund=false --loglevel=error
+NPM_AUDIT_FLAGS ?= --audit-level=moderate
 GOOS_WIN  := windows
 GOARCH    := amd64
 
@@ -22,6 +25,7 @@ help:
 	@echo "make ext-build          - build VS Code extension .vsix"
 	@echo "make ui-build           - build onboarding Vue front-end into internal/ui/assets/dist/"
 	@echo "make ui-test            - run frontend unit tests"
+	@echo "make npm-audit          - audit frontend and VS Code extension dependencies"
 	@echo "make package            - build Windows .exe installer (requires Inno Setup; depends on ui-build + ext-build)"
 	@echo "make package-linux      - build Linux headless tarballs"
 	@echo "make clean              - rm dist/ and out/"
@@ -69,15 +73,19 @@ lint:
 	staticcheck ./...
 
 ext-build:
-	cd extensions/agentserver-app && npm ci && npm run compile && npm run package
+	cd extensions/agentserver-app && $(NPM) ci $(NPM_CI_FLAGS) && $(NPM) run compile && $(NPM) run package
 
 ui-build:
-	cd internal/ui/web && npm ci && npm run build
+	cd internal/ui/web && $(NPM) ci $(NPM_CI_FLAGS) && $(NPM) run build
 
 ui-test:
-	cd internal/ui/web && npm ci && npm test
+	cd internal/ui/web && $(NPM) ci $(NPM_CI_FLAGS) && $(NPM) test
 
-package: cross-windows ext-build
+npm-audit:
+	cd internal/ui/web && $(NPM) audit $(NPM_AUDIT_FLAGS)
+	cd extensions/agentserver-app && $(NPM) audit $(NPM_AUDIT_FLAGS)
+
+package: npm-audit cross-windows ext-build
 	bash scripts/package-windows.sh
 
 package-linux: cross-linux

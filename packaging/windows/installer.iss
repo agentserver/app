@@ -27,8 +27,8 @@ SolidCompression=yes
 WizardStyle=modern
 LicenseFile=LICENSE.zh.txt
 UninstallDisplayIcon={app}\icon.ico
-ArchitecturesAllowed=x64
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
