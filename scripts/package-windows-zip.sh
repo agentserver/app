@@ -22,7 +22,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="0.1.6"
+VERSION="0.1.7"
 OUT="dist"
 STAGE="$OUT/agentserver-app-$VERSION-portable"
 ZIP="$OUT/agentserver-app-$VERSION-portable.zip"
