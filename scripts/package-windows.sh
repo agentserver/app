@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="0.1.7"
+VERSION="0.1.8"
 OUT="dist"
 source scripts/windows-package-common.sh
 

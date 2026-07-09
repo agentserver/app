@@ -1807,6 +1807,83 @@ func TestLaunchAndShutdownCodexDesktopWritesUILocaleBeforeOpen(t *testing.T) {
 	}
 }
 
+func TestLaunchAndShutdownCodexDesktopConfiguresLoomDriverBeforeOpen(t *testing.T) {
+	dir := t.TempDir()
+	sec := secrets.New(filepath.Join(dir, "secrets.json"))
+	for key, value := range map[string]string{
+		"agentserver_ws_api_key":   "sandbox-proxy-token",
+		"agentserver_tunnel_token": "tunnel-token",
+	} {
+		if err := sec.Set(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		s.Agentserver.SandboxID = "sb-1"
+		s.Agentserver.WorkspaceID = "ws-1"
+		s.Agentserver.WorkspaceName = "Readable workspace"
+		s.Agentserver.ShortID = "cdx123"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	driverExe := filepath.Join(dir, "install", "driver-agent.exe")
+	if err := os.MkdirAll(filepath.Dir(driverExe), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(driverExe, []byte("driver"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-skills.tar.gz"), map[string]string{
+		"skills/multiagent/SKILL.md": "---\nname: multiagent\n---\nUse driver tools.\n",
+	})
+	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-superpower-skills.tar.gz"), map[string]string{
+		"using-superpowers/SKILL.md": "---\nname: using-superpowers\n---\nUse skills.\n",
+	})
+	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-codex-prompts.tar.gz"), map[string]string{
+		"prompts-codex/AGENTS.md": "# Multi-Agent Driver\n\nUse `role == \"slave\"`.\n",
+	})
+	loomConfig := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
+	codexConfig := filepath.Join(dir, ".codex", "config.toml")
+	var opened bool
+	r := &realOrchestrator{d: Deps{
+		State:           store,
+		Secrets:         sec,
+		CodexConfigPath: codexConfig,
+		LoomDriverPath:  driverExe,
+		LoomConfigPath:  loomConfig,
+		CodexDesktopOpen: func(url string) error {
+			opened = true
+			if url != "codex://threads/new" {
+				return fmt.Errorf("Codex Desktop URL = %q", url)
+			}
+			if _, err := os.Stat(loomConfig); err != nil {
+				return fmt.Errorf("loom driver config missing before open: %w", err)
+			}
+			codexBytes, err := os.ReadFile(codexConfig)
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(string(codexBytes), `[mcp_servers.driver]`) {
+				return fmt.Errorf("codex mcp driver missing before open:\n%s", codexBytes)
+			}
+			if _, err := os.Stat(filepath.Join(dir, ".codex", "AGENTS.md")); err != nil {
+				return fmt.Errorf("driver AGENTS.md missing before open: %w", err)
+			}
+			return nil
+		},
+	}}
+
+	if err := r.LaunchAndShutdown(context.Background()); err != nil {
+		t.Fatalf("LaunchAndShutdown: %v", err)
+	}
+	if !opened {
+		t.Fatal("Codex Desktop was not opened")
+	}
+}
+
 func TestLaunchAndShutdownOpenCodeDesktopConfiguresLoomDriverBeforeOpen(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("OPENAI_API_KEY", "")

@@ -893,6 +893,11 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 		return nil
 	}
 	if mode == state.FrontendModeCodexDesktop {
+		if r.d.CodexConfigPath != "" {
+			if err := r.configureSharedCodex(ctx); err != nil {
+				return err
+			}
+		}
 		if err := r.configureCodexDesktopLocale(); err != nil {
 			return err
 		}
