@@ -1848,6 +1848,34 @@ func TestWindowsPackageScriptDetectsChocolateyInnoSetupInstall(t *testing.T) {
 	}
 }
 
+func TestVSIXPackageScriptUsesCrossPlatformVersionExpansion(t *testing.T) {
+	body, err := os.ReadFile("../../extensions/agentserver-app/package.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	if strings.Contains(s, "$npm_package_version") {
+		t.Fatal("VSIX package script must not use POSIX-only $npm_package_version; Windows npm leaves it unexpanded")
+	}
+	if !strings.Contains(s, "node scripts/package-vsix.cjs") {
+		t.Fatal("VSIX package script should delegate filename generation to a cross-platform Node script")
+	}
+	script, err := os.ReadFile("../../extensions/agentserver-app/scripts/package-vsix.cjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"require('../package.json')",
+		"agentserver-app-${version}.vsix",
+		"--no-dependencies",
+		"--skip-license",
+	} {
+		if !strings.Contains(string(script), want) {
+			t.Fatalf("package-vsix.cjs missing %q", want)
+		}
+	}
+}
+
 func TestWindowsInnoInstallerScriptUsesUTF8BOM(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
