@@ -1,3 +1,5 @@
+OUT="${OUT:-dist}"
+
 CODEX_DESKTOP_PRODUCT_ID="9PLM9XGG6VKS"
 CODEX_DESKTOP_ASSET="Codex Installer.exe"
 CODEX_DESKTOP_URL="https://get.microsoft.com/installer/download/$CODEX_DESKTOP_PRODUCT_ID?cid=website_cta_psi"
