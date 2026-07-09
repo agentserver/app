@@ -1866,13 +1866,18 @@ func TestVSIXPackageScriptUsesCrossPlatformVersionExpansion(t *testing.T) {
 	}
 	for _, want := range []string{
 		"require('../package.json')",
+		"npx",
 		"agentserver-app-${version}.vsix",
 		"--no-dependencies",
 		"--skip-license",
+		"shell: process.platform === 'win32'",
 	} {
 		if !strings.Contains(string(script), want) {
 			t.Fatalf("package-vsix.cjs missing %q", want)
 		}
+	}
+	if strings.Contains(string(script), "vsce.cmd") {
+		t.Fatal("package-vsix.cjs must not spawn vsce.cmd directly; Windows requires running .cmd shims through a shell")
 	}
 }
 
