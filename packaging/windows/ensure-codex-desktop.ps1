@@ -84,8 +84,11 @@ function Test-CodexDesktopInstallerFile([string]$Path) {
     $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
     $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
     if (-not $chain.Build($sig.SignerCertificate)) {
-        $statuses = ($chain.ChainStatus | ForEach-Object { $_.Status }) -join ', '
-        throw "Codex Desktop installer signer chain is invalid: $statuses"
+        $chainErrors = @($chain.ChainStatus | Where-Object { $_.Status -ne [System.Security.Cryptography.X509Certificates.X509ChainStatusFlags]::NotTimeValid })
+        if ($chainErrors.Count -gt 0) {
+            $statuses = ($chainErrors | ForEach-Object { $_.Status }) -join ', '
+            throw "Codex Desktop installer signer chain is invalid: $statuses"
+        }
     }
     $chainSubjects = @($chain.ChainElements | ForEach-Object { $_.Certificate.Subject })
     if (-not ($chainSubjects -match 'Microsoft')) {
