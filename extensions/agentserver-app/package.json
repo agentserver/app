@@ -3,7 +3,7 @@
   "displayName": "星池指挥官",
   "description": "让 VS Code 作为星池指挥官的简洁文件夹和会话界面",
   "publisher": "agentserver",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "license": "UNLICENSED",
   "repository": {
     "type": "git",

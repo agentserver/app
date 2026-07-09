@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-VERSION="0.1.5"
+VERSION="0.1.6"
 OUT="dist"
 source scripts/windows-package-common.sh
 
@@ -28,4 +28,6 @@ fi
 cd packaging/windows
 mkdir -p Output
 "${ISCC[@]}" installer.iss
+mkdir -p "../../$OUT"
+cp "Output/agentserver-app-${VERSION}-setup.exe" "../../$OUT/agentserver-app-${VERSION}-setup.exe"
 ls -la Output/
