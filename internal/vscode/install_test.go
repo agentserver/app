@@ -1881,18 +1881,23 @@ func TestVSIXPackageScriptUsesCrossPlatformVersionExpansion(t *testing.T) {
 	}
 }
 
-func TestWindowsPackageCommonCanBeSourcedWithUnsetOut(t *testing.T) {
+func TestWindowsPackageCommonCanBeSourcedWithUnsetOutAndVersion(t *testing.T) {
 	body, err := os.ReadFile("../../scripts/windows-package-common.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(body)
-	outDefault := `OUT="${OUT:-dist}"`
-	if !strings.Contains(s, outDefault) {
-		t.Fatalf("windows-package-common.sh should define a default OUT before top-level cache paths; missing %q", outDefault)
+	defaults := []string{
+		`OUT="${OUT:-dist}"`,
+		`VERSION="${VERSION:-}"`,
 	}
-	if strings.Index(s, outDefault) > strings.Index(s, "CODEX_DESKTOP_CACHE=") {
-		t.Fatal("windows-package-common.sh must define OUT before any top-level cache path uses it")
+	for _, want := range defaults {
+		if !strings.Contains(s, want) {
+			t.Fatalf("windows-package-common.sh should define defaults before top-level cache paths; missing %q", want)
+		}
+		if strings.Index(s, want) > strings.Index(s, "CODEX_DESKTOP_CACHE=") {
+			t.Fatalf("windows-package-common.sh must define %q before any top-level cache path uses it", want)
+		}
 	}
 }
 
