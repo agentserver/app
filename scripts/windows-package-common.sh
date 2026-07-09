@@ -97,7 +97,7 @@ verify_codex_desktop_installer() {
 }
 
 verify_codex_desktop_signature() {
-  local path ps script
+  local path ps script_file status
   path="$1"
   if command -v pwsh >/dev/null 2>&1; then
     ps="pwsh"
@@ -111,7 +111,9 @@ verify_codex_desktop_signature() {
     echo "WARNING: PowerShell not available; skipping Codex Desktop Authenticode check on this host (re-verified at install time)" >&2
     return 0
   fi
-  script='param([string]$Path)
+  script_file=$(mktemp "${TMPDIR:-/tmp}/codex-desktop-authenticode.XXXXXX.ps1")
+  cat >"$script_file" <<'POWERSHELL'
+param([Parameter(Mandatory = $true)][string]$Path)
 $sig = Get-AuthenticodeSignature -FilePath $Path
 if ($sig.Status -ne "Valid") { throw "Codex Desktop installer Authenticode signature is $($sig.Status)" }
 if ($null -eq $sig.SignerCertificate) { throw "Codex Desktop installer has no signer certificate" }
@@ -124,8 +126,15 @@ if (-not $chain.Build($sig.SignerCertificate)) {
   throw "Codex Desktop installer signer chain is invalid: $statuses"
 }
 $chainSubjects = @($chain.ChainElements | ForEach-Object { $_.Certificate.Subject })
-if (-not ($chainSubjects -match "Microsoft")) { throw "Codex Desktop installer signer chain is not Microsoft" }'
-  "$ps" -NoProfile -Command "$script" "$path"
+if (-not ($chainSubjects -match "Microsoft")) { throw "Codex Desktop installer signer chain is not Microsoft" }
+POWERSHELL
+  if "$ps" -NoProfile -File "$script_file" -Path "$path"; then
+    status=0
+  else
+    status=$?
+  fi
+  rm -f "$script_file"
+  return "$status"
 }
 
 download_loom_asset() {

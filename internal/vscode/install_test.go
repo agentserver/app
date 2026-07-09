@@ -1811,6 +1811,27 @@ func TestWindowsPackageScriptsRefreshCodexDesktopInstallerEveryBuild(t *testing.
 	}
 }
 
+func TestWindowsPackageCodexDesktopSignatureUsesFileScriptWithExplicitPath(t *testing.T) {
+	body, err := os.ReadFile("../../scripts/windows-package-common.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		`mktemp`,
+		`.ps1`,
+		`cat >"$script_file"`,
+		`-File "$script_file" -Path "$path"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("windows-package-common.sh should invoke Authenticode check via a .ps1 file with explicit -Path; missing %q", want)
+		}
+	}
+	if strings.Contains(s, `-Command "$script" "$path"`) {
+		t.Fatal("windows-package-common.sh must not pass the installer path as a positional -Command argument; it is not reliably bound under Git-Bash/PowerShell")
+	}
+}
+
 func TestWindowsInnoInstallerScriptUsesUTF8BOM(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
