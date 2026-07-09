@@ -16,6 +16,10 @@ if command -v ISCC.exe >/dev/null 2>&1; then
   ISCC=("ISCC.exe")
 elif command -v iscc >/dev/null 2>&1; then
   ISCC=("iscc")
+elif [[ -f "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]]; then
+  ISCC=("/c/Program Files (x86)/Inno Setup 6/ISCC.exe")
+elif [[ -f "/c/Program Files/Inno Setup 6/ISCC.exe" ]]; then
+  ISCC=("/c/Program Files/Inno Setup 6/ISCC.exe")
 elif command -v wine >/dev/null 2>&1 && \
      [[ -f "$HOME/.wine/drive_c/Program Files (x86)/Inno Setup 6/ISCC.exe" ]]; then
   ISCC=("wine" "$HOME/.wine/drive_c/Program Files (x86)/Inno Setup 6/ISCC.exe")

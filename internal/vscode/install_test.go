@@ -1832,6 +1832,22 @@ func TestWindowsPackageCodexDesktopSignatureUsesFileScriptWithExplicitPath(t *te
 	}
 }
 
+func TestWindowsPackageScriptDetectsChocolateyInnoSetupInstall(t *testing.T) {
+	body, err := os.ReadFile("../../scripts/package-windows.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		`/c/Program Files (x86)/Inno Setup 6/ISCC.exe`,
+		`/c/Program Files/Inno Setup 6/ISCC.exe`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("package-windows.sh should detect Inno Setup installed by Chocolatey at %q", want)
+		}
+	}
+}
+
 func TestWindowsInnoInstallerScriptUsesUTF8BOM(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {

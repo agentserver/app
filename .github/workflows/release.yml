@@ -17,6 +17,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --no-progress -y
+
       - name: Ensure release exists and guard against re-run
         shell: bash
         env:
@@ -50,9 +58,7 @@ jobs:
       - name: Build Windows installer
         shell: bash
         run: |
-          # The existing packaging entrypoint. Adjust if your repo uses
-          # a different entry (e.g. make package-windows).
-          ./scripts/package-windows.sh
+          make package
 
       - name: Render latest.json
         shell: bash

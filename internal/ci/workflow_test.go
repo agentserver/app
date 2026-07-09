@@ -3,6 +3,7 @@ package ci
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -26,6 +27,27 @@ func TestWindowsE2EWorkflowIsManualOnly(t *testing.T) {
 	}
 	if mappingValue(on, "push") != nil {
 		t.Fatal("Windows E2E must not run on push/tag events; it needs a reachable private Windows SSH host")
+	}
+}
+
+func TestReleaseWorkflowBuildsFullWindowsPackageFromFreshCheckout(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	for _, want := range []string{
+		"actions/setup-node@v4",
+		"node-version: '20'",
+		"choco install innosetup",
+		"make package",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("release.yml should build the full Windows package from a fresh checkout; missing %q", want)
+		}
+	}
+	if strings.Contains(source, "./scripts/package-windows.sh") {
+		t.Fatal("release.yml must not call scripts/package-windows.sh directly; it requires prebuilt UI, VSIX, and Windows binaries")
 	}
 }
 
