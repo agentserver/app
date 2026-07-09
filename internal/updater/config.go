@@ -9,9 +9,10 @@ import (
 )
 
 // UpgradeConfig holds the env-only tunables for the upgrade sources.
-// Default (zero-value except GitHubRepo + GitHubPolicy) leaves GitHub
-// disabled — Service.effectiveSources falls back to the compat CDN
-// shortcut.
+// Production defaults use GitHub first, then CDN fallback. Set
+// UPGRADE_GITHUB_ENABLED=false only as an emergency CDN-only override;
+// Service.effectiveSources still keeps the compat CDN shortcut for
+// tests and callers that intentionally leave Sources nil.
 type UpgradeConfig struct {
 	GitHubEnabled bool
 	GitHubRepo    string
@@ -29,11 +30,17 @@ var validRepoSlug = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z
 // never disables the whole feature.
 func LoadUpgradeConfig(env func(string) string) UpgradeConfig {
 	cfg := UpgradeConfig{
-		GitHubRepo:   "agentserver/app",
-		GitHubPolicy: DefaultSourcePolicy(),
+		GitHubEnabled: true,
+		GitHubRepo:    "agentserver/app",
+		GitHubPolicy:  DefaultSourcePolicy(),
 	}
-	if strings.EqualFold(env("UPGRADE_GITHUB_ENABLED"), "true") {
-		cfg.GitHubEnabled = true
+	if v := env("UPGRADE_GITHUB_ENABLED"); v != "" {
+		switch {
+		case strings.EqualFold(v, "true"):
+			cfg.GitHubEnabled = true
+		case strings.EqualFold(v, "false"):
+			cfg.GitHubEnabled = false
+		}
 	}
 	if v := env("UPGRADE_GITHUB_REPO"); v != "" && validRepoSlug.MatchString(v) {
 		cfg.GitHubRepo = v
@@ -61,10 +68,10 @@ func LoadUpgradeConfig(env func(string) string) UpgradeConfig {
 	return cfg
 }
 
-// BuildSources returns nil when GitHub is disabled — Service's compat
-// shortcut then builds [cdnSource] lazily from ManifestURL + Client.
-// When enabled, returns [githubSource, cdnSource]. Each source gets
-// its OWN *http.Client with its OWN *http.Transport — sharing
+// BuildSources returns [githubSource, cdnSource] by default. When
+// GitHub is explicitly disabled, returns nil so Service's compat
+// shortcut builds a single [cdnSource] lazily from ManifestURL + Client.
+// Each configured source gets its OWN *http.Client with its OWN *http.Transport — sharing
 // http.DefaultTransport would mean applyFirstByteTimeout's
 // ResponseHeaderTimeout mutation on one source's clone bleeds into
 // the other's connection pool (spec requirement: "Two sources do

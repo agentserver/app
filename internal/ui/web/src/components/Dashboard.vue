@@ -103,6 +103,10 @@ const updateDetailError = computed(() => {
   return update.status === 'error' ? '' : update.last_error;
 });
 
+function shouldAutoRecheckUpdate(update: api.ConsoleUpdateState) {
+  return update.status === 'error' && (update.last_error || '').includes('cdn fetch manifest');
+}
+
 const driverDaemonStatusText = computed(() => {
   const driver = driverDaemonState.value;
   if (!driver) return '正在读取远程控制状态';
@@ -155,6 +159,7 @@ async function loadUpdate() {
     if (seq !== updateLoadSeq) return;
     updateState.value = update;
     updateError.value = '';
+    if (shouldAutoRecheckUpdate(update)) void checkUpdate();
   } catch (e) {
     if (!dashboardMounted) return;
     if (seq !== updateLoadSeq) return;
