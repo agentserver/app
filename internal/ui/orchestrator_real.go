@@ -518,25 +518,29 @@ func (r *realOrchestrator) configureLoomDriver() error {
 	if serverURL == "" {
 		serverURL = "https://agent.cs.ac.cn"
 	}
-	codexBin := r.loomDriverCodexBin()
+	codexBin, codexExtraArgs, err := r.loomDriverCodexInvocation(st)
+	if err != nil {
+		return err
+	}
 	serverName := "driver-" + lastN(st.InstallID, 8)
 	if st.Agentserver.ShortID != "" {
 		serverName = "driver-" + st.Agentserver.ShortID
 	}
 	displayName := r.loomDriverDisplayName(st)
 	if err := loom.WriteDriverConfig(r.d.LoomConfigPath, loom.DriverConfig{
-		ServerURL:     serverURL,
-		ServerName:    serverName,
-		SandboxID:     st.Agentserver.SandboxID,
-		TunnelToken:   tunnelToken,
-		ProxyToken:    proxyToken,
-		WorkspaceID:   st.Agentserver.WorkspaceID,
-		WorkspaceName: st.Agentserver.WorkspaceName,
-		ShortID:       st.Agentserver.ShortID,
-		DisplayName:   displayName,
-		Description:   displayName + " 本地协作驱动。",
-		CodexBin:      codexBin,
-		CodexHome:     filepath.Dir(r.d.CodexConfigPath),
+		ServerURL:      serverURL,
+		ServerName:     serverName,
+		SandboxID:      st.Agentserver.SandboxID,
+		TunnelToken:    tunnelToken,
+		ProxyToken:     proxyToken,
+		WorkspaceID:    st.Agentserver.WorkspaceID,
+		WorkspaceName:  st.Agentserver.WorkspaceName,
+		ShortID:        st.Agentserver.ShortID,
+		DisplayName:    displayName,
+		Description:    displayName + " 本地协作驱动。",
+		CodexBin:       codexBin,
+		CodexExtraArgs: codexExtraArgs,
+		CodexHome:      filepath.Dir(r.d.CodexConfigPath),
 		CodexWorkDir: func() string {
 			if home, err := os.UserHomeDir(); err == nil {
 				return home
@@ -602,14 +606,29 @@ func driverComputerNameFallback(st *state.State) string {
 	return "local-computer"
 }
 
-func (r *realOrchestrator) loomDriverCodexBin() string {
-	if r.d.CodexDesktopCodexPath != "" {
+func (r *realOrchestrator) loomDriverCodexBin(st *state.State) string {
+	if st != nil && state.NormalizeFrontendMode(st.FrontendMode) == state.FrontendModeCodexDesktop && r.d.CodexDesktopCodexPath != "" {
 		return r.d.CodexDesktopCodexPath
 	}
 	if r.d.CodexAbsPath != "" {
 		return r.d.CodexAbsPath
 	}
 	return "codex"
+}
+
+func (r *realOrchestrator) loomDriverCodexInvocation(st *state.State) (string, []string, error) {
+	wrapperPath := ""
+	if r.d.LoomDriverPath != "" {
+		wrapperPath = filepath.Join(filepath.Dir(r.d.LoomDriverPath), "codex-debug-wrapper.exe")
+	}
+	realCodexBin := r.loomDriverCodexBin(st)
+	bin, extraArgs := loom.CodexDebugWrapperInvocation(wrapperPath, realCodexBin)
+	if bin == wrapperPath {
+		if err := loom.WriteCodexDebugWrapperConfig(wrapperPath, realCodexBin); err != nil {
+			return "", nil, err
+		}
+	}
+	return bin, extraArgs, nil
 }
 
 func (r *realOrchestrator) ConfigureCodexDesktop(ctx context.Context) error {

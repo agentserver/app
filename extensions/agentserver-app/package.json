@@ -4,6 +4,11 @@
   "description": "让 VS Code 作为星池指挥官的简洁文件夹和会话界面",
   "publisher": "agentserver",
   "version": "0.1.5",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentserver/app.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -14,17 +19,16 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package --out agentserver-app-$npm_package_version.vsix --no-dependencies",
+    "package": "vsce package --out agentserver-app-$npm_package_version.vsix --no-dependencies --skip-license",
     "test": "node ./out/test/runTest.js",
     "pretest": "npm run compile"
   },
   "devDependencies": {
-    "@types/glob": "^8.1.0",
     "@types/mocha": "^10.0.6",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^2.3.9",
-    "@vscode/vsce": "^2.24.0",
+    "@vscode/vsce": "^3.9.2",
     "glob": "^13.0.6",
     "mocha": "^11.7.6",
     "typescript": "^5.3.3"
@@ -101,5 +105,9 @@
   "overrides": {
     "serialize-javascript": "7.0.5",
     "diff": "9.0.0"
+  },
+  "allowScripts": {
+    "@vscode/vsce-sign": false,
+    "keytar": false
   }
 }

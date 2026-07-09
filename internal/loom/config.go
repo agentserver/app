@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agentserver/agentserver-pkg/internal/codexdebug"
 	"github.com/agentserver/agentserver-pkg/internal/process"
 )
 
@@ -31,6 +32,7 @@ type DriverConfig struct {
 	DisplayName            string
 	Description            string
 	CodexBin               string
+	CodexExtraArgs         []string
 	CodexWorkDir           string
 	CodexHome              string
 	AuditLogDir            string
@@ -105,7 +107,7 @@ func WriteDriverConfig(path string, cfg DriverConfig) error {
 		lines = append(lines, "  codex_home: "+quote(filepath.ToSlash(cfg.CodexHome)))
 	}
 	lines = append(lines,
-		"  extra_args: []",
+		"  extra_args: "+quoteListSlash(cfg.CodexExtraArgs),
 		"",
 		"discovery:",
 		"  display_name: "+quote(cfg.DisplayName),
@@ -161,6 +163,37 @@ func (c DriverConfig) validate() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("agentserver registration missing %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func CodexDebugWrapperInvocation(wrapperPath, codexBin string) (string, []string) {
+	wrapperPath = strings.TrimSpace(wrapperPath)
+	codexBin = strings.TrimSpace(codexBin)
+	if codexBin == "" {
+		codexBin = "codex"
+	}
+	if wrapperPath == "" || samePath(wrapperPath, codexBin) {
+		return codexBin, nil
+	}
+	if _, err := os.Stat(wrapperPath); err != nil {
+		return codexBin, nil
+	}
+	return wrapperPath, nil
+}
+
+func WriteCodexDebugWrapperConfig(wrapperPath, codexBin string) error {
+	wrapperPath = strings.TrimSpace(wrapperPath)
+	codexBin = strings.TrimSpace(codexBin)
+	if wrapperPath == "" || codexBin == "" || samePath(wrapperPath, codexBin) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(wrapperPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir codex debug wrapper dir: %w", err)
+	}
+	body := "{\n  \"codex_bin\": " + quote(codexBin) + "\n}\n"
+	if err := os.WriteFile(codexdebug.ConfigPathForExecutable(wrapperPath), []byte(body), 0o600); err != nil {
+		return fmt.Errorf("write codex debug wrapper config: %w", err)
 	}
 	return nil
 }
@@ -567,4 +600,15 @@ func samePath(a, b string) bool {
 
 func quote(v string) string {
 	return strconv.Quote(v)
+}
+
+func quoteListSlash(values []string) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, quote(filepath.ToSlash(value)))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }

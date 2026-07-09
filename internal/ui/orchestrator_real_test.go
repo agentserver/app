@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1544,6 +1545,10 @@ func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
 	if err := os.WriteFile(driverExe, []byte("driver"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	wrapperExe := filepath.Join(filepath.Dir(driverExe), "codex-debug-wrapper.exe")
+	if err := os.WriteFile(wrapperExe, []byte("wrapper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	writeTestTarGz(t, filepath.Join(filepath.Dir(driverExe), "driver-skills.tar.gz"), map[string]string{
 		"skills/multiagent/SKILL.md": "---\nname: multiagent\n---\nUse driver tools.\n",
 	})
@@ -1581,7 +1586,8 @@ func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
 		`workspace_id: "ws-1"`,
 		`short_id: "abc123"`,
 		`kind: "codex"`,
-		`bin: "` + filepath.ToSlash(filepath.Join(dir, "codex.exe")) + `"`,
+		`bin: "` + filepath.ToSlash(wrapperExe) + `"`,
+		`extra_args: []`,
 		`codex_home: "` + filepath.ToSlash(filepath.Join(dir, ".codex")) + `"`,
 		`enabled: true`,
 		`url: "https://loom.nj.cs.ac.cn:10062/"`,
@@ -1596,6 +1602,13 @@ func TestConfigureCodexDesktopWritesLoomDriverConfigAndMCP(t *testing.T) {
 	}
 	if strings.Contains(loomText, "telemetry_enabled") {
 		t.Fatalf("driver.yaml contains unsupported observer telemetry field:\n%s", loomText)
+	}
+	wrapperConfig, err := os.ReadFile(filepath.Join(filepath.Dir(driverExe), "codex-debug-wrapper.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wrapperConfig), strconv.Quote(filepath.Join(dir, "codex.exe"))) {
+		t.Fatalf("wrapper config should point at real codex path:\n%s", wrapperConfig)
 	}
 
 	codexBytes, err := os.ReadFile(filepath.Join(dir, ".codex", "config.toml"))
@@ -1664,6 +1677,10 @@ func TestConfigureCodexDesktopDefaultsDriverCodexBinToManagedCodexPath(t *testin
 	if err := os.WriteFile(driverExe, []byte("driver"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	wrapperExe := filepath.Join(filepath.Dir(driverExe), "codex-debug-wrapper.exe")
+	if err := os.WriteFile(wrapperExe, []byte("wrapper"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	codexAbsPath := filepath.Join(dir, "agentserver-app", "bin", "codex.exe")
 	loomConfig := filepath.Join(dir, ".config", "multi-agent", "driver.yaml")
 	r := &realOrchestrator{d: Deps{
@@ -1684,8 +1701,20 @@ func TestConfigureCodexDesktopDefaultsDriverCodexBinToManagedCodexPath(t *testin
 		t.Fatal(err)
 	}
 	loomText := string(loomBytes)
-	if !strings.Contains(loomText, `bin: "`+filepath.ToSlash(codexAbsPath)+`"`) {
-		t.Fatalf("driver.yaml should use managed Codex runtime path:\n%s", loomText)
+	for _, want := range []string{
+		`bin: "` + filepath.ToSlash(wrapperExe) + `"`,
+		`extra_args: []`,
+	} {
+		if !strings.Contains(loomText, want) {
+			t.Fatalf("driver.yaml missing %q:\n%s", want, loomText)
+		}
+	}
+	wrapperConfig, err := os.ReadFile(filepath.Join(filepath.Dir(driverExe), "codex-debug-wrapper.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wrapperConfig), strconv.Quote(codexAbsPath)) {
+		t.Fatalf("wrapper config should point at managed Codex runtime path:\n%s", wrapperConfig)
 	}
 	if strings.Contains(loomText, `bin: "codex"`) {
 		t.Fatalf("Codex Desktop driver should not rely on PATH codex command:\n%s", loomText)

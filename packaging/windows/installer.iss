@@ -27,8 +27,8 @@ SolidCompression=yes
 WizardStyle=modern
 LicenseFile=LICENSE.zh.txt
 UninstallDisplayIcon={app}\icon.ico
-ArchitecturesAllowed=x64
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
@@ -44,6 +44,7 @@ Name: "minimalvscode"; Description: "极简风界面（安装简化 VS Code）";
 Source: "..\..\dist\windows\launcher.exe";          DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\onboarding-server.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\agentctl.exe";          DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist\windows\codex-debug-wrapper.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\open-folder.exe";       DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\uninstall.exe";         DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\dist\windows\token-refresher.exe";   DestDir: "{app}"; Flags: ignoreversion
@@ -119,71 +120,11 @@ begin
   Result := AddBackslash(UserProfile) + '.agentserver-app\machine.json';
 end;
 
-function JsonStringValue(Source, Key: String): String;
-var
-  Marker: String;
-  Rest: String;
-  P: Integer;
-  Q: Integer;
-begin
-  Result := '';
-  Marker := '"' + Key + '"';
-  P := Pos(Marker, Source);
-  if P = 0 then begin
-    Exit;
-  end;
-  Rest := Copy(Source, P + Length(Marker), Length(Source));
-  P := Pos(':', Rest);
-  if P = 0 then begin
-    Exit;
-  end;
-  Rest := Copy(Rest, P + 1, Length(Rest));
-  P := Pos('"', Rest);
-  if P = 0 then begin
-    Exit;
-  end;
-  Rest := Copy(Rest, P + 1, Length(Rest));
-  Q := Pos('"', Rest);
-  if Q = 0 then begin
-    Exit;
-  end;
-  Result := Copy(Rest, 1, Q - 1);
-  StringChangeEx(Result, '\"', '"', True);
-end;
-
-function GetExistingComputerName(): String;
-var
-  Lines: TArrayOfString;
-  Body: String;
-  I: Integer;
-begin
-  Result := '';
-  if LoadStringsFromFile(GetMachinePath(), Lines) then begin
-    Body := '';
-    for I := 0 to GetArrayLength(Lines) - 1 do begin
-      Body := Body + Lines[I];
-    end;
-    Result := Trim(JsonStringValue(Body, 'computer_name'));
-  end;
-end;
-
 function GetInitialComputerName(): String;
 begin
-  Result := GetExistingComputerName();
+  Result := Trim(GetEnv('COMPUTERNAME'));
   if Result = '' then begin
-    Result := Trim(GetEnv('COMPUTERNAME'));
-  end;
-end;
-
-function GetChosenComputerName(): String;
-begin
-  if WizardSilent then begin
-    Result := GetInitialComputerName();
-  end else begin
-    Result := Trim(ComputerNamePage.Values[0]);
-    if Result = '' then begin
-      Result := GetInitialComputerName();
-    end;
+    Result := 'local-computer';
   end;
 end;
 
@@ -191,6 +132,64 @@ function PowerShellQuote(Value: String): String;
 begin
   StringChangeEx(Value, '''', '''''', True);
   Result := '''' + Value + '''';
+end;
+
+function GetExistingComputerName(): String;
+var
+  RunnerPath: String;
+  ScriptBody: String;
+  PowerShellExe: String;
+  ResultCode: Integer;
+  ExistingName: String;
+begin
+  Result := '';
+  if not FileExists(GetMachinePath()) then begin
+    Exit;
+  end;
+
+  RegDeleteValue(HKCU, 'Software\AgentServerApp\Installer', 'ExistingComputerName');
+  RunnerPath := ExpandConstant('{tmp}\agentserver-read-machine-name.ps1');
+  DeleteFile(RunnerPath);
+  ScriptBody :=
+    '$ErrorActionPreference = ''Stop''' + #13#10 +
+    '$machinePath = ' + PowerShellQuote(GetMachinePath()) + #13#10 +
+    '$regPath = ''HKCU:\Software\AgentServerApp\Installer''' + #13#10 +
+    'try {' + #13#10 +
+    '  $utf8NoBom = New-Object System.Text.UTF8Encoding $false' + #13#10 +
+    '  $text = [System.IO.File]::ReadAllText($machinePath, $utf8NoBom)' + #13#10 +
+    '  $machine = $text | ConvertFrom-Json' + #13#10 +
+    '  $machineID = [string]$machine.machine_id' + #13#10 +
+    '  $computerName = [string]$machine.computer_name' + #13#10 +
+    '  if (-not [string]::IsNullOrWhiteSpace($machineID) -and -not [string]::IsNullOrWhiteSpace($computerName)) {' + #13#10 +
+    '    New-Item -Path $regPath -Force | Out-Null' + #13#10 +
+    '    New-ItemProperty -Path $regPath -Name ''ExistingComputerName'' -Value $computerName.Trim() -PropertyType String -Force | Out-Null' + #13#10 +
+    '  }' + #13#10 +
+    '} catch {' + #13#10 +
+    '  exit 0' + #13#10 +
+    '}' + #13#10;
+  if not SaveStringToFile(RunnerPath, ScriptBody, False) then begin
+    Exit;
+  end;
+  PowerShellExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  if not Exec(PowerShellExe, '-NoProfile -ExecutionPolicy Bypass -File "' + RunnerPath + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then begin
+    Exit;
+  end;
+  if RegQueryStringValue(HKCU, 'Software\AgentServerApp\Installer', 'ExistingComputerName', ExistingName) then begin
+    Result := Trim(ExistingName);
+  end;
+  RegDeleteValue(HKCU, 'Software\AgentServerApp\Installer', 'ExistingComputerName');
+end;
+
+function GetChosenComputerName(): String;
+begin
+  if WizardSilent then begin
+    Result := '';
+  end else begin
+    Result := Trim(ComputerNamePage.Values[0]);
+    if Result = '' then begin
+      Result := GetInitialComputerName();
+    end;
+  end;
 end;
 
 function SaveUTF8Text(Path, Text: String): Boolean;
@@ -345,7 +344,7 @@ begin
     '$codexBin = Join-Path $localAppDataRoot ''bin\codex.exe''' + #13#10 +
     '$codexDesktopPackageFamily = ''OpenAI.Codex_2p2nqsd0c76g0''' + #13#10 +
     '$codexDesktopPackagePrefix = ''OpenAI.Codex_''' + #13#10 +
-    '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''slave-agent.exe'', ''codex.exe'')' + #13#10 +
+    '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''codex-debug-wrapper.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''slave-agent.exe'', ''codex.exe'')' + #13#10 +
     '$filter = {' + #13#10 +
     '  $exePath = [string]$_.ExecutablePath' + #13#10 +
     '  $commandLine = [string]$_.CommandLine' + #13#10 +
@@ -395,6 +394,8 @@ begin
 end;
 
 procedure InitializeWizard();
+var
+  ExistingComputerName: String;
 begin
   ComputerNamePage := CreateInputQueryPage(
     wpSelectDir,
@@ -402,7 +403,12 @@ begin
     '设置这台电脑在星池指挥官中的名称',
     '默认读取已有电脑名称；安装时可修改，machine_id 会保持不变。');
   ComputerNamePage.Add('电脑名称:', False);
-  ComputerNamePage.Values[0] := GetInitialComputerName();
+  ExistingComputerName := GetExistingComputerName();
+  if ExistingComputerName <> '' then begin
+    ComputerNamePage.Values[0] := ExistingComputerName;
+  end else begin
+    ComputerNamePage.Values[0] := GetInitialComputerName();
+  end;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -427,6 +433,7 @@ var
   MachinePath: String;
   ComputerName: String;
   ComputerNamePath: String;
+  MachineArgs: String;
 begin
   if CurStep <> ssPostInstall then begin
     Exit;
@@ -436,13 +443,19 @@ begin
 
   MachinePath := GetMachinePath();
   ComputerName := GetChosenComputerName();
-  ComputerNamePath := ExpandConstant('{tmp}\agentserver-machine-name.txt');
-  DeleteFile(ComputerNamePath);
-  if not SaveUTF8Text(ComputerNamePath, ComputerName) then begin
-    RaiseException('无法保存电脑名称。');
+  MachineArgs := '-MachinePath ' + PowerShellQuote(MachinePath);
+  if ComputerName = '' then begin
+    MachineArgs := MachineArgs + ' -PreserveExistingComputerName';
+  end else begin
+    ComputerNamePath := ExpandConstant('{tmp}\agentserver-machine-name.txt');
+    DeleteFile(ComputerNamePath);
+    if not SaveUTF8Text(ComputerNamePath, ComputerName) then begin
+      RaiseException('无法保存电脑名称。');
+    end;
+    MachineArgs := MachineArgs + ' -ComputerNamePath ' + PowerShellQuote(ComputerNamePath);
   end;
   RunEstimatedPowerShellStep('machine', '正在初始化电脑名称...', 'machine.ps1',
-    '-MachinePath ' + PowerShellQuote(MachinePath) + ' -ComputerNamePath ' + PowerShellQuote(ComputerNamePath), 10);
+    MachineArgs, 10);
 
   RunEstimatedPowerShellStep('codex-runtime', '正在从国内 npm 镜像准备 Codex 运行时...', 'ensure-codex.ps1',
     '-ManifestPath ' + PowerShellQuote(ExpandConstant('{app}\codex-manifest.json')), 300);

@@ -60,6 +60,40 @@ func TestWriteDriverConfigDefaultsObserver(t *testing.T) {
 	}
 }
 
+func TestWriteDriverConfigWritesCodexExtraArgs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi-agent", "driver.yaml")
+
+	err := WriteDriverConfig(path, DriverConfig{
+		ServerURL:      "https://agent.cs.ac.cn",
+		ServerName:     "driver-abc123",
+		SandboxID:      "sb-1",
+		TunnelToken:    "tunnel-token",
+		ProxyToken:     "sandbox-proxy-token",
+		WorkspaceID:    "ws-1",
+		ShortID:        "abc123",
+		CodexBin:       filepath.Join(dir, "agentctl.exe"),
+		CodexExtraArgs: []string{"codex-debug-wrapper", "--codex", filepath.Join(dir, "codex.exe")},
+	})
+	if err != nil {
+		t.Fatalf("WriteDriverConfig: %v", err)
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`  bin: "` + filepath.ToSlash(filepath.Join(dir, "agentctl.exe")) + `"`,
+		`  extra_args: ["codex-debug-wrapper", "--codex", "` + filepath.ToSlash(filepath.Join(dir, "codex.exe")) + `"]`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("driver.yaml missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestStartDriverMCPServerKeepsBackgroundProcessAlive(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses a POSIX shell helper")

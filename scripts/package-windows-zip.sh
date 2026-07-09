@@ -4,8 +4,8 @@
 # toolchain is available on the dev host.
 #
 # Output: dist/agentserver-app-<ver>-portable.zip containing:
-#   launcher.exe, onboarding-server.exe, agentctl.exe, open-folder.exe
-#   uninstall.exe, token-refresher.exe
+#   launcher.exe, onboarding-server.exe, agentctl.exe, codex-debug-wrapper.exe
+#   open-folder.exe, uninstall.exe, token-refresher.exe
 #   driver-agent.exe, slave-agent.exe
 #   agentserver-app.vsix
 #   codex-desktop-installer.exe (bundled to avoid winget Store execution during install)

@@ -19,6 +19,14 @@ export default defineConfig({
     outDir: '../assets/dist',
     emptyOutDir: true,
     target: 'es2020',
+    rollupOptions: {
+      onLog(level, log, defaultHandler) {
+        if (log.code === 'INVALID_ANNOTATION') {
+          return;
+        }
+        defaultHandler(level, log);
+      },
+    },
   },
   server: {
     port: 5173,

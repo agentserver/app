@@ -18,7 +18,7 @@ func TestLoadManifestParsesPinnedMirrorsAndRuntimeFiles(t *testing.T) {
 	if m.Platform != "win32-x64" {
 		t.Fatalf("Platform=%q", m.Platform)
 	}
-	if m.PinnedVersion != "0.136.0-win32-x64" {
+	if m.PinnedVersion != "0.142.5-win32-x64" {
 		t.Fatalf("PinnedVersion=%q", m.PinnedVersion)
 	}
 	if m.StripPrefix != "vendor/x86_64-pc-windows-msvc/" {
@@ -40,33 +40,31 @@ func TestLoadManifestParsesPinnedMirrorsAndRuntimeFiles(t *testing.T) {
 	if !strings.HasPrefix(m.Pinned.Integrity, "sha512-") {
 		t.Fatalf("pinned integrity should be npm sha512, got %q", m.Pinned.Integrity)
 	}
-	if len(m.Pinned.URLs) != 2 {
+	if m.Pinned.Integrity != "sha512-a+wI4PEx9a2fg6V5ueTTDkOkr1XpEvA5RFXIbo/L2hOfzMmGtyRnbG24bCGu5Q2RSgVxSQV0aLkdb3vdYMNH9A==" {
+		t.Fatalf("pinned integrity=%q", m.Pinned.Integrity)
+	}
+	if m.Pinned.Shasum != "a49a474ac281bf72128d490c1dd8dac1886479b4" {
+		t.Fatalf("pinned shasum=%q", m.Pinned.Shasum)
+	}
+	if len(m.Pinned.URLs) != 3 {
 		t.Fatalf("pinned URLs=%#v", m.Pinned.URLs)
 	}
-	if !strings.Contains(m.Pinned.URLs[0], "registry.npmmirror.com") {
-		t.Fatalf("first mirror should be npmmirror, got %q", m.Pinned.URLs[0])
+	for _, u := range m.Pinned.URLs {
+		if !strings.Contains(u, "codex-0.142.5-win32-x64.tgz") {
+			t.Fatalf("pinned URL should target 0.142.5 runtime, got %q", u)
+		}
 	}
-	if !strings.Contains(m.Pinned.URLs[1], "npmreg.proxy.ustclug.org") {
-		t.Fatalf("second mirror should be USTC, got %q", m.Pinned.URLs[1])
+	if !strings.Contains(m.Pinned.URLs[0], "registry.npmjs.org") {
+		t.Fatalf("first mirror should be official npm, got %q", m.Pinned.URLs[0])
 	}
-	if len(m.FallbackPinned) != 1 {
+	if !strings.Contains(m.Pinned.URLs[1], "registry.npmmirror.com") {
+		t.Fatalf("second mirror should be npmmirror, got %q", m.Pinned.URLs[1])
+	}
+	if !strings.Contains(m.Pinned.URLs[2], "npmreg.proxy.ustclug.org") {
+		t.Fatalf("third mirror should be USTC, got %q", m.Pinned.URLs[2])
+	}
+	if len(m.FallbackPinned) != 0 {
 		t.Fatalf("fallback_pinned=%#v", m.FallbackPinned)
-	}
-	fallback := m.FallbackPinned[0]
-	if fallback.Version != "0.139.0-win32-x64" {
-		t.Fatalf("fallback version=%q", fallback.Version)
-	}
-	if !strings.HasPrefix(fallback.Integrity, "sha512-") {
-		t.Fatalf("fallback integrity should be npm sha512, got %q", fallback.Integrity)
-	}
-	if len(fallback.URLs) != 2 {
-		t.Fatalf("fallback URLs=%#v", fallback.URLs)
-	}
-	if !strings.Contains(fallback.URLs[0], "registry.npmmirror.com") {
-		t.Fatalf("first fallback mirror should be npmmirror, got %q", fallback.URLs[0])
-	}
-	if !strings.Contains(fallback.URLs[1], "npmreg.proxy.ustclug.org") {
-		t.Fatalf("second fallback mirror should be USTC, got %q", fallback.URLs[1])
 	}
 }
 
