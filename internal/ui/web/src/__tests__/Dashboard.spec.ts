@@ -154,6 +154,28 @@ describe('Dashboard', () => {
     expect(w.text()).toContain('发现新版本 1.3.0');
   });
 
+  it('automatically rechecks stale legacy CDN update errors on mount', async () => {
+    vi.spyOn(api, 'getConsoleUpdate').mockResolvedValue(consoleUpdate({
+      current_version: '1.2.3',
+      status: 'error',
+      last_error: 'cdn fetch manifest: unexpected status 404 Not Found',
+    }));
+    mockConsoleState();
+    const checkSpy = vi.spyOn(api, 'checkConsoleUpdate').mockResolvedValue(consoleUpdate({
+      current_version: '1.2.3',
+      status: 'available',
+      update: { version: '1.3.0' },
+    }));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    await flushPromises();
+
+    expect(checkSpy).toHaveBeenCalledTimes(1);
+    expect(w.text()).toContain('发现新版本 1.3.0');
+    expect(w.text()).not.toContain('cdn fetch manifest');
+  });
+
   it('keeps a newer manual update check when the initial update load resolves later', async () => {
     const staleInitial = deferred<api.ConsoleUpdateState>();
     vi.spyOn(api, 'getConsoleUpdate').mockReturnValue(staleInitial.promise);

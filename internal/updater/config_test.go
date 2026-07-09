@@ -11,8 +11,8 @@ func makeEnv(m map[string]string) func(string) string {
 
 func TestLoadUpgradeConfigDefaults(t *testing.T) {
 	cfg := LoadUpgradeConfig(makeEnv(nil))
-	if cfg.GitHubEnabled {
-		t.Fatal("default GitHubEnabled must be false")
+	if !cfg.GitHubEnabled {
+		t.Fatal("default GitHubEnabled must be true")
 	}
 	if cfg.GitHubRepo != "agentserver/app" {
 		t.Fatalf("default repo=%q", cfg.GitHubRepo)
@@ -48,22 +48,22 @@ func TestLoadUpgradeConfigOverrides(t *testing.T) {
 	}
 }
 
-func TestBuildSourcesDisabledReturnsNil(t *testing.T) {
+func TestBuildSourcesDefaultReturnsGitHubThenCDN(t *testing.T) {
 	got := BuildSources(LoadUpgradeConfig(makeEnv(nil)))
-	if got != nil {
-		t.Fatalf("expected nil, got %v", got)
-	}
-}
-
-func TestBuildSourcesEnabledReturnsGitHubThenCDN(t *testing.T) {
-	got := BuildSources(LoadUpgradeConfig(makeEnv(map[string]string{
-		"UPGRADE_GITHUB_ENABLED": "true",
-	})))
 	if len(got) != 2 {
 		t.Fatalf("len=%d", len(got))
 	}
 	if got[0].Name() != "github" || got[1].Name() != "cdn" {
 		t.Fatalf("order=[%s,%s]", got[0].Name(), got[1].Name())
+	}
+}
+
+func TestBuildSourcesCanDisableGitHubViaEnv(t *testing.T) {
+	got := BuildSources(LoadUpgradeConfig(makeEnv(map[string]string{
+		"UPGRADE_GITHUB_ENABLED": "false",
+	})))
+	if got != nil {
+		t.Fatalf("expected nil, got %v", got)
 	}
 }
 

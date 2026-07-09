@@ -276,6 +276,12 @@ func TestNewCompletedUpdaterUsesDefaultManifestAndPaths(t *testing.T) {
 	if got.State == nil {
 		t.Fatal("State is nil")
 	}
+	if len(got.Sources) != 2 {
+		t.Fatalf("Sources len=%d, want 2", len(got.Sources))
+	}
+	if got.Sources[0].Name() != "github" || got.Sources[1].Name() != "cdn" {
+		t.Fatalf("Sources order=[%s,%s], want [github,cdn]", got.Sources[0].Name(), got.Sources[1].Name())
+	}
 }
 
 func TestAutomaticUpdateCheckCancellationBeforeDelayPreventsManifestRequest(t *testing.T) {
