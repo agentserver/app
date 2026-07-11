@@ -12,6 +12,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"golang.org/x/sys/windows"
 )
 
@@ -109,7 +110,7 @@ func New(iconPath string) App {
 			Tooltip:           "星池指挥官\n额度暂不可用",
 			FiveHour:          "5小时额度：暂不可用",
 			SevenDay:          "7天额度：暂不可用",
-			OpenFrontendLabel: "启动 Codex Desktop",
+			OpenFrontendLabel: "启动 " + codexdesktop.ShortDisplayName,
 		},
 		ready:    make(chan struct{}),
 		shutdown: make(chan struct{}),

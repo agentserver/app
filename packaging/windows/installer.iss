@@ -35,7 +35,7 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "codexdesktop"; Description: "Codex Desktop 智能助手"; GroupDescription: "界面模式"; Flags: exclusive
+Name: "codexdesktop"; Description: "ChatGPT 桌面应用（含 Codex）"; GroupDescription: "界面模式"; Flags: exclusive
 Name: "opencodedesktop"; Description: "OpenCode Desktop 智能助手"; GroupDescription: "界面模式"; Flags: exclusive unchecked
 Name: "minimalvscode"; Description: "极简风界面（安装简化 VS Code）"; GroupDescription: "界面模式"; Flags: exclusive unchecked
 
@@ -59,8 +59,12 @@ Source: "..\..\dist\cache\superpowers\driver-superpower-skills.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-superpower-skills.tar.gz"; Flags: ignoreversion
 Source: "..\..\dist\cache\loom\v0.0.10\driver-codex-prompts.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-codex-prompts.tar.gz"; Flags: ignoreversion
-Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
-    DestDir: "{app}"; DestName: "codex-desktop-installer.exe"; Flags: ignoreversion
+Source: "..\..\dist\cache\chatgpt-desktop\9NT1R1C2HH7J\ChatGPT Installer.exe"; \
+    DestDir: "{app}"; DestName: "chatgpt-desktop-installer.exe"; Flags: ignoreversion
+Source: "..\..\dist\cache\chatgpt-desktop\9NT1R1C2HH7J\chatgpt-desktop-installer.manifest.json"; \
+    DestDir: "{app}"; DestName: "chatgpt-desktop-installer.manifest.json"; Flags: ignoreversion
+Source: "..\..\internal\codexdesktop\detect_windows.ps1"; \
+    DestDir: "{app}"; DestName: "codex-desktop-detect.ps1"; Flags: ignoreversion
 ; Bundled VS Code extension
 Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.8.vsix"; \
     DestDir: "{app}"; DestName: "agentserver-app.vsix"; Flags: ignoreversion
@@ -74,6 +78,7 @@ Source: "install-driver-support.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-vscode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "verify-chatgpt-desktop-installer.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-opencode-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "write-install-mode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "machine.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -342,21 +347,16 @@ begin
     '  $localAppDataRoot = Join-Path $env:LOCALAPPDATA ''agentserver-app''' + #13#10 +
     '}' + #13#10 +
     '$codexBin = Join-Path $localAppDataRoot ''bin\codex.exe''' + #13#10 +
-    '$codexDesktopPackageFamily = ''OpenAI.Codex_2p2nqsd0c76g0''' + #13#10 +
-    '$codexDesktopPackagePrefix = ''OpenAI.Codex_''' + #13#10 +
     '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''codex-debug-wrapper.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''slave-agent.exe'', ''codex.exe'')' + #13#10 +
     '$filter = {' + #13#10 +
     '  $exePath = [string]$_.ExecutablePath' + #13#10 +
-    '  $commandLine = [string]$_.CommandLine' + #13#10 +
     '  $exe = ""' + #13#10 +
     '  if (-not [string]::IsNullOrWhiteSpace($exePath)) {' + #13#10 +
     '    $exe = [System.IO.Path]::GetFullPath($exePath)' + #13#10 +
     '  }' + #13#10 +
     '  $inInstallDir = ($exe -ne "") -and ($names -contains $_.Name) -and $exe.StartsWith($installRoot + ''\'', [System.StringComparison]::OrdinalIgnoreCase)' + #13#10 +
     '  $isLocalCodex = ($exe -ne "") -and ($_.Name -eq ''codex.exe'') -and ($exe -ieq $codexBin)' + #13#10 +
-    '  $inCodexDesktopPackage = ($exe -ne "") -and ($exe.IndexOf(''\WindowsApps\'' + $codexDesktopPackagePrefix, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)' + #13#10 +
-    '  $usesCodexDesktopPackage = $commandLine.IndexOf($codexDesktopPackageFamily, [System.StringComparison]::OrdinalIgnoreCase) -ge 0' + #13#10 +
-    '  $inInstallDir -or $isLocalCodex -or $inCodexDesktopPackage -or $usesCodexDesktopPackage' + #13#10 +
+    '  $inInstallDir -or $isLocalCodex' + #13#10 +
     '}' + #13#10 +
     '$procs = @(Get-CimInstance Win32_Process | Where-Object $filter)' + #13#10 +
     'foreach ($p in $procs) {' + #13#10 +
@@ -380,6 +380,7 @@ end;
 procedure DeleteObsoleteBundledPayloads();
 begin
   DeleteFile(ExpandConstant('{app}\codex.exe'));
+  DeleteFile(ExpandConstant('{app}\codex-desktop-installer.exe'));
   DeleteFile(ExpandConstant('{app}\vscode-installer' + '.exe'));
   DeleteFile(ExpandConstant('{app}\vscode-manifest' + '.json'));
 end;
@@ -470,9 +471,9 @@ begin
     RunEstimatedPowerShellStep('opencode-install', '正在下载并安装 OpenCode Desktop（请勿关闭）...', 'ensure-opencode-desktop.ps1',
       '', 900);
   end else if ShouldInstallCodexDesktop then begin
-    RunEstimatedPowerShellStep('codex-mode', '正在准备 Codex Desktop 模式...', 'write-install-mode.ps1',
+    RunEstimatedPowerShellStep('codex-mode', '正在准备 ChatGPT / Codex 模式...', 'write-install-mode.ps1',
       '-Mode ' + PowerShellQuote('codex_desktop') + ' -Path ' + PowerShellQuote(ModePath), 10);
-    RunEstimatedPowerShellStep('codex-install', '正在安装 Codex Desktop（请在弹出的安装器中完成安装，请勿关闭）...', 'ensure-codex-desktop.ps1',
+    RunEstimatedPowerShellStep('codex-install', '正在安装 ChatGPT 桌面应用（含 Codex；请在弹出的安装器中完成安装，请勿关闭）...', 'ensure-codex-desktop.ps1',
       '', 900);
   end else if ShouldInstallMinimalVSCode then begin
     RunEstimatedPowerShellStep('vscode-mode', '正在准备极简风模式...', 'write-install-mode.ps1',

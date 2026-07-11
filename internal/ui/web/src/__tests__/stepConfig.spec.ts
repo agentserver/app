@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { stepsForMode, completedMapForMode } from '../stepConfig';
 
 describe('stepConfig', () => {
-  it('uses Codex Desktop steps by default', () => {
+  it('uses ChatGPT / Codex steps by default', () => {
     expect(stepsForMode(undefined).map(s => s.id)).toEqual([
       'modelserver_login',
       'agentserver_login',
@@ -12,12 +12,12 @@ describe('stepConfig', () => {
     ]);
   });
 
-  it('uses user-facing labels for Codex Desktop setup', () => {
+  it('uses user-facing labels for ChatGPT / Codex setup', () => {
     expect(stepsForMode(undefined).map(s => s.label)).toEqual([
       '连接大模型',
       '连接星池工作区',
-      '安装 Codex Desktop 智能助手',
-      '准备 Codex Desktop 智能助手',
+      '安装 ChatGPT 桌面应用（含 Codex）',
+      '准备 ChatGPT / Codex',
       '完成',
     ]);
   });

@@ -39,6 +39,7 @@ type State struct {
 	InstallID       string               `json:"install_id"`
 	CreatedAt       time.Time            `json:"created_at"`
 	FrontendMode    FrontendMode         `json:"frontend_mode,omitempty"`
+	FrontendError   string               `json:"frontend_error,omitempty"`
 	Onboarding      OnboardingState      `json:"onboarding"`
 	Modelserver     ModelserverState     `json:"modelserver"`
 	Agentserver     AgentserverState     `json:"agentserver"`

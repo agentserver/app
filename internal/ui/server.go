@@ -19,6 +19,7 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/slave"
+	"github.com/agentserver/agentserver-pkg/internal/state"
 	"github.com/agentserver/agentserver-pkg/internal/updater"
 )
 
@@ -303,6 +304,10 @@ func (s *server) handleFrontendInstall(w http.ResponseWriter, r *http.Request) {
 	if !requirePostTrustedMutation(w, r) {
 		return
 	}
+	frontendMode := state.FrontendModeCodexDesktop
+	if current, err := s.o.State(r.Context()); err == nil {
+		frontendMode = state.NormalizeFrontendMode(state.FrontendMode(current.FrontendMode))
+	}
 	streamID := s.sse.newStream()
 	go func() {
 		defer s.sse.close(streamID)
@@ -315,7 +320,8 @@ func (s *server) handleFrontendInstall(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 		if err := s.o.EnsureFrontend(context.Background(), progress); err != nil {
-			s.sse.send(streamID, ProgressEvent{Stage: "error", Msg: err.Error()})
+			safeErr := SafeFrontendInstallError(frontendMode, err)
+			s.sse.send(streamID, ProgressEvent{Stage: "error", Msg: safeErr.Error()})
 		}
 		close(progress)
 		<-done

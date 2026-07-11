@@ -8,7 +8,7 @@
 #   open-folder.exe, uninstall.exe, token-refresher.exe
 #   driver-agent.exe, slave-agent.exe
 #   agentserver-app.vsix
-#   codex-desktop-installer.exe (bundled to avoid winget Store execution during install)
+#   chatgpt-desktop-installer.exe + manifest (verified Store bootstrapper)
 #   icon.ico, install.ps1, ensure-vscode.ps1, ensure-codex-desktop.ps1
 #   ensure-opencode-desktop.ps1
 #   ensure-codex.ps1, write-install-mode.ps1, machine.ps1, codex-manifest.json
@@ -45,7 +45,7 @@ cat > "$STAGE/README.txt" <<'EOF'
     powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1)
 
 2) Wait for "Install complete." The installer downloads the Codex runtime from
-   domestic npm mirrors and installs Codex Desktop with the bundled Microsoft installer.
+   domestic npm mirrors and installs ChatGPT / Codex with the bundled Microsoft installer.
    To install the simplified VS Code interface instead, run:
      powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -MinimalVSCode
 

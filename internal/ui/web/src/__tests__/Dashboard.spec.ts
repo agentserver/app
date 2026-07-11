@@ -7,7 +7,7 @@ import * as api from '../api';
 function consoleState(): api.ConsoleState {
   return {
     frontend_mode: 'codex_desktop',
-    frontend_name: 'Codex Desktop',
+    frontend_name: 'ChatGPT / Codex',
     onboarding_status: 'complete',
     modelserver: { project_id: 'proj-1', project_name: 'Default project' },
     agentserver: { workspace_id: 'ws-1', workspace_name: 'Default workspace' },
@@ -453,18 +453,73 @@ describe('Dashboard', () => {
     expect(w.text()).not.toContain('ws-1234567890abcdef');
   });
 
-  it('displays an error when opening the frontend fails', async () => {
-    mockConsoleState();
-    vi.spyOn(api, 'openConsoleFrontend').mockRejectedValue(new Error('open failed'));
+  it('displays a persisted frontend launch error on mount', async () => {
+    const persistedError = 'ChatGPT / Codex 桌面应用本身无法启动。请尝试 Repair、Reset、Reinstall。';
+    const persistedState = consoleState();
+    persistedState.frontend_error = persistedError;
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(persistedState);
+    vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves());
+
     const w = mount(Dashboard);
     await flushPromises();
 
-    const openButton = w.findAll('button').find(b => b.text().includes('打开 Codex Desktop'));
+    expect(w.text()).toContain(persistedError);
+  });
+
+  it('keeps a newer frontend failure when the initial state resolves later', async () => {
+    const initialState = deferred<api.ConsoleState>();
+    vi.spyOn(api, 'getConsoleState').mockReturnValue(initialState.promise);
+    vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves());
+    const latestError = 'latest frontend launch failure';
+    vi.spyOn(api, 'openConsoleFrontend').mockRejectedValue(new Error(latestError));
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    const openButton = w.findAll('button').find(button => button.text().includes('打开 前端'));
+    expect(openButton).toBeDefined();
+    await openButton!.trigger('click');
+    await flushPromises();
+    expect(w.text()).toContain(latestError);
+
+    initialState.resolve({ ...consoleState(), frontend_error: 'stale persisted frontend failure' });
+    await flushPromises();
+
+    expect(w.text()).toContain(latestError);
+    expect(w.text()).not.toContain('stale persisted frontend failure');
+  });
+
+  it('clears a persisted frontend error when a later refresh reports launch success', async () => {
+    const persistedError = 'persisted frontend launch failure';
+    const initial = { ...consoleState(), frontend_error: persistedError };
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(initial);
+    vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves());
+    vi.spyOn(api, 'refreshConsoleState').mockResolvedValue(consoleState());
+
+    const w = mount(Dashboard);
+    await flushPromises();
+    expect(w.text()).toContain(persistedError);
+
+    const refreshButton = w.findAll('button').find(button => button.text().includes('刷新状态'));
+    expect(refreshButton).toBeDefined();
+    await refreshButton!.trigger('click');
+    await flushPromises();
+
+    expect(w.text()).not.toContain(persistedError);
+  });
+
+  it('displays an error when opening the frontend fails', async () => {
+    mockConsoleState();
+    const message = 'ChatGPT / Codex 桌面应用本身无法启动；请尝试 Repair、Reset、Reinstall';
+    vi.spyOn(api, 'openConsoleFrontend').mockRejectedValue(new Error(message));
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    const openButton = w.findAll('button').find(b => b.text().includes('打开 ChatGPT / Codex'));
     expect(openButton).toBeDefined();
     await openButton!.trigger('click');
     await flushPromises();
 
-    expect(w.text()).toContain('open failed');
+    expect(w.text()).toContain(message);
   });
 
   it('keeps frontend errors visible when an overlapping refresh succeeds later', async () => {
@@ -476,7 +531,7 @@ describe('Dashboard', () => {
     await flushPromises();
 
     const refreshButton = w.findAll('button').find(b => b.text().includes('刷新状态'));
-    const openButton = w.findAll('button').find(b => b.text().includes('打开 Codex Desktop'));
+    const openButton = w.findAll('button').find(b => b.text().includes('打开 ChatGPT / Codex'));
     expect(refreshButton).toBeDefined();
     expect(openButton).toBeDefined();
     await refreshButton!.trigger('click');
@@ -488,6 +543,83 @@ describe('Dashboard', () => {
     await flushPromises();
 
     expect(w.text()).toContain('open failed');
+  });
+
+  it('ignores stale frontend errors from a refresh started while opening later succeeds', async () => {
+    const initial = { ...consoleState(), frontend_error: 'persisted frontend failure' };
+    vi.spyOn(api, 'getConsoleState').mockResolvedValue(initial);
+    vi.spyOn(api, 'getConsoleSlaves').mockResolvedValue(consoleSlaves());
+    const opening = deferred<{ state: 'opened' }>();
+    vi.spyOn(api, 'openConsoleFrontend').mockReturnValue(opening.promise);
+    const refresh = deferred<api.ConsoleState>();
+    vi.spyOn(api, 'refreshConsoleState').mockReturnValue(refresh.promise);
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    const openButton = w.findAll('button').find(b => b.text().includes('打开 ChatGPT / Codex'));
+    const refreshButton = w.findAll('button').find(b => b.text().includes('刷新状态'));
+    expect(openButton).toBeDefined();
+    expect(refreshButton).toBeDefined();
+    await openButton!.trigger('click');
+    await refreshButton!.trigger('click');
+
+    opening.resolve({ state: 'opened' });
+    await flushPromises();
+    expect(w.text()).not.toContain('persisted frontend failure');
+
+    refresh.resolve({ ...consoleState(), frontend_error: 'stale refresh frontend failure' });
+    await flushPromises();
+
+    expect(w.text()).not.toContain('stale refresh frontend failure');
+  });
+
+  it('ignores stale frontend errors from a refresh started while opening later fails', async () => {
+    mockConsoleState();
+    const opening = deferred<{ state: 'opened' }>();
+    vi.spyOn(api, 'openConsoleFrontend').mockReturnValue(opening.promise);
+    const refresh = deferred<api.ConsoleState>();
+    vi.spyOn(api, 'refreshConsoleState').mockReturnValue(refresh.promise);
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    const openButton = w.findAll('button').find(b => b.text().includes('打开 ChatGPT / Codex'));
+    const refreshButton = w.findAll('button').find(b => b.text().includes('刷新状态'));
+    expect(openButton).toBeDefined();
+    expect(refreshButton).toBeDefined();
+    await openButton!.trigger('click');
+    await refreshButton!.trigger('click');
+
+    opening.reject(new Error('latest frontend launch failure'));
+    await flushPromises();
+    expect(w.text()).toContain('latest frontend launch failure');
+
+    refresh.resolve({ ...consoleState(), frontend_error: 'stale refresh frontend failure' });
+    await flushPromises();
+
+    expect(w.text()).toContain('latest frontend launch failure');
+    expect(w.text()).not.toContain('stale refresh frontend failure');
+  });
+
+  it('applies frontend errors from a refresh started after opening settles', async () => {
+    mockConsoleState();
+    vi.spyOn(api, 'openConsoleFrontend').mockResolvedValue({ state: 'opened' });
+    vi.spyOn(api, 'refreshConsoleState').mockResolvedValue({
+      ...consoleState(),
+      frontend_error: 'post-launch refresh frontend failure',
+    });
+    const w = mount(Dashboard);
+    await flushPromises();
+
+    const openButton = w.findAll('button').find(b => b.text().includes('打开 ChatGPT / Codex'));
+    const refreshButton = w.findAll('button').find(b => b.text().includes('刷新状态'));
+    expect(openButton).toBeDefined();
+    expect(refreshButton).toBeDefined();
+    await openButton!.trigger('click');
+    await flushPromises();
+    await refreshButton!.trigger('click');
+    await flushPromises();
+
+    expect(w.text()).toContain('post-launch refresh frontend failure');
   });
 
   it('displays an error when opening the subscription fails', async () => {
@@ -605,7 +737,7 @@ describe('Dashboard', () => {
     const w = mount(Dashboard);
     await flushPromises();
 
-    const openButton = w.findAll('button').find(b => b.text().includes('打开 Codex Desktop'));
+    const openButton = w.findAll('button').find(b => b.text().includes('打开 ChatGPT / Codex'));
     expect(openButton).toBeDefined();
     await openButton!.trigger('click');
     await openButton!.trigger('click');

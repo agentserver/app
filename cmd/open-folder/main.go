@@ -72,7 +72,7 @@ func main() {
 		if err := openFolderCodexDesktop(context.Background(), p, folder, secrets.New(p.SecretsFile), tokenRefresherExe, nil); err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("opened %s with Codex Desktop\n", folder)
+		fmt.Printf("opened %s with %s\n", folder, codexdesktop.ShortDisplayName)
 		return
 	}
 	if s.VSCode.Path == "" {
@@ -159,7 +159,7 @@ func openFolder(ctx context.Context, codeExe string, p paths.Paths, folder strin
 	return cmd.Start()
 }
 
-func openFolderCodexDesktop(ctx context.Context, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string, opener codexdesktop.Opener) error {
+func openFolderCodexDesktop(ctx context.Context, p paths.Paths, folder string, sec secrets.Store, tokenRefresherExe string, launcher codexdesktop.Launcher) error {
 	localProxyToken, err := localProxyBearerToken(p)
 	if err != nil {
 		return err
@@ -179,7 +179,10 @@ func openFolderCodexDesktop(ctx context.Context, p paths.Paths, folder string, s
 	if tokenRefresherExe != "" {
 		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
 	}
-	return codexdesktop.Launch(ctx, folder, opener)
+	if launcher == nil {
+		launcher = codexdesktop.Launch
+	}
+	return launcher(ctx, folder)
 }
 
 func openFolderOpenCodeDesktop(ctx context.Context, p paths.Paths, folder string, det opencodedesktop.Detected, tokenRefresherExe string, launcher func(context.Context, opencodedesktop.LaunchOptions) error) error {

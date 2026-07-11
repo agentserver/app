@@ -196,7 +196,9 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 				"write-install-mode.ps1",
 				"machine.ps1",
 				"codex-manifest.json",
-				"codex-desktop-installer.exe",
+				"chatgpt-desktop-installer.exe",
+				"chatgpt-desktop-installer.manifest.json",
+				"codex-desktop-detect.ps1",
 				"slave-agent.exe",
 				"driver-skills.tar.gz",
 				"driver-superpower-skills.tar.gz",
@@ -269,16 +271,21 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 				"packaging/windows/ensure-codex.ps1",
 				"packaging/windows/codex-manifest.json",
 				"packaging/windows/ensure-codex-desktop.ps1",
+				"internal/codexdesktop/detect_windows.ps1",
 				"packaging/windows/install-driver-support.ps1",
 				"packaging/windows/write-install-mode.ps1",
 				"packaging/windows/machine.ps1",
-				"codex-desktop-installer.exe",
+				"chatgpt-desktop-installer.exe",
+				"chatgpt-desktop-installer.manifest.json",
+				"codex-desktop-detect.ps1",
 				"slave-agent.exe",
 				"dist/windows/codex-debug-wrapper.exe",
 				"dist/windows/uninstall.exe",
 				"dist/windows/token-refresher.exe",
 				"dist/windows/codex-debug-wrapper.exe::codex-debug-wrapper.exe",
-				"$CODEX_DESKTOP_CACHE::codex-desktop-installer.exe",
+				"$CHATGPT_DESKTOP_CACHE::chatgpt-desktop-installer.exe",
+				"$CHATGPT_DESKTOP_MANIFEST::chatgpt-desktop-installer.manifest.json",
+				"internal/codexdesktop/detect_windows.ps1::codex-desktop-detect.ps1",
 				"$LOOM_DRIVER_CACHE::driver-agent.exe",
 				"$LOOM_SLAVE_CACHE::slave-agent.exe",
 				"$LOOM_DRIVER_SKILLS_CACHE::driver-skills.tar.gz",
@@ -309,8 +316,10 @@ func TestWindowsInstallScriptsIncludeExpectedInstallerAssets(t *testing.T) {
 				"driver-superpower-skills.tar.gz",
 				"driver-codex-prompts.tar.gz",
 				"install-driver-support.ps1",
-				"Codex Installer.exe",
-				"DestName: \"codex-desktop-installer.exe\"",
+				"ChatGPT Installer.exe",
+				"DestName: \"chatgpt-desktop-installer.exe\"",
+				"DestName: \"chatgpt-desktop-installer.manifest.json\"",
+				"DestName: \"codex-desktop-detect.ps1\"",
 				"MessagesFile: \"ChineseSimplified.isl\"",
 				"ensure-vscode.ps1",
 				"ensure-codex.ps1",
@@ -803,9 +812,14 @@ func TestWindowsPortableCodexDesktopUsesBundledInstaller(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "& (Join-Path $InstallDir 'ensure-codex-desktop.ps1') -LocalInstallerPath (Join-Path $srcDir 'codex-desktop-installer.exe')"
-	if !strings.Contains(string(body), want) {
-		t.Fatalf("install.ps1 should pass the portable bundled Codex Desktop installer to ensure-codex-desktop.ps1; missing %q", want)
+	for _, want := range []string{
+		"-LocalInstallerPath (Join-Path $srcDir 'chatgpt-desktop-installer.exe')",
+		"-LocalInstallerManifestPath (Join-Path $srcDir 'chatgpt-desktop-installer.manifest.json')",
+		"-DetectionScriptPath (Join-Path $srcDir 'codex-desktop-detect.ps1')",
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("install.ps1 should pass the bundled ChatGPT payload set; missing %q", want)
+		}
 	}
 }
 
@@ -1255,7 +1269,7 @@ func TestWindowsPortableInstallerDoesNotAbortWhenShortcutCreationFails(t *testin
 	}
 }
 
-func TestWindowsInstallersStopCodexDesktopBeforeReinstall(t *testing.T) {
+func TestWindowsInstallersDoNotStopChatGPTOrCodexDesktop(t *testing.T) {
 	for _, file := range []string{
 		"../../packaging/windows/install.ps1",
 		"../../packaging/windows/installer.iss",
@@ -1267,13 +1281,27 @@ func TestWindowsInstallersStopCodexDesktopBeforeReinstall(t *testing.T) {
 			}
 			s := string(body)
 			for _, want := range []string{
-				"OpenAI.Codex_2p2nqsd0c76g0",
-				"WindowsApps",
-				"CommandLine",
 				"Stop-Process",
+				"$installRoot",
+				"$codexBin",
+				"StartsWith",
 			} {
 				if !strings.Contains(s, want) {
-					t.Fatalf("%s should stop running Codex Desktop before reinstall; missing %q", file, want)
+					t.Fatalf("%s should retain scoped agentserver process shutdown; missing %q", file, want)
+				}
+			}
+			for _, notWant := range []string{
+				"OpenAI.Codex_2p2nqsd0c76g0",
+				"OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0",
+				"OpenAI.Codex_",
+				"\\WindowsApps\\",
+				"ChatGPT.exe",
+				"$commandLine",
+				"usesCodexDesktopPackage",
+				"inCodexDesktopPackage",
+			} {
+				if strings.Contains(s, notWant) {
+					t.Fatalf("%s must not terminate the desktop app using %q", file, notWant)
 				}
 			}
 		})
@@ -1706,15 +1734,24 @@ func TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback(t *tes
 	s := string(body)
 	for _, want := range []string{
 		"LocalInstallerPath",
+		"LocalInstallerManifestPath",
 		"Invoke-CodexDesktopLocalInstaller",
-		"codex-desktop-installer.exe",
+		"chatgpt-desktop-installer.exe",
+		"chatgpt-desktop-installer.manifest.json",
+		"9NT1R1C2HH7J",
+		"get.microsoft.com/installer/download/9NT1R1C2HH7J?cid=website_cta_psi",
+		"ConvertFrom-Json",
+		"Get-FileHash",
+		"SHA256",
+		"product_id",
+		"source_url",
 		"Start-Process",
 		"-Wait",
 		"winget",
 		"install",
-		"Codex",
-		"-s",
-		"msstore",
+		"--id=9NT1R1C2HH7J",
+		"--source=msstore",
+		"--exact",
 		"--accept-source-agreements",
 		"--accept-package-agreements",
 		"--disable-interactivity",
@@ -1724,20 +1761,40 @@ func TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback(t *tes
 			t.Fatalf("ensure-codex-desktop.ps1 missing %q", want)
 		}
 	}
+	if strings.Contains(s, "winget install Codex -s msstore") {
+		t.Fatal("ensure-codex-desktop.ps1 must not install the retired product-name package")
+	}
 }
 
-func TestEnsureCodexDesktopDetectionUsesExactPackageFamily(t *testing.T) {
+func TestEnsureCodexDesktopDetectionUsesSharedSecureDetector(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/ensure-codex-desktop.ps1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(body)
-	if !strings.Contains(s, "$_.PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0'") {
-		t.Fatalf("ensure-codex-desktop.ps1 should match the exact Codex PackageFamilyName:\n%s", s)
+	for _, want := range []string{
+		"DetectionScriptPath",
+		"codex-desktop-detect.ps1",
+		"Get-ChatGPTCodexDetection",
+		"scheme_missing",
+		"scheme_target_invalid",
+		"Repair",
+		"Reset",
+		"Reinstall",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("ensure-codex-desktop.ps1 should reuse secure detector; missing %q:\n%s", want, s)
+		}
 	}
-	for _, notWant := range []string{"$_.Name -like '*Codex*'", "$_.PackageFullName -like '*Codex*'"} {
+	for _, notWant := range []string{
+		"Get-AppxPackage | Where-Object",
+		"$_.Name -like '*Codex*'",
+		"$_.Name -like '*ChatGPT*'",
+		"$_.PackageFullName -like '*Codex*'",
+		"$_.PackageFullName -like '*ChatGPT*'",
+	} {
 		if strings.Contains(s, notWant) {
-			t.Fatalf("ensure-codex-desktop.ps1 should not use fuzzy Codex appx matching %q:\n%s", notWant, s)
+			t.Fatalf("ensure-codex-desktop.ps1 should not duplicate/loosen detector with %q:\n%s", notWant, s)
 		}
 	}
 }
@@ -1755,8 +1812,8 @@ func TestEnsureCodexDesktopScriptFallsBackToWingetWhenBundledInstallerFails(t *t
 		"try {",
 		"Start-Process -FilePath $LocalInstallerPath -Wait -PassThru",
 		"} catch {",
-		"Bundled Codex Desktop installer failed verification or startup",
-		"Bundled Codex Desktop installer failed with exit code",
+		"Bundled ChatGPT / Codex installer failed verification or startup",
+		"Bundled ChatGPT / Codex installer failed with exit code",
 		"falling back to winget",
 		"return $false",
 	} {
@@ -1766,36 +1823,43 @@ func TestEnsureCodexDesktopScriptFallsBackToWingetWhenBundledInstallerFails(t *t
 	}
 }
 
-func TestWindowsPackageScriptsRefreshCodexDesktopInstallerEveryBuild(t *testing.T) {
+func TestWindowsPackageScriptsRefreshChatGPTDesktopInstallerEveryBuild(t *testing.T) {
 	body, err := os.ReadFile("../../scripts/windows-package-common.sh")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(body)
-	fetch := strings.Index(s, "Fetching Codex Desktop installer")
+	fetch := strings.Index(s, "Fetching ChatGPT desktop installer")
 	if fetch < 0 {
-		t.Fatal("windows-package-common.sh missing Codex Desktop installer download block")
+		t.Fatal("windows-package-common.sh missing ChatGPT desktop installer download block")
 	}
-	if strings.Contains(s[:fetch], `if [[ ! -f "$CODEX_DESKTOP_CACHE" ]]`) {
-		t.Fatal("Codex Desktop installer must refresh every build, not skip download when cache exists")
+	if strings.Contains(s[:fetch], `if [[ ! -f "$CHATGPT_DESKTOP_CACHE" ]]`) {
+		t.Fatal("ChatGPT desktop installer must refresh every build, not skip download when cache exists")
 	}
 	for _, want := range []string{
-		`CODEX_DESKTOP_MIN_SIZE=`,
-		`verify_codex_desktop_installer()`,
+		`CHATGPT_DESKTOP_PRODUCT_ID="9NT1R1C2HH7J"`,
+		`CHATGPT_DESKTOP_ASSET="ChatGPT Installer.exe"`,
+		`cache/chatgpt-desktop`,
+		`CHATGPT_DESKTOP_MIN_SIZE=`,
+		`verify_chatgpt_desktop_installer()`,
+		`write_chatgpt_desktop_manifest()`,
+		`verify_chatgpt_desktop_pair()`,
+		`publish_chatgpt_desktop_pair()`,
+		`product_id`,
+		`source_url`,
+		`sha256`,
+		`size`,
 		`head -c 2 "$path"`,
 		`[[ "$magic" == "MZ" ]]`,
-		`codex_desktop_tmp=$(mktemp "$CODEX_DESKTOP_CACHE.part.XXXXXX")`,
-		`curl --fail --location --retry 2 --retry-delay 2 --output "$codex_desktop_tmp" "$CODEX_DESKTOP_URL"`,
-		`if ! verify_codex_desktop_installer "$codex_desktop_tmp"; then`,
-		`ERROR: invalid Codex Desktop installer download`,
-		`mv -f "$codex_desktop_tmp" "$CODEX_DESKTOP_CACHE"`,
+		`curl --fail --location --retry 2 --retry-delay 2`,
+		`ERROR: invalid ChatGPT desktop installer download`,
 	} {
 		if !strings.Contains(s, want) {
-			t.Fatalf("windows-package-common.sh should refresh Codex Desktop installer; missing %q", want)
+			t.Fatalf("windows-package-common.sh should securely refresh ChatGPT desktop installer; missing %q", want)
 		}
 	}
-	if strings.Contains(s, `rm -f "$CODEX_DESKTOP_CACHE"`) {
-		t.Fatal("windows-package-common.sh should not remove the shared Codex Desktop cache before publishing a verified replacement")
+	if strings.Contains(s, "9PLM9XGG6VKS") {
+		t.Fatal("windows-package-common.sh must not retain the retired Codex Store product ID")
 	}
 	for _, path := range []string{
 		"../../scripts/package-windows.sh",
@@ -1806,7 +1870,93 @@ func TestWindowsPackageScriptsRefreshCodexDesktopInstallerEveryBuild(t *testing.
 			t.Fatal(err)
 		}
 		if !strings.Contains(string(body), `fetch_windows_package_assets`) {
-			t.Fatalf("%s should call shared Codex Desktop refresh", path)
+			t.Fatalf("%s should call shared ChatGPT desktop refresh", path)
+		}
+	}
+}
+
+func TestPublishChatGPTDesktopPairRollsBackOnForcedFailure(t *testing.T) {
+	dir := t.TempDir()
+	oldInstaller := filepath.Join(dir, "published.exe")
+	oldManifest := filepath.Join(dir, "published.json")
+	newInstaller := filepath.Join(dir, "staged.exe")
+	newManifest := filepath.Join(dir, "staged.json")
+	for path, value := range map[string]string{
+		oldInstaller: "old-installer",
+		oldManifest:  "old-manifest",
+		newInstaller: "new-installer",
+		newManifest:  "new-manifest",
+	} {
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script, err := filepath.Abs("../../scripts/windows-package-common.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "-c", `
+set -euo pipefail
+source "$1"
+export CHATGPT_DESKTOP_TEST_FAIL_AFTER_INSTALLER_PUBLISH=1
+publish_chatgpt_desktop_pair "$2" "$3" "$4" "$5"
+`, "bash", script, newInstaller, newManifest, oldInstaller, oldManifest)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("forced publication failure unexpectedly succeeded")
+	}
+	for path, want := range map[string]string{oldInstaller: "old-installer", oldManifest: "old-manifest"} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != want {
+			t.Fatalf("%s=%q, want rolled-back %q", path, body, want)
+		}
+	}
+}
+
+func TestPublishChatGPTDesktopPairPreservesOldPairWhenManifestBackupFails(t *testing.T) {
+	dir := t.TempDir()
+	oldInstaller := filepath.Join(dir, "published.exe")
+	oldManifest := filepath.Join(dir, "published.json")
+	newInstaller := filepath.Join(dir, "staged.exe")
+	newManifest := filepath.Join(dir, "staged.json")
+	for path, value := range map[string]string{
+		oldInstaller: "old-installer",
+		oldManifest:  "old-manifest",
+		newInstaller: "new-installer",
+		newManifest:  "new-manifest",
+	} {
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script, err := filepath.Abs("../../scripts/windows-package-common.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "-c", `
+set -euo pipefail
+source "$1"
+fail_manifest="$5"
+mv() {
+  if [[ "$1" == "$fail_manifest" && "$2" == */manifest ]]; then
+    return 42
+  fi
+  command mv "$@"
+}
+publish_chatgpt_desktop_pair "$2" "$3" "$4" "$5"
+`, "bash", script, newInstaller, newManifest, oldInstaller, oldManifest)
+	if err := cmd.Run(); err == nil {
+		t.Fatal("manifest-backup failure unexpectedly succeeded")
+	}
+	for path, want := range map[string]string{oldInstaller: "old-installer", oldManifest: "old-manifest"} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read preserved %s: %v", path, err)
+		}
+		if string(body) != want {
+			t.Fatalf("%s=%q, want preserved %q", path, body, want)
 		}
 	}
 }
@@ -1818,10 +1968,9 @@ func TestWindowsPackageCodexDesktopSignatureUsesFileScriptWithExplicitPath(t *te
 	}
 	s := string(body)
 	for _, want := range []string{
-		`mktemp`,
-		`.ps1`,
-		`cat >"$script_file"`,
-		`-File "$script_file" -Path "$path"`,
+		`CHATGPT_DESKTOP_SIGNATURE_VERIFIER`,
+		`verify-chatgpt-desktop-installer.ps1`,
+		`-File "$CHATGPT_DESKTOP_SIGNATURE_VERIFIER" -Path "$path"`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("windows-package-common.sh should invoke Authenticode check via a .ps1 file with explicit -Path; missing %q", want)
@@ -1829,6 +1978,9 @@ func TestWindowsPackageCodexDesktopSignatureUsesFileScriptWithExplicitPath(t *te
 	}
 	if strings.Contains(s, `-Command "$script" "$path"`) {
 		t.Fatal("windows-package-common.sh must not pass the installer path as a positional -Command argument; it is not reliably bound under Git-Bash/PowerShell")
+	}
+	if strings.Contains(s, `cat >"$script_file"`) {
+		t.Fatal("windows-package-common.sh must not embed a second signature policy")
 	}
 }
 
@@ -1895,7 +2047,7 @@ func TestWindowsPackageCommonCanBeSourcedWithUnsetOutAndVersion(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Fatalf("windows-package-common.sh should define defaults before top-level cache paths; missing %q", want)
 		}
-		if strings.Index(s, want) > strings.Index(s, "CODEX_DESKTOP_CACHE=") {
+		if strings.Index(s, want) > strings.Index(s, "CHATGPT_DESKTOP_CACHE=") {
 			t.Fatalf("windows-package-common.sh must define %q before any top-level cache path uses it", want)
 		}
 	}

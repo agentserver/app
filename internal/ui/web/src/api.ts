@@ -51,6 +51,7 @@ export interface ConsoleModelOption {
 export interface ConsoleState {
   frontend_mode: 'codex_desktop' | 'opencode_desktop' | 'minimal_vscode';
   frontend_name: string;
+  frontend_error?: string;
   onboarding_status: string;
   modelserver: {
     project_id?: string;

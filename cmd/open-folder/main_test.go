@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
@@ -76,19 +79,16 @@ func TestOpenFolderMigratesVSCodeSettingsBeforeLaunch(t *testing.T) {
 func TestOpenFolderCodexDesktopUsesFolderDeepLink(t *testing.T) {
 	dir := t.TempDir()
 	p := paths.Paths{CodexConfigFile: filepath.Join(dir, ".codex", "config.toml")}
-	var opened string
-	err := openFolderCodexDesktop(context.Background(), p, `C:\Project Folder`, nil, "", func(url string) error {
-		opened = url
+	var openedFolder string
+	err := openFolderCodexDesktop(context.Background(), p, `C:\Project Folder`, nil, "", func(_ context.Context, folder string) error {
+		openedFolder = folder
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("openFolderCodexDesktop: %v", err)
 	}
-	if !strings.HasPrefix(opened, "codex://threads/new?path=") {
-		t.Fatalf("opened=%q", opened)
-	}
-	if !strings.Contains(opened, "Project+Folder") {
-		t.Fatalf("path not encoded: %q", opened)
+	if openedFolder != `C:\Project Folder` {
+		t.Fatalf("opened folder=%q", openedFolder)
 	}
 	b, readErr := os.ReadFile(p.CodexConfigFile)
 	if readErr != nil {
@@ -113,13 +113,30 @@ func TestOpenFolderCodexDesktopWritesUILocaleBeforeLaunch(t *testing.T) {
 		CodexDesktopGlobalStateFile:       globalPath,
 		CodexDesktopComputerUseConfigFile: computerUsePath,
 	}
-	err := openFolderCodexDesktop(context.Background(), p, `C:\Project Folder`, nil, "", func(url string) error {
+	err := openFolderCodexDesktop(context.Background(), p, `C:\Project Folder`, nil, "", func(context.Context, string) error {
 		assertJSONField(t, globalPath, "localeOverride", "zh-CN")
 		assertJSONField(t, computerUsePath, "locale", "zh-CN")
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("openFolderCodexDesktop: %v", err)
+	}
+}
+
+func TestOpenFolderCodexDesktopReturnsVisibleLaunchFailure(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{CodexConfigFile: filepath.Join(dir, ".codex", "config.toml")}
+	shellErr := errors.New("deep link failed")
+	err := openFolderCodexDesktop(context.Background(), p, `C:\Project`, nil, "", func(context.Context, string) error {
+		return fmt.Errorf("%w: ChatGPT / Codex launch failed; Repair Reset Reinstall: %w", codexdesktop.ErrLaunchFailed, shellErr)
+	})
+	if !errors.Is(err, shellErr) || !errors.Is(err, codexdesktop.ErrLaunchFailed) {
+		t.Fatalf("err=%v, want deep-link cause and ErrLaunchFailed", err)
+	}
+	for _, want := range []string{"ChatGPT / Codex", "Repair", "Reset", "Reinstall"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err=%v, missing %q", err, want)
+		}
 	}
 }
 

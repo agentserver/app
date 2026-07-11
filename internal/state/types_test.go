@@ -10,6 +10,7 @@ func TestStateRoundtrip(t *testing.T) {
 	s := State{
 		SchemaVersion: 1,
 		InstallID:     "abc-123",
+		FrontendError: "frontend launch failed",
 		Onboarding: OnboardingState{
 			Status:         StatusPending,
 			CompletedSteps: []string{"modelserver_login"},
@@ -30,6 +31,9 @@ func TestStateRoundtrip(t *testing.T) {
 	}
 	if got.SchemaVersion != 1 || got.InstallID != "abc-123" {
 		t.Errorf("roundtrip lost data: %+v", got)
+	}
+	if got.FrontendError != "frontend launch failed" {
+		t.Errorf("FrontendError=%q", got.FrontendError)
 	}
 	if len(got.Onboarding.CompletedSteps) != 1 ||
 		got.Onboarding.CompletedSteps[0] != "modelserver_login" {

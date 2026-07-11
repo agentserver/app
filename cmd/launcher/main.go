@@ -257,6 +257,8 @@ type completedServeInput struct {
 	InstallDir               string
 	Options                  launcherOptions
 	OpenBrowser              func(string) error
+	LaunchFrontend           func(context.Context, *state.State) error
+	TrayApp                  tray.App
 	PreferredConsoleInstance console.InstanceInfo
 }
 
@@ -268,6 +270,17 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 	openBrowser := in.OpenBrowser
 	if openBrowser == nil {
 		openBrowser = browser.Open
+	}
+	launchFrontend := in.LaunchFrontend
+	if launchFrontend == nil {
+		launchFrontend = func(ctx context.Context, current *state.State) error {
+			return launchCompletedFrontend(ctx, current, in.Paths, sec,
+				in.InstallDir,
+				joinExe(in.InstallDir, "token-refresher.exe"),
+				joinExe(in.InstallDir, "agentserver-app.vsix"),
+				nil,
+				nil)
+		}
 	}
 	slaveManager, err := newCompletedSlaveManager(in)
 	if err != nil {
@@ -318,16 +331,7 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 		OpenURL:      openBrowser,
 		SelectFolder: folderpicker.Select,
 		OpenFrontend: func(ctx context.Context) error {
-			current, err := in.State.Load()
-			if err != nil {
-				return err
-			}
-			return launchCompletedFrontend(ctx, current, in.Paths, sec,
-				in.InstallDir,
-				joinExe(in.InstallDir, "token-refresher.exe"),
-				joinExe(in.InstallDir, "agentserver-app.vsix"),
-				nil,
-				nil)
+			return launchCompletedFrontendAndRecord(ctx, in.State, launchFrontend)
 		},
 		Quit: func() {
 			go srv.Shutdown(context.Background())
@@ -362,7 +366,10 @@ func serveCompletedConsole(ctx context.Context, in completedServeInput) error {
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	trayCtx, stopTray := context.WithCancel(ctx)
-	trayApp := tray.New(preferredIconPath(in.InstallDir))
+	trayApp := in.TrayApp
+	if trayApp == nil {
+		trayApp = tray.New(preferredIconPath(in.InstallDir))
+	}
 	trayActions := tray.Actions{
 		OpenDashboard: func() {
 			runAsyncLauncherAction("open console page", func() error {
@@ -789,7 +796,7 @@ func updateTrayOnce(ctx context.Context, app tray.App, ctrl trayConsoleControlle
 func trayStateFromConsole(st console.State) tray.State {
 	frontendName := strings.TrimSpace(st.FrontendName)
 	if frontendName == "" {
-		frontendName = "Codex Desktop"
+		frontendName = codexdesktop.ShortDisplayName
 	}
 	state := tray.State{
 		Tooltip:           "星池指挥官\n额度暂不可用",
@@ -921,12 +928,20 @@ func launchCompletedInstall(ctx context.Context, codeExe string, p paths.Paths, 
 }
 
 func startCompletedConsole(ctx context.Context, launcherExe string) error {
+	return startCompletedConsoleWithStarter(ctx, launcherExe, startDetachedProcess)
+}
+
+func startCompletedConsoleWithStarter(ctx context.Context, launcherExe string, start func(string, ...string) error) error {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 	}
-	cmd := exec.Command(launcherExe)
+	return start(launcherExe, "--background")
+}
+
+func startDetachedProcess(exe string, args ...string) error {
+	cmd := exec.Command(exe, args...)
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -934,7 +949,31 @@ func startCompletedConsole(ctx context.Context, launcherExe string) error {
 	return cmd.Start()
 }
 
-func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, embeddedVSIXPath string, codexOpen codexdesktop.Opener, opencodeLaunch func(context.Context, opencodedesktop.LaunchOptions) error) error {
+func launchCompletedFrontendAndRecord(ctx context.Context, store *state.Store, launch func(context.Context, *state.State) error) error {
+	current, err := store.Load()
+	if err != nil {
+		return ui.SafeFrontendStateReadError(err)
+	}
+	launchErr := launch(ctx, current)
+	safeLaunchErr := ui.SafeFrontendLaunchError(current.FrontendMode, launchErr)
+	frontendError := ""
+	if safeLaunchErr != nil {
+		frontendError = safeLaunchErr.Error()
+	}
+	persistErr := store.Update(func(latest *state.State) error {
+		latest.FrontendError = frontendError
+		return nil
+	})
+	if persistErr != nil {
+		if launchErr != nil {
+			return ui.SafeFrontendLaunchError(current.FrontendMode, errors.Join(launchErr, persistErr))
+		}
+		return ui.SafeFrontendStatePersistenceError(persistErr)
+	}
+	return safeLaunchErr
+}
+
+func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, embeddedVSIXPath string, codexLaunch codexdesktop.Launcher, opencodeLaunch func(context.Context, opencodedesktop.LaunchOptions) error) error {
 	mode := state.NormalizeFrontendMode(s.FrontendMode)
 	if mode == state.FrontendModeMinimalVSCode {
 		if s.VSCode.Path == "" {
@@ -948,7 +987,7 @@ func launchCompletedFrontend(ctx context.Context, s *state.State, p paths.Paths,
 	if mode == state.FrontendModeOpenCodeDesktop {
 		return launchCompletedOpenCodeDesktop(ctx, s, p, sec, installDir, tokenRefresherExe, opencodeLaunch)
 	}
-	return launchCompletedCodexDesktop(ctx, s, p, sec, installDir, tokenRefresherExe, codexOpen)
+	return launchCompletedCodexDesktop(ctx, s, p, sec, installDir, tokenRefresherExe, codexLaunch)
 }
 
 func launchCompletedOpenCodeDesktop(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, launcher func(context.Context, opencodedesktop.LaunchOptions) error) error {
@@ -1004,7 +1043,7 @@ func launcherLocalProxyBearerToken(p paths.Paths) (string, error) {
 	return modelaccess.EnsureLocalProxyToken(modelaccess.DefaultLocalProxyTokenPath(p.InstallRoot))
 }
 
-func launchCompletedCodexDesktop(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, opener codexdesktop.Opener) error {
+func launchCompletedCodexDesktop(ctx context.Context, s *state.State, p paths.Paths, sec secrets.Store, installDir string, tokenRefresherExe string, launcher codexdesktop.Launcher) error {
 	localProxyToken, err := launcherLocalProxyBearerToken(p)
 	if err != nil {
 		return err
@@ -1034,7 +1073,10 @@ func launchCompletedCodexDesktop(ctx context.Context, s *state.State, p paths.Pa
 	if tokenRefresherExe != "" {
 		_ = tokenrefresh.StartDaemon(tokenRefresherExe)
 	}
-	return codexdesktop.Launch(ctx, "", opener)
+	if launcher == nil {
+		launcher = codexdesktop.Launch
+	}
+	return launcher(ctx, "")
 }
 
 func configureCompletedLoomDriver(p paths.Paths, s *state.State, sec secrets.Store, installDir string) error {

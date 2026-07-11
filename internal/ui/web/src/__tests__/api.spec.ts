@@ -74,7 +74,7 @@ describe('api', () => {
       status: 200,
       json: async () => ({
         frontend_mode: 'codex_desktop',
-        frontend_name: 'Codex Desktop',
+        frontend_name: 'ChatGPT / Codex',
         subscription_url: 'https://code.cs.ac.cn/projects/proj-1/subscription',
         quotas: [{ window: '5h', percentage: 58, remaining_percentage: 42 }],
       }),
@@ -117,7 +117,7 @@ describe('api', () => {
       status: 200,
       json: async () => ({
         frontend_mode: 'codex_desktop',
-        frontend_name: 'Codex Desktop',
+        frontend_name: 'ChatGPT / Codex',
         onboarding_status: 'complete',
         modelserver: {},
         agentserver: {},

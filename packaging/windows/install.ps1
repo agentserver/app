@@ -7,7 +7,7 @@
 #
 # Installs to %LOCALAPPDATA%\Programs\agentserver-app, creates desktop
 # shortcut + folder context menu, and installs the selected frontend.
-# Default frontend is Codex Desktop; use -OpenCodeDesktop for OpenCode Desktop
+# Default frontend is ChatGPT / Codex; use -OpenCodeDesktop for OpenCode Desktop
 # or -MinimalVSCode for simplified VS Code.
 # Launch the shortcut to onboard.
 
@@ -125,20 +125,15 @@ function Stop-RunningAgentserverProcesses {
         $localAppDataRoot = Join-Path $env:LOCALAPPDATA 'agentserver-app'
     }
     $codexBin = Join-Path $localAppDataRoot 'bin\codex.exe'
-    $codexDesktopPackageFamily = 'OpenAI.Codex_2p2nqsd0c76g0'
-    $codexDesktopPackagePrefix = 'OpenAI.Codex_'
     $filter = {
         $exePath = [string]$_.ExecutablePath
-        $commandLine = [string]$_.CommandLine
         $exe = ''
         if (-not [string]::IsNullOrWhiteSpace($exePath)) {
             $exe = [System.IO.Path]::GetFullPath($exePath)
         }
         $inInstallDir = ($exe -ne '') -and ($names -contains $_.Name) -and $exe.StartsWith($installRoot + '\', [System.StringComparison]::OrdinalIgnoreCase)
         $isLocalCodex = ($exe -ne '') -and ($_.Name -eq 'codex.exe') -and ($exe -ieq $codexBin)
-        $inCodexDesktopPackage = ($exe -ne '') -and ($exe.IndexOf('\WindowsApps\' + $codexDesktopPackagePrefix, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
-        $usesCodexDesktopPackage = $commandLine.IndexOf($codexDesktopPackageFamily, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-        return $inInstallDir -or $isLocalCodex -or $inCodexDesktopPackage -or $usesCodexDesktopPackage
+        return $inInstallDir -or $isLocalCodex
     }
 
     $procs = @(Get-CimInstance Win32_Process | Where-Object $filter)
@@ -220,11 +215,14 @@ $required = @(
     'driver-skills.tar.gz',
     'driver-superpower-skills.tar.gz',
     'driver-codex-prompts.tar.gz',
-    'codex-desktop-installer.exe',
+    'chatgpt-desktop-installer.exe',
+    'chatgpt-desktop-installer.manifest.json',
+    'codex-desktop-detect.ps1',
     'agentserver-app.vsix',
     'ensure-vscode.ps1',
     'ensure-codex.ps1',
     'ensure-codex-desktop.ps1',
+    'verify-chatgpt-desktop-installer.ps1',
     'ensure-opencode-desktop.ps1',
     'install-driver-support.ps1',
     'write-install-mode.ps1',
@@ -246,6 +244,7 @@ if (-not (Test-Path $InstallDir)) {
 }
 $obsoletePayloads = @(
     'codex.exe',
+    'codex-desktop-installer.exe',
     ('vscode-installer' + '.exe'),
     ('vscode-manifest' + '.json')
 )
@@ -322,8 +321,12 @@ if ($OpenCodeDesktop) {
 } else {
     Write-Step "Writing install mode codex_desktop..."
     & (Join-Path $InstallDir 'write-install-mode.ps1') -Mode 'codex_desktop' -Path (Join-Path $InstallDir 'install-mode.json')
-    Write-Step "Ensuring Codex Desktop is installed..."
-    & (Join-Path $InstallDir 'ensure-codex-desktop.ps1') -LocalInstallerPath (Join-Path $srcDir 'codex-desktop-installer.exe')
+    Write-Step "Ensuring ChatGPT / Codex is installed..."
+    & (Join-Path $InstallDir 'ensure-codex-desktop.ps1') `
+        -LocalInstallerPath (Join-Path $srcDir 'chatgpt-desktop-installer.exe') `
+        -LocalInstallerManifestPath (Join-Path $srcDir 'chatgpt-desktop-installer.manifest.json') `
+        -DetectionScriptPath (Join-Path $srcDir 'codex-desktop-detect.ps1') `
+        -SignatureVerifierPath (Join-Path $srcDir 'verify-chatgpt-desktop-installer.ps1')
 }
 
 # Desktop shortcut

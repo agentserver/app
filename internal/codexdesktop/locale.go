@@ -23,10 +23,10 @@ func ConfigureLocale(globalStatePath, computerUsePath, locale string) error {
 		locale = DefaultLocale
 	}
 	if err := writeJSONStringField(globalStatePath, "localeOverride", locale); err != nil {
-		return fmt.Errorf("configure Codex Desktop locale override: %w", err)
+		return fmt.Errorf("configure %s locale override: %w", ShortDisplayName, err)
 	}
 	if err := writeJSONStringField(computerUsePath, "locale", locale); err != nil {
-		return fmt.Errorf("configure Codex Desktop computer-use locale: %w", err)
+		return fmt.Errorf("configure %s computer-use locale: %w", ShortDisplayName, err)
 	}
 	return nil
 }

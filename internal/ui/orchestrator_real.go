@@ -73,9 +73,10 @@ type Deps struct {
 	// listener. Optional in tests.
 	OpenBrowser func(string)
 
-	// Shutdown is invoked by LaunchAndShutdown after VS Code is spawned.
-	// The launcher uses this to gracefully close its HTTP server so the
-	// process can exit cleanly. Optional in tests.
+	// Shutdown is invoked by LaunchAndShutdown after the configured frontend
+	// starts and the frontend launch state is persisted. The launcher uses this
+	// to gracefully close its HTTP server so the process can exit cleanly.
+	// Optional in tests.
 	Shutdown func()
 
 	// StartCompletedConsole starts the persistent post-onboarding console.
@@ -402,14 +403,14 @@ func (r *realOrchestrator) EnsureCodexDesktop(ctx context.Context, ch chan<- Pro
 		}
 	}
 	if ch != nil {
-		ch <- ProgressEvent{Stage: "checking", Msg: "正在检查 Codex Desktop..."}
+		ch <- ProgressEvent{Stage: "checking", Msg: "正在检查 " + codexdesktop.LongDisplayName + "..."}
 	}
 	det, err := ensure(ctx)
 	if err != nil {
 		return err
 	}
 	if ch != nil {
-		ch <- ProgressEvent{Stage: "verified", Msg: "已检测到 Codex Desktop"}
+		ch <- ProgressEvent{Stage: "verified", Msg: "已检测到 " + codexdesktop.LongDisplayName}
 	}
 	return r.d.State.Update(func(s *state.State) error {
 		s.CodexDesktop.Installed = true
@@ -842,17 +843,39 @@ func (r *realOrchestrator) Finalize(ctx context.Context) error {
 			return err
 		}
 	}
-	if r.d.Shutdown != nil {
-		r.d.Shutdown()
-	}
 	return nil
 }
 func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 	s, err := r.d.State.Load()
 	if err != nil {
-		return err
+		return SafeFrontendStateReadError(err)
 	}
 	mode := state.NormalizeFrontendMode(s.FrontendMode)
+	launchErr := r.launchConfiguredFrontend(ctx, s, mode)
+	safeLaunchErr := SafeFrontendLaunchError(mode, launchErr)
+	frontendError := ""
+	if safeLaunchErr != nil {
+		frontendError = safeLaunchErr.Error()
+	}
+	if persistErr := r.d.State.Update(func(latest *state.State) error {
+		latest.FrontendError = frontendError
+		return nil
+	}); persistErr != nil {
+		if launchErr != nil {
+			return SafeFrontendLaunchError(mode, errors.Join(launchErr, persistErr))
+		}
+		return SafeFrontendStatePersistenceError(persistErr)
+	}
+	if safeLaunchErr != nil {
+		return safeLaunchErr
+	}
+	if r.d.Shutdown != nil {
+		r.d.Shutdown()
+	}
+	return nil
+}
+
+func (r *realOrchestrator) launchConfiguredFrontend(ctx context.Context, s *state.State, mode state.FrontendMode) error {
 	if mode == state.FrontendModeOpenCodeDesktop {
 		if r.d.OpenCodeConfigPath == "" {
 			return fmt.Errorf("LaunchAndShutdown: OpenCodeConfigPath required")
@@ -887,9 +910,6 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 		}}); err != nil {
 			return fmt.Errorf("launch OpenCode Desktop: %w", err)
 		}
-		if r.d.Shutdown != nil {
-			r.d.Shutdown()
-		}
 		return nil
 	}
 	if mode == state.FrontendModeCodexDesktop {
@@ -903,13 +923,10 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 		}
 		open := r.d.CodexDesktopOpen
 		if open == nil {
-			open = func(u string) error { return codexdesktop.Launch(ctx, "", nil) }
+			open = func(u string) error { return codexdesktop.Launch(ctx, "") }
 		}
 		if err := open(codexdesktop.ThreadURL("")); err != nil {
-			return fmt.Errorf("launch Codex Desktop: %w", err)
-		}
-		if r.d.Shutdown != nil {
-			r.d.Shutdown()
+			return fmt.Errorf("launch %s: %w", codexdesktop.ShortDisplayName, err)
 		}
 		return nil
 	}
@@ -931,12 +948,6 @@ func (r *realOrchestrator) LaunchAndShutdown(ctx context.Context) error {
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launch VS Code: %w", err)
-	}
-	// VS Code is now running independently. Trigger launcher shutdown
-	// (async — see launcher main.go: 500ms delay so the HTTP response
-	// to /api/launch-vscode can flush before srv.Shutdown closes things).
-	if r.d.Shutdown != nil {
-		r.d.Shutdown()
 	}
 	return nil
 }

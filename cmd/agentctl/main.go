@@ -65,12 +65,12 @@ USAGE:
 P13.4 verification subcommands (skip the OAuth steps, exercise everything else):
   agentctl test-install-vscode   download + run the VS Code Microsoft Store bootstrapper
   agentctl test-install-codex-desktop
-                                 install Codex Desktop with winget and persist state
+                                 install ChatGPT / Codex with winget and persist state
   agentctl test-download-codex   download codex.exe to %LOCALAPPDATA%\agentserver-app\bin\
 	  agentctl test-configure        write settings.json + config.toml + setx + install extensions
 	                                 (assumes VS Code already detected; uses local proxy key)
 	  agentctl test-configure-codex-desktop
-	                                 write Codex config + local proxy key for Codex Desktop
+	                                 write Codex config + local proxy key for ChatGPT / Codex
   agentctl test-open-folder <path>
                                  launch VS Code with our user-data-dir + that folder
   agentctl test-mark-complete    write onboarding.status = complete so launcher takes the

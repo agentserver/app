@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -15,11 +16,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/agentserver/agentserver-pkg/internal/appversion"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/console"
 	"github.com/agentserver/agentserver-pkg/internal/installmode"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
@@ -52,6 +55,175 @@ func TestLauncherOptionsIgnoresUnknownFlag(t *testing.T) {
 	got := parseLauncherOptions([]string{"--backgrond"})
 	if got.Background || !got.OpenPage || !got.OpenFrontend {
 		t.Fatalf("options=%+v, want default foreground behavior", got)
+	}
+}
+
+func TestStartCompletedConsoleUsesBackgroundOption(t *testing.T) {
+	var gotExe string
+	var gotArgs []string
+	err := startCompletedConsoleWithStarter(context.Background(), `C:\Program Files\agentserver\launcher.exe`, func(exe string, args ...string) error {
+		gotExe = exe
+		gotArgs = append([]string(nil), args...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotExe != `C:\Program Files\agentserver\launcher.exe` {
+		t.Fatalf("exe=%q", gotExe)
+	}
+	if len(gotArgs) != 1 || gotArgs[0] != "--background" {
+		t.Fatalf("args=%q, want [--background]", gotArgs)
+	}
+}
+
+func TestSanitizedFrontendLaunchErrorMinimalVSCodeOmitsRawDetails(t *testing.T) {
+	raw := errors.New(`launch C:\Users\alice\Code.exe --api-key top-secret HKEY_CLASSES_ROOT\vscode`)
+	safeErr := ui.SafeFrontendLaunchError(state.FrontendModeMinimalVSCode, raw)
+	if safeErr == nil {
+		t.Fatal("SafeFrontendLaunchError returned nil")
+	}
+	got := safeErr.Error()
+	want := "极简界面启动失败。请确认 VS Code 已安装且可正常打开，然后重试。"
+	if got != want {
+		t.Fatalf("sanitized error=%q, want %q", got, want)
+	}
+	for _, forbidden := range []string{"alice", "top-secret", "HKEY_CLASSES_ROOT"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitized error leaked %q: %q", forbidden, got)
+		}
+	}
+}
+
+func TestLaunchCompletedFrontendAndRecordReturnsAndPersistsSafeErrorsForAllModes(t *testing.T) {
+	tests := []struct {
+		name string
+		mode state.FrontendMode
+		wrap func(error) error
+		want string
+	}{
+		{
+			name: "ChatGPT Codex",
+			mode: state.FrontendModeCodexDesktop,
+			wrap: func(cause error) error {
+				return fmt.Errorf("%w: %w", codexdesktop.ErrLaunchFailed, cause)
+			},
+			want: "ChatGPT / Codex 桌面应用本身无法启动。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。",
+		},
+		{
+			name: "OpenCode Desktop",
+			mode: state.FrontendModeOpenCodeDesktop,
+			wrap: func(cause error) error { return cause },
+			want: "OpenCode Desktop 启动失败。请确认应用已安装且可正常打开，然后重试。",
+		},
+		{
+			name: "minimal VS Code",
+			mode: state.FrontendModeMinimalVSCode,
+			wrap: func(cause error) error { return cause },
+			want: "极简界面启动失败。请确认 VS Code 已安装且可正常打开，然后重试。",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			store := state.NewStore(filepath.Join(dir, "state.json"))
+			if err := store.Update(func(s *state.State) error {
+				s.FrontendMode = tt.mode
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			cause := errors.New(`open C:\Users\alice\secret.txt token=top-secret HKEY_CLASSES_ROOT\codex`)
+			launchErr := tt.wrap(cause)
+
+			err := launchCompletedFrontendAndRecord(context.Background(), store, func(context.Context, *state.State) error {
+				return launchErr
+			})
+
+			assertSafeFrontendError(t, err, tt.want)
+			if !errors.Is(err, cause) {
+				t.Fatalf("errors.Is(err, cause)=false; err=%v", err)
+			}
+			if tt.mode == state.FrontendModeCodexDesktop && !errors.Is(err, codexdesktop.ErrLaunchFailed) {
+				t.Fatalf("errors.Is(err, ErrLaunchFailed)=false; err=%v", err)
+			}
+			persisted, loadErr := store.Load()
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			assertSafeFrontendMessage(t, persisted.FrontendError, tt.want)
+		})
+	}
+}
+
+func TestLaunchCompletedFrontendAndRecordSanitizesPersistenceFailureAfterLaunch(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "CUsers-alice-secret.txt-token=top-secret-HKEY_CLASSES_ROOT-codex")
+	statePath := filepath.Join(stateDir, "state.json")
+	store := state.NewStore(statePath)
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeMinimalVSCode
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	launched := false
+
+	err := launchCompletedFrontendAndRecord(context.Background(), store, func(context.Context, *state.State) error {
+		launched = true
+		if err := os.RemoveAll(stateDir); err != nil {
+			return err
+		}
+		if err := os.WriteFile(stateDir, []byte("block state directory"), 0o600); err != nil {
+			return err
+		}
+		return nil
+	})
+
+	if !launched {
+		t.Fatal("frontend launch callback did not run")
+	}
+	assertSafeFrontendError(t, err, "前端已启动，但无法保存启动状态。请重试。")
+}
+
+func TestLaunchCompletedFrontendAndRecordSanitizesStateReadFailure(t *testing.T) {
+	dir := t.TempDir()
+	blockedParent := filepath.Join(dir, "alice-secret.txt-token=top-secret-HKEY_CLASSES_ROOT-codex")
+	if err := os.WriteFile(blockedParent, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(filepath.Join(blockedParent, "state.json"))
+	launched := false
+
+	err := launchCompletedFrontendAndRecord(context.Background(), store, func(context.Context, *state.State) error {
+		launched = true
+		return nil
+	})
+
+	if launched {
+		t.Fatal("frontend launch ran after state read failure")
+	}
+	assertSafeFrontendError(t, err, "无法读取前端启动状态，请重试。")
+}
+
+func assertSafeFrontendError(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected frontend error")
+	}
+	assertSafeFrontendMessage(t, err.Error(), want)
+}
+
+func assertSafeFrontendMessage(t *testing.T, got, want string) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("frontend error=%q, want %q", got, want)
+	}
+	for _, forbidden := range []string{`C:\Users\alice\secret.txt`, "alice", "token=top-secret", "HKEY_CLASSES_ROOT\\codex"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("frontend error leaked %q: %q", forbidden, got)
+		}
 	}
 }
 
@@ -254,6 +426,218 @@ func TestServeCompletedConsoleRefreshesLoomDriverFromChineseMachineName(t *testi
 		t.Fatalf("driver.yaml missing Chinese description:\n%s", text)
 	}
 }
+
+func TestServeCompletedConsoleAutomaticFrontendFailurePersistsAndSuccessClears(t *testing.T) {
+	in, store := completedConsoleLaunchTestInput(t, state.FrontendModeCodexDesktop)
+	in.Options.OpenFrontend = true
+	var calls atomic.Int32
+	callCh := make(chan int32, 3)
+	in.LaunchFrontend = func(context.Context, *state.State) error {
+		call := calls.Add(1)
+		callCh <- call
+		if call == 1 {
+			return fmt.Errorf("%w: ChatGPT / Codex launch failed; Repair Reset Reinstall; C:\\Users\\alice\\secret.txt; HKEY_CLASSES_ROOT\\codex token=top-secret", codexdesktop.ErrLaunchFailed)
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveCompletedConsole(ctx, in) }()
+	info := waitConsolePortForTest(t, in.Paths.ConsolePortFile, errCh)
+	defer stopConsoleForTest(t, info, errCh)
+
+	select {
+	case call := <-callCh:
+		if call != 1 {
+			t.Fatalf("first automatic launch call=%d", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("automatic frontend launch did not run")
+	}
+	want := "ChatGPT / Codex 桌面应用本身无法启动。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
+	if got := waitFrontendErrorForTest(t, store, func(value string) bool { return value != "" }); got != want {
+		t.Fatalf("FrontendError=%q, want %q", got, want)
+	}
+	select {
+	case call := <-callCh:
+		t.Fatalf("automatic frontend launch ran more than once; call=%d", call)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", info.Port)
+	if err := postConsole(context.Background(), base+"/api/console/open-frontend", info.Token); err != nil {
+		t.Fatalf("later successful frontend launch: %v", err)
+	}
+	if got := waitFrontendErrorForTest(t, store, func(value string) bool { return value == "" }); got != "" {
+		t.Fatalf("FrontendError=%q, want cleared after successful launch", got)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("launch calls=%d, want one automatic failure and one manual success", calls.Load())
+	}
+}
+
+func TestServeCompletedConsoleTrayFrontendFailurePersistsAndSuccessClears(t *testing.T) {
+	in, store := completedConsoleLaunchTestInput(t, state.FrontendModeOpenCodeDesktop)
+	actionsCh := make(chan tray.Actions, 1)
+	in.TrayApp = &capturingTrayApp{actions: actionsCh}
+	var calls atomic.Int32
+	in.LaunchFrontend = func(context.Context, *state.State) error {
+		if calls.Add(1) == 1 {
+			return errors.New(`open C:\Users\alice\AppData\OpenCode.exe --api-key top-secret HKEY_CLASSES_ROOT\opencode`)
+		}
+		return nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveCompletedConsole(ctx, in) }()
+	info := waitConsolePortForTest(t, in.Paths.ConsolePortFile, errCh)
+	defer stopConsoleForTest(t, info, errCh)
+
+	var actions tray.Actions
+	select {
+	case actions = <-actionsCh:
+	case <-time.After(time.Second):
+		t.Fatal("tray actions were not registered")
+	}
+	actions.OpenFrontend()
+	want := "OpenCode Desktop 启动失败。请确认应用已安装且可正常打开，然后重试。"
+	if got := waitFrontendErrorForTest(t, store, func(value string) bool { return value != "" }); got != want {
+		t.Fatalf("FrontendError=%q, want %q", got, want)
+	}
+	actions.OpenFrontend()
+	if got := waitFrontendErrorForTest(t, store, func(value string) bool { return value == "" }); got != "" {
+		t.Fatalf("FrontendError=%q, want cleared after tray launch succeeds", got)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("tray launch calls=%d, want 2", calls.Load())
+	}
+}
+
+func TestServeCompletedConsoleOpenFrontendHTTPReturnsOnlySanitizedError(t *testing.T) {
+	in, store := completedConsoleLaunchTestInput(t, state.FrontendModeCodexDesktop)
+	cause := errors.New(`open C:\Users\alice\secret.txt token=top-secret HKEY_CLASSES_ROOT\codex`)
+	in.LaunchFrontend = func(context.Context, *state.State) error {
+		return fmt.Errorf("%w: %w", codexdesktop.ErrLaunchFailed, cause)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- serveCompletedConsole(ctx, in) }()
+	info := waitConsolePortForTest(t, in.Paths.ConsolePortFile, errCh)
+	defer stopConsoleForTest(t, info, errCh)
+
+	base := fmt.Sprintf("http://127.0.0.1:%d", info.Port)
+	req, err := http.NewRequest(http.MethodPost, base+"/api/console/open-frontend", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(ui.ConsoleInstanceTokenHeader, info.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	want := "ChatGPT / Codex 桌面应用本身无法启动。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
+	if body["error"] != want {
+		t.Fatalf("HTTP error=%q, want sanitized diagnosis %q", body["error"], want)
+	}
+	for _, forbidden := range []string{`C:\Users\alice\secret.txt`, "token=top-secret", "HKEY_CLASSES_ROOT\\codex"} {
+		if strings.Contains(body["error"], forbidden) {
+			t.Fatalf("HTTP error leaked %q: %q", forbidden, body["error"])
+		}
+	}
+	persisted, loadErr := store.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	assertSafeFrontendMessage(t, persisted.FrontendError, want)
+}
+
+func completedConsoleLaunchTestInput(t *testing.T, mode state.FrontendMode) (completedServeInput, *state.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	p := paths.Paths{
+		UserHome:                 dir,
+		InstallRoot:              filepath.Join(dir, ".agentserver-app"),
+		StateFile:                filepath.Join(dir, ".agentserver-app", "state.json"),
+		SecretsFile:              filepath.Join(dir, ".agentserver-app", "secrets.json"),
+		MachineFile:              filepath.Join(dir, ".agentserver-app", "machine.json"),
+		SlavesFile:               filepath.Join(dir, ".agentserver-app", "slaves.json"),
+		SlavesDir:                filepath.Join(dir, ".agentserver-app", "slaves"),
+		ConsolePortFile:          filepath.Join(dir, ".agentserver-app", "console-port.json"),
+		PendingSlaveRestartsFile: filepath.Join(dir, ".agentserver-app", "pending-slave-restarts.json"),
+		ConsoleNotificationsFile: filepath.Join(dir, ".agentserver-app", "console-notifications.json"),
+		UpdateStateFile:          filepath.Join(dir, ".agentserver-app", "update-state.json"),
+		UpdatesCacheDir:          filepath.Join(dir, ".agentserver-app", "updates"),
+		CodexExePath:             filepath.Join(dir, "bin", "codex.exe"),
+		CodexConfigFile:          filepath.Join(dir, ".codex", "config.toml"),
+		OpenCodeConfigFile:       filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+	}
+	store := state.NewStore(p.StateFile)
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.FrontendMode = mode
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return completedServeInput{
+		Paths:       p,
+		State:       store,
+		Secrets:     secrets.New(p.SecretsFile),
+		InstallDir:  filepath.Join(dir, "install"),
+		OpenBrowser: func(string) error { return nil },
+	}, store
+}
+
+func waitFrontendErrorForTest(t *testing.T, store *state.Store, ready func(string) bool) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		st, err := store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		last = st.FrontendError
+		if ready(last) {
+			return last
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for frontend error state; last=%q", last)
+	return ""
+}
+
+type capturingTrayApp struct {
+	actions chan<- tray.Actions
+}
+
+func (a *capturingTrayApp) Run(ctx context.Context, actions tray.Actions) error {
+	select {
+	case a.actions <- actions:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (*capturingTrayApp) Update(tray.State) {}
+
+func (*capturingTrayApp) Notify(string, string) error { return nil }
 
 func TestNewCompletedUpdaterUsesDefaultManifestAndPaths(t *testing.T) {
 	dir := t.TempDir()
@@ -834,7 +1218,7 @@ func TestTrayStateFromConsoleDefaultsWhenQuotaUnavailable(t *testing.T) {
 	if got.Tooltip != wantTooltip {
 		t.Fatalf("Tooltip=%q, want %q", got.Tooltip, wantTooltip)
 	}
-	if got.OpenFrontendLabel != "启动 Codex Desktop" {
+	if got.OpenFrontendLabel != "启动 ChatGPT / Codex" {
 		t.Fatalf("OpenFrontendLabel=%q", got.OpenFrontendLabel)
 	}
 }
@@ -1217,18 +1601,18 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 		CodexDesktopGlobalStateFile:       filepath.Join(dir, ".codex", ".codex-global-state.json"),
 		CodexDesktopComputerUseConfigFile: filepath.Join(dir, ".codex", "computer-use", "config.json"),
 	}
-	var opened string
-	err := launchCompletedCodexDesktop(context.Background(), nil, p, nil, "", "", func(url string) error {
+	var openedFolder string
+	err := launchCompletedCodexDesktop(context.Background(), nil, p, nil, "", "", func(_ context.Context, folder string) error {
 		assertJSONField(t, p.CodexDesktopGlobalStateFile, "localeOverride", "zh-CN")
 		assertJSONField(t, p.CodexDesktopComputerUseConfigFile, "locale", "zh-CN")
-		opened = url
+		openedFolder = folder
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("launchCompletedCodexDesktop: %v", err)
 	}
-	if opened != "codex://threads/new" {
-		t.Fatalf("opened=%q", opened)
+	if openedFolder != "" {
+		t.Fatalf("opened folder=%q, want empty", openedFolder)
 	}
 	b, err := os.ReadFile(p.CodexConfigFile)
 	if err != nil {
@@ -1242,6 +1626,27 @@ func TestLaunchCompletedCodexDesktopWritesConfigAndOpensDeepLink(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `experimental_bearer_token = "`+codex.LegacyLocalProxyAPIKeyValue+`"`) {
 		t.Fatalf("config missing local proxy bearer token:\n%s", b)
+	}
+}
+
+func TestLaunchCompletedCodexDesktopReturnsVisibleLaunchFailure(t *testing.T) {
+	dir := t.TempDir()
+	p := paths.Paths{
+		CodexConfigFile:                   filepath.Join(dir, ".codex", "config.toml"),
+		CodexDesktopGlobalStateFile:       filepath.Join(dir, ".codex", ".codex-global-state.json"),
+		CodexDesktopComputerUseConfigFile: filepath.Join(dir, ".codex", "computer-use", "config.json"),
+	}
+	shellErr := errors.New("Shell helper failed")
+	err := launchCompletedCodexDesktop(context.Background(), nil, p, nil, "", "", func(context.Context, string) error {
+		return fmt.Errorf("%w: ChatGPT / Codex launch failed; Repair Reset Reinstall: %w", codexdesktop.ErrLaunchFailed, shellErr)
+	})
+	if !errors.Is(err, shellErr) || !errors.Is(err, codexdesktop.ErrLaunchFailed) {
+		t.Fatalf("err=%v, want Shell cause and ErrLaunchFailed", err)
+	}
+	for _, want := range []string{"ChatGPT / Codex", "Repair", "Reset", "Reinstall"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("err=%v, missing %q", err, want)
+		}
 	}
 }
 
@@ -1340,7 +1745,7 @@ func TestLaunchCompletedFrontendCodexDesktopRegistersLoomDriverMCP(t *testing.T)
 	st.Agentserver.WorkspaceID = "ws-1"
 	st.Agentserver.ShortID = "abc123"
 
-	if err := launchCompletedFrontend(context.Background(), st, p, sec, installDir, "", "", func(string) error {
+	if err := launchCompletedFrontend(context.Background(), st, p, sec, installDir, "", "", func(context.Context, string) error {
 		return nil
 	}, nil); err != nil {
 		t.Fatalf("launchCompletedFrontend: %v", err)
