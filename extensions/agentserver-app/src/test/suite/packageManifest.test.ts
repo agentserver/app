@@ -46,8 +46,12 @@ suite('package manifest', () => {
       type: 'git',
       url: 'https://github.com/agentserver/app.git',
     });
+    assert.strictEqual(manifest.scripts.package, 'node scripts/package-vsix.cjs');
+
+    const packageScriptPath = path.resolve(__dirname, '../../../scripts/package-vsix.cjs');
+    const packageScript = fs.readFileSync(packageScriptPath, 'utf8');
     assert.ok(
-      manifest.scripts.package.includes('--skip-license'),
+      packageScript.includes("'--skip-license'"),
       'vsce package command should explicitly acknowledge the extension package has no standalone license file',
     );
   });
