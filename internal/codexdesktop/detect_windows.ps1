@@ -164,6 +164,18 @@ function Get-CodexProtocolApplications {
     }
 }
 
+function Get-CodexProtocolCapablePackages {
+    param([Parameter(Mandatory = $true)][object[]]$Packages)
+
+    $capable = @()
+    foreach ($package in $Packages) {
+        if (@(Get-CodexProtocolApplications -Package $package).Count -gt 0) {
+            $capable += $package
+        }
+    }
+    return $capable
+}
+
 function Find-CodexProtocolPackageByAppUserModelID {
     param(
         [Parameter(Mandatory = $true)][object[]]$Packages,
@@ -206,10 +218,11 @@ function Get-DiagnosticChatGPTCodexPackage {
 
 function Get-ChatGPTCodexDetection {
     $packages = @(Get-InstalledChatGPTCodexPackages)
+    $capablePackages = @(Get-CodexProtocolCapablePackages -Packages $packages)
     $effectiveProgId = Get-EffectiveCodexProgId
     $schemeRegistered = -not [string]::IsNullOrWhiteSpace($effectiveProgId)
 
-    if ($packages.Count -eq 0) {
+    if ($capablePackages.Count -eq 0) {
         return New-ChatGPTCodexDetection -Status 'not_installed' `
             -SchemeRegistered $schemeRegistered
     }
@@ -224,7 +237,7 @@ function Get-ChatGPTCodexDetection {
             $effectiveAppUserModelID = ''
         }
         if (-not [string]::IsNullOrWhiteSpace($effectiveAppUserModelID)) {
-            $mapping = Find-CodexProtocolPackageByAppUserModelID -Packages $packages `
+            $mapping = Find-CodexProtocolPackageByAppUserModelID -Packages $capablePackages `
                 -EffectiveProgId $effectiveProgId `
                 -EffectiveAppUserModelID $effectiveAppUserModelID
         }
@@ -240,7 +253,7 @@ function Get-ChatGPTCodexDetection {
     }
 
     # Preference order is diagnostic only; it never decides which package is ready.
-    $diagnosticPackage = Get-DiagnosticChatGPTCodexPackage -Packages $packages
+    $diagnosticPackage = Get-DiagnosticChatGPTCodexPackage -Packages $capablePackages
     $diagnosticVersion = [string]$diagnosticPackage.Version
     $diagnosticFamily = [string]$diagnosticPackage.PackageFamilyName
     $diagnosticLocation = [string]$diagnosticPackage.InstallLocation

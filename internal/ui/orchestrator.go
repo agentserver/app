@@ -37,7 +37,7 @@ func SafeFrontendLaunchError(mode state.FrontendMode, cause error) error {
 	default:
 		switch {
 		case errors.Is(cause, codexdesktop.ErrNotFound):
-			message = "未检测到 " + codexdesktop.LongDisplayName + "。请从 Microsoft Store 安装产品 ID 9NT1R1C2HH7J 后重试。"
+			message = "未检测到 " + codexdesktop.LongDisplayName + "。请从 Microsoft Store 安装产品 ID " + codexdesktop.CodexStoreProductID + " 后重试。"
 		case errors.Is(cause, codexdesktop.ErrSchemeMissing):
 			message = "ChatGPT / Codex 的 codex:// 协议缺失。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
 		case errors.Is(cause, codexdesktop.ErrSchemeTargetInvalid):
@@ -72,7 +72,7 @@ func SafeFrontendInstallError(mode state.FrontendMode, cause error) error {
 		case errors.Is(cause, codexdesktop.ErrSchemeTargetInvalid):
 			message = "ChatGPT / Codex 的 codex:// 协议已注册，但处理程序无效或不受信任。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
 		case errors.Is(cause, codexdesktop.ErrNotFound):
-			message = "未能安装或检测到 " + codexdesktop.LongDisplayName + "。请从 Microsoft Store 安装产品 ID " + codexdesktop.ChatGPTStoreProductID + " 后重试。"
+			message = "未能安装或检测到 " + codexdesktop.LongDisplayName + "。请从 Microsoft Store 安装产品 ID " + codexdesktop.CodexStoreProductID + " 后重试。"
 		default:
 			message = codexdesktop.LongDisplayName + "安装或检查失败。请检查网络、Microsoft Store 和 Windows App Installer 后重试。"
 		}

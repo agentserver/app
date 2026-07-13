@@ -13,9 +13,9 @@ func readyInstallDetection(version string) Detected {
 		Installed:         true,
 		Version:           version,
 		Status:            StatusReady,
-		PackageFamilyName: ChatGPTPackageFamily,
-		InstallLocation:   `C:\Program Files\WindowsApps\ChatGPT`,
-		AppUserModelID:    ChatGPTPackageFamily + "!ChatGPT",
+		PackageFamilyName: CodexPackageFamily,
+		InstallLocation:   `C:\Program Files\WindowsApps\Codex`,
+		AppUserModelID:    CodexPackageFamily + "!Codex",
 		SchemeRegistered:  true,
 		SchemeTargetValid: true,
 	}
@@ -50,8 +50,8 @@ func TestEnsureInstalledRejectsInconsistentReadyDetectorResult(t *testing.T) {
 			return Detected{
 				Installed:         true,
 				Status:            StatusReady,
-				PackageFamilyName: ChatGPTPackageFamily,
-				InstallLocation:   `C:\Program Files\WindowsApps\ChatGPT`,
+				PackageFamilyName: CodexPackageFamily,
+				InstallLocation:   `C:\Program Files\WindowsApps\Codex`,
 				SchemeRegistered:  true,
 				SchemeTargetValid: true,
 			}, nil
@@ -80,8 +80,8 @@ func TestEnsureInstalledRejectsInconsistentPostInstallReadyResult(t *testing.T) 
 			return Detected{
 				Installed:         true,
 				Status:            StatusReady,
-				PackageFamilyName: ChatGPTPackageFamily,
-				InstallLocation:   `C:\Program Files\WindowsApps\ChatGPT`,
+				PackageFamilyName: CodexPackageFamily,
+				InstallLocation:   `C:\Program Files\WindowsApps\Codex`,
 				SchemeRegistered:  true,
 				SchemeTargetValid: true,
 			}, nil
@@ -117,7 +117,7 @@ func TestEnsureInstalledRunsWingetThenVerifies(t *testing.T) {
 	if !det.Installed || det.Version != "2.0.0" {
 		t.Fatalf("det=%+v", det)
 	}
-	if strings.Join(gotArgs, " ") != "install --id=9NT1R1C2HH7J --source=msstore --exact --accept-package-agreements --accept-source-agreements --disable-interactivity" {
+	if strings.Join(gotArgs, " ") != "install --id=9PLM9XGG6VKS --source=msstore --exact --accept-package-agreements --accept-source-agreements --disable-interactivity" {
 		t.Fatalf("args=%v", gotArgs)
 	}
 }

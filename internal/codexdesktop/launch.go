@@ -131,7 +131,7 @@ func launchPreflightError(det Detected, err error) error {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return newSafeError(
-			fmt.Sprintf("未检测到%s；请从 Microsoft Store 安装，或运行 winget install --id=%s --source=msstore", LongDisplayName, ChatGPTStoreProductID),
+			fmt.Sprintf("未检测到%s；请从 Microsoft Store 安装，或运行 winget install --id=%s --source=msstore", LongDisplayName, CodexStoreProductID),
 			err,
 		)
 	case errors.Is(err, ErrSchemeMissing), errors.Is(err, ErrSchemeTargetInvalid):

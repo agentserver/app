@@ -6,11 +6,16 @@ import (
 	"testing"
 )
 
+const retiredCodexStoreProductID = "9NT1" + "R1C2HH7"
+
 func TestWingetInstallArgs(t *testing.T) {
+	if CodexStoreProductID != "9PLM9XGG6VKS" {
+		t.Fatalf("CodexStoreProductID=%q", CodexStoreProductID)
+	}
 	got := WingetInstallArgs()
 	want := []string{
 		"install",
-		"--id=" + ChatGPTStoreProductID,
+		"--id=9PLM9XGG6VKS",
 		"--source=msstore",
 		"--exact",
 		"--accept-package-agreements",
@@ -25,6 +30,9 @@ func TestWingetInstallArgs(t *testing.T) {
 			t.Fatalf("args[%d]=%q want %q; all=%v", i, got[i], want[i], got)
 		}
 	}
+	if strings.Contains(strings.Join(got, " "), retiredCodexStoreProductID) {
+		t.Fatalf("winget args retain retired Store ID: %v", got)
+	}
 }
 
 func TestClassifyWingetError(t *testing.T) {
@@ -37,7 +45,7 @@ func TestClassifyWingetError(t *testing.T) {
 		{name: "missing", err: ErrWingetNotFound, want: "Windows App Installer"},
 		{name: "source", err: errors.New("exit 1"), out: "msstore source was not found", want: "microsoft store source"},
 		{name: "network", err: errors.New("exit 1"), out: "network failure", want: "网络"},
-		{name: "generic", err: errors.New("exit 7"), out: "plain failure", want: ChatGPTStoreProductID},
+		{name: "generic", err: errors.New("exit 7"), out: "plain failure", want: CodexStoreProductID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := ClassifyWingetError(tc.err, tc.out)
@@ -60,7 +68,7 @@ func TestClassifyWingetErrorDoesNotTreatAnyMsstoreOutputAsSourceFailure(t *testi
 	if strings.Contains(got.Error(), "microsoft store source") {
 		t.Fatalf("err=%v, want generic winget failure", got)
 	}
-	if !strings.Contains(got.Error(), ChatGPTStoreProductID) {
+	if !strings.Contains(got.Error(), CodexStoreProductID) {
 		t.Fatalf("err=%v, want generic winget failure", got)
 	}
 }
@@ -70,7 +78,7 @@ func TestClassifyWingetErrorDoesNotTreatPackageNotFoundInSourceAsSourceFailure(t
 	if strings.Contains(got.Error(), "microsoft store source") {
 		t.Fatalf("err=%v, want generic winget failure", got)
 	}
-	if !strings.Contains(got.Error(), ChatGPTStoreProductID) {
+	if !strings.Contains(got.Error(), CodexStoreProductID) {
 		t.Fatalf("err=%v, want generic winget failure", got)
 	}
 }

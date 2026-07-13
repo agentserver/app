@@ -42,9 +42,9 @@ func readyLaunchDetection() Detected {
 	return Detected{
 		Installed:         true,
 		Status:            StatusReady,
-		PackageFamilyName: ChatGPTPackageFamily,
-		InstallLocation:   `C:\Program Files\WindowsApps\ChatGPT`,
-		AppUserModelID:    ChatGPTPackageFamily + "!ChatGPT",
+		PackageFamilyName: CodexPackageFamily,
+		InstallLocation:   `C:\Program Files\WindowsApps\Codex`,
+		AppUserModelID:    CodexPackageFamily + "!Codex",
 		SchemeRegistered:  true,
 		SchemeTargetValid: true,
 	}
@@ -126,6 +126,11 @@ func TestLaunchWithOptionsRejectsUnavailableStatesBeforeOpening(t *testing.T) {
 			}
 			if activated {
 				t.Fatal("activator called after failed preflight")
+			}
+			if errors.Is(tc.err, ErrNotFound) {
+				if !strings.Contains(err.Error(), CodexStoreProductID) || strings.Contains(err.Error(), retiredCodexStoreProductID) {
+					t.Fatalf("not-found preflight error=%q, want corrected Store ID only", err)
+				}
 			}
 		})
 	}
@@ -311,7 +316,7 @@ func TestLaunchWithOptionsHonorsCanceledContext(t *testing.T) {
 
 func TestLaunchWithOptionsRejectsInvalidSuccessfulDetectionBeforeSecurityActions(t *testing.T) {
 	det := readyLaunchDetection()
-	det.AppUserModelID = LegacyCodexPackageFamily + "!Codex"
+	det.AppUserModelID = ChatGPTClassicPackageFamily + "!ChatGPT"
 	actionCalled := false
 	err := launchWithOptions(context.Background(), "", launchOptions{
 		detect: func() (Detected, error) { return det, nil },
@@ -483,7 +488,7 @@ func TestParseProcessSnapshotFiltersPackageUserAndSession(t *testing.T) {
         {"pid":17,"package_family_name":"OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0","install_location":"C:\\Program Files\\WindowsApps\\ChatGPT","owner_sid":"s-1-5-21-current","session_id":3}
       ]
     }`
-	got, err := parseProcessSnapshot([]byte(payload), ChatGPTPackageFamily, `C:\Program Files\WindowsApps\ChatGPT`)
+	got, err := parseProcessSnapshot([]byte(payload), ChatGPTClassicPackageFamily, `C:\Program Files\WindowsApps\ChatGPT`)
 	if err != nil {
 		t.Fatalf("parseProcessSnapshot: %v", err)
 	}
@@ -497,7 +502,7 @@ func TestParseProcessSnapshotFiltersPackageUserAndSession(t *testing.T) {
 
 func TestParseProcessSnapshotRejectsEmptyExpectedInstallLocation(t *testing.T) {
 	payload := `{"current_user_sid":"S-1-5-21-current","current_session_id":3,"processes":[]}`
-	if _, err := parseProcessSnapshot([]byte(payload), ChatGPTPackageFamily, ""); err == nil {
+	if _, err := parseProcessSnapshot([]byte(payload), ChatGPTClassicPackageFamily, ""); err == nil {
 		t.Fatal("expected empty install location to fail closed")
 	}
 }
@@ -515,7 +520,7 @@ func TestParseProcessSnapshotRequiresCanonicalFinalInstallLocationMatch(t *testi
         {"pid":25,"package_family_name":"OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0","install_location":"\\\\?\\C:\\Program Files\\WindowsApps\\ChatGPT","owner_sid":"S-1-5-21-current","session_id":4}
       ]
     }`
-	got, err := parseProcessSnapshot([]byte(payload), ChatGPTPackageFamily, `C:\Program Files\WindowsApps\ChatGPT`)
+	got, err := parseProcessSnapshot([]byte(payload), ChatGPTClassicPackageFamily, `C:\Program Files\WindowsApps\ChatGPT`)
 	if err != nil {
 		t.Fatalf("parseProcessSnapshot: %v", err)
 	}
@@ -534,8 +539,8 @@ func TestProcessSnapshotPowerShellUsesHandleFinalPathsAndFailsClosed(t *testing.
 	}
 	source := string(body)
 	for _, want := range []string{
-		ChatGPTPackageFamily,
-		LegacyCodexPackageFamily,
+		ChatGPTClassicPackageFamily,
+		CodexPackageFamily,
 		"Add-Type -TypeDefinition @'",
 		"CreateFileW",
 		"GetFinalPathNameByHandleW",

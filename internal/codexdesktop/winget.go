@@ -13,7 +13,7 @@ var ErrUnsupportedPlatform = errors.New("codex desktop winget install unsupporte
 func WingetInstallArgs() []string {
 	return []string{
 		"install",
-		"--id=" + ChatGPTStoreProductID,
+		"--id=" + CodexStoreProductID,
 		"--source=msstore",
 		"--exact",
 		"--accept-package-agreements",
@@ -47,7 +47,7 @@ func ClassifyWingetError(err error, output string) error {
 	if strings.Contains(lower, "network") || strings.Contains(lower, "internet") || strings.Contains(lower, "connection") {
 		return fmt.Errorf("网络不可用，无法通过 winget 安装%s。winget 输出: %s", LongDisplayName, trimmed)
 	}
-	return fmt.Errorf("winget install --id=%s --source=msstore 失败: %w。输出: %s", ChatGPTStoreProductID, err, trimmed)
+	return fmt.Errorf("winget install --id=%s --source=msstore 失败: %w。输出: %s", CodexStoreProductID, err, trimmed)
 }
 
 func isWingetSourceUnavailable(lower string) bool {

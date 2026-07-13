@@ -18,11 +18,11 @@ const (
 )
 
 const (
-	ChatGPTStoreProductID    = "9NT1R1C2HH7J"
-	ChatGPTPackageFamily     = "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0"
-	LegacyCodexPackageFamily = "OpenAI.Codex_2p2nqsd0c76g0"
-	ShortDisplayName         = "ChatGPT / Codex"
-	LongDisplayName          = "ChatGPT 桌面应用（含 Codex）"
+	CodexStoreProductID         = "9PLM9XGG6VKS"
+	CodexPackageFamily          = "OpenAI.Codex_2p2nqsd0c76g0"
+	ChatGPTClassicPackageFamily = "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0"
+	ShortDisplayName            = "ChatGPT / Codex"
+	LongDisplayName             = "ChatGPT 桌面应用（含 Codex）"
 )
 
 type Detected struct {
@@ -77,7 +77,7 @@ func detectedFromPowerShellOutput(out []byte, err error) (Detected, error) {
 }
 
 func validateDetected(det Detected) error {
-	trustedPackage := det.PackageFamilyName == ChatGPTPackageFamily || det.PackageFamilyName == LegacyCodexPackageFamily
+	trustedPackage := det.PackageFamilyName == CodexPackageFamily || det.PackageFamilyName == ChatGPTClassicPackageFamily
 	hasPackageMetadata := strings.TrimSpace(det.PackageFamilyName) != "" || strings.TrimSpace(det.InstallLocation) != "" || det.AppUserModelID != ""
 
 	switch det.Status {

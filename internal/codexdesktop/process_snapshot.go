@@ -22,7 +22,7 @@ type processSnapshotEntry struct {
 }
 
 func parseProcessSnapshot(out []byte, expectedPackageFamily, expectedInstallLocation string) (ProcessSnapshot, error) {
-	if expectedPackageFamily != ChatGPTPackageFamily && expectedPackageFamily != LegacyCodexPackageFamily {
+	if expectedPackageFamily != ChatGPTClassicPackageFamily && expectedPackageFamily != CodexPackageFamily {
 		return nil, fmt.Errorf("untrusted expected package family %q", expectedPackageFamily)
 	}
 	expectedLocation, err := normalizeWindowsInstallLocation(expectedInstallLocation)

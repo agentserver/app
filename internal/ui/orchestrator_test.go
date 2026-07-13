@@ -12,6 +12,8 @@ import (
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
 
+const retiredCodexStoreProductID = "9NT1" + "R1C2HH7"
+
 // TestOrchestratorImplementsInterface ensures the production type satisfies
 // the interface; if a method signature drifts later, this test will fail.
 func TestOrchestratorImplementsInterface(t *testing.T) {
@@ -35,8 +37,8 @@ func TestSafeFrontendLaunchErrorCodexDiagnosticsAreSpecificAndSafe(t *testing.T)
 		{
 			name:     "not found",
 			sentinel: codexdesktop.ErrNotFound,
-			want:     fmt.Sprintf("未检测到 %s。请从 Microsoft Store 安装产品 ID 9NT1R1C2HH7J 后重试。", codexdesktop.LongDisplayName),
-			required: []string{codexdesktop.LongDisplayName, "Microsoft Store", "9NT1R1C2HH7J"},
+			want:     fmt.Sprintf("未检测到 %s。请从 Microsoft Store 安装产品 ID %s 后重试。", codexdesktop.LongDisplayName, codexdesktop.CodexStoreProductID),
+			required: []string{codexdesktop.LongDisplayName, "Microsoft Store", codexdesktop.CodexStoreProductID},
 		},
 		{
 			name:     "scheme missing",
@@ -93,7 +95,7 @@ func TestSafeFrontendLaunchErrorCodexDiagnosticsAreSpecificAndSafe(t *testing.T)
 					t.Fatalf("safe error %q does not contain %q", safeErr, required)
 				}
 			}
-			for _, forbidden := range []string{"alice", "secret.txt", "token=top-secret", `HKEY_CLASSES_ROOT\codex`} {
+			for _, forbidden := range []string{"alice", "secret.txt", "token=top-secret", `HKEY_CLASSES_ROOT\codex`, retiredCodexStoreProductID} {
 				if strings.Contains(safeErr.Error(), forbidden) {
 					t.Fatalf("safe error leaked %q: %q", forbidden, safeErr)
 				}
@@ -131,7 +133,7 @@ func TestSafeFrontendInstallErrorIsModeSpecificAndSafe(t *testing.T) {
 			name:     "codex not found after install",
 			mode:     state.FrontendModeCodexDesktop,
 			sentinel: codexdesktop.ErrNotFound,
-			want:     fmt.Sprintf("未能安装或检测到 %s。请从 Microsoft Store 安装产品 ID %s 后重试。", codexdesktop.LongDisplayName, codexdesktop.ChatGPTStoreProductID),
+			want:     fmt.Sprintf("未能安装或检测到 %s。请从 Microsoft Store 安装产品 ID %s 后重试。", codexdesktop.LongDisplayName, codexdesktop.CodexStoreProductID),
 		},
 		{
 			name: "codex operational failure",
@@ -174,7 +176,7 @@ func TestSafeFrontendInstallErrorIsModeSpecificAndSafe(t *testing.T) {
 			if got := utf8.RuneCountInString(safeErr.Error()); got > 256 {
 				t.Fatalf("safe install error has %d runes, want at most 256", got)
 			}
-			for _, forbidden := range []string{"alice", "secret.txt", "token=top-secret", "PowerShell output", "winget output", `HKEY_CLASSES_ROOT\codex`} {
+			for _, forbidden := range []string{"alice", "secret.txt", "token=top-secret", "PowerShell output", "winget output", `HKEY_CLASSES_ROOT\codex`, retiredCodexStoreProductID} {
 				if strings.Contains(safeErr.Error(), forbidden) {
 					t.Fatalf("safe install error leaked %q: %q", forbidden, safeErr)
 				}

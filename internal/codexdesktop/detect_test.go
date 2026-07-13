@@ -34,6 +34,12 @@ func TestDetectedFromPowerShellOutputStates(t *testing.T) {
 			wantErr:    ErrNotFound,
 		},
 		{
+			name:       "not installed with stale scheme",
+			json:       `{"status":"not_installed","installed":false,"scheme_registered":true,"scheme_target_valid":false}`,
+			wantStatus: StatusNotInstalled,
+			wantErr:    ErrNotFound,
+		},
+		{
 			name:       "scheme missing",
 			json:       `{"status":"scheme_missing","installed":true,"package_family_name":"OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0","install_location":"C:\\Program Files\\WindowsApps\\ChatGPT","scheme_registered":false,"scheme_target_valid":false}`,
 			wantStatus: StatusSchemeMissing,
@@ -69,23 +75,23 @@ func TestParseAppUserModelID(t *testing.T) {
 		wantErr           bool
 	}{
 		{
-			name:              "chatgpt",
-			aumid:             ChatGPTPackageFamily + "!ChatGPT.App",
-			wantPackageFamily: ChatGPTPackageFamily,
+			name:              "chatgpt classic candidate",
+			aumid:             ChatGPTClassicPackageFamily + "!ChatGPT.App",
+			wantPackageFamily: ChatGPTClassicPackageFamily,
 			wantApplicationID: "ChatGPT.App",
 		},
 		{
-			name:              "legacy codex",
-			aumid:             LegacyCodexPackageFamily + "!Codex",
-			wantPackageFamily: LegacyCodexPackageFamily,
+			name:              "codex",
+			aumid:             CodexPackageFamily + "!Codex",
+			wantPackageFamily: CodexPackageFamily,
 			wantApplicationID: "Codex",
 		},
 		{name: "empty", wantErr: true},
-		{name: "missing separator", aumid: ChatGPTPackageFamily, wantErr: true},
+		{name: "missing separator", aumid: ChatGPTClassicPackageFamily, wantErr: true},
 		{name: "empty package family", aumid: "!ChatGPT", wantErr: true},
-		{name: "empty application id", aumid: ChatGPTPackageFamily + "!", wantErr: true},
-		{name: "multiple separators", aumid: ChatGPTPackageFamily + "!ChatGPT!Other", wantErr: true},
-		{name: "surrounding whitespace", aumid: " " + ChatGPTPackageFamily + "!ChatGPT", wantErr: true},
+		{name: "empty application id", aumid: ChatGPTClassicPackageFamily + "!", wantErr: true},
+		{name: "multiple separators", aumid: ChatGPTClassicPackageFamily + "!ChatGPT!Other", wantErr: true},
+		{name: "surrounding whitespace", aumid: " " + ChatGPTClassicPackageFamily + "!ChatGPT", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			packageFamily, applicationID, err := parseAppUserModelID(tc.aumid)
@@ -280,6 +286,57 @@ func TestWindowsDetectTreatsFixedProgIDAppIDLookupFailureAsInvalidTarget(t *test
 	invalidTarget := strings.Index(detection, "return New-ChatGPTCodexDetection -Status 'scheme_target_invalid'")
 	if invalidTarget < 0 || invalidTarget < lookup {
 		t.Fatalf("installed + effective scheme with empty/failed AUMID must fall through to scheme_target_invalid:\n%s", detection)
+	}
+}
+
+func TestWindowsDetectFiltersManifestCapablePackagesBeforeStatusClassification(t *testing.T) {
+	body, err := os.ReadFile("detect_windows.ps1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	capableStart := strings.Index(source, "function Get-CodexProtocolCapablePackages")
+	capableEnd := strings.Index(source, "function Find-CodexProtocolPackageByAppUserModelID")
+	if capableStart < 0 || capableEnd < capableStart {
+		t.Fatalf("detect_windows.ps1 must define a manifest-capable package filter:\n%s", source)
+	}
+	capable := source[capableStart:capableEnd]
+	for _, want := range []string{"Get-CodexProtocolApplications -Package $package", "$capable += $package"} {
+		if !strings.Contains(capable, want) {
+			t.Fatalf("manifest-capable package filter missing %q:\n%s", want, capable)
+		}
+	}
+	if strings.Contains(capable, "catch {") {
+		t.Fatalf("manifest-capable package filter must propagate manifest failures:\n%s", capable)
+	}
+
+	detectionStart := strings.Index(source, "function Get-ChatGPTCodexDetection")
+	if detectionStart < 0 {
+		t.Fatalf("detect_windows.ps1 missing Get-ChatGPTCodexDetection:\n%s", source)
+	}
+	detection := source[detectionStart:]
+	packages := strings.Index(detection, "$packages = @(Get-InstalledChatGPTCodexPackages)")
+	capablePackages := strings.Index(detection, "$capablePackages = @(Get-CodexProtocolCapablePackages -Packages $packages)")
+	mapping := strings.Index(detection, "$mapping = Find-CodexProtocolPackageByAppUserModelID -Packages $capablePackages")
+	diagnostic := strings.Index(detection, "$diagnosticPackage = Get-DiagnosticChatGPTCodexPackage -Packages $capablePackages")
+	if packages < 0 || capablePackages < 0 || mapping < 0 || diagnostic < 0 ||
+		!(packages < capablePackages && capablePackages < mapping && capablePackages < diagnostic) {
+		t.Fatalf("manifest-capable packages must be selected before mapping and diagnostics:\n%s", detection)
+	}
+	noCapableStart := strings.Index(detection, "if ($capablePackages.Count -eq 0)")
+	if noCapableStart < 0 || noCapableStart > mapping {
+		t.Fatalf("detector must classify no manifest-capable package before association mapping:\n%s", detection)
+	}
+	noCapable := detection[noCapableStart:mapping]
+	for _, want := range []string{"-Status 'not_installed'", "-SchemeRegistered $schemeRegistered"} {
+		if !strings.Contains(noCapable, want) {
+			t.Fatalf("no-capable status missing %q:\n%s", want, noCapable)
+		}
+	}
+	for _, forbidden := range []string{"-PackageFamilyName", "-InstallLocation", "-AppUserModelID"} {
+		if strings.Contains(noCapable, forbidden) {
+			t.Fatalf("no-capable status must not include metadata %q:\n%s", forbidden, noCapable)
+		}
 	}
 }
 
