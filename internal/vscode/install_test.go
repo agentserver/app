@@ -1542,6 +1542,90 @@ func TestWindowsInnoInstallerFrontendInstallUsesEstimatedProgress(t *testing.T) 
 	}
 }
 
+func TestWindowsInnoPostInstallFailureUsesCustomExitCode(t *testing.T) {
+	body, err := os.ReadFile("../../packaging/windows/installer.iss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	for _, want := range []string{
+		"PostInstallFailed: Boolean;",
+		"PostInstallFailureMessage: String;",
+		"procedure RecordPostInstallFailure(Message: String; LogPath: String);",
+		"function GetCustomSetupExitCode(): Integer;",
+		"function RunEstimatedPowerShellStep(StepID: String; StatusText: String; ScriptName: String; ScriptArgs: String; EstimateSeconds: Integer): Boolean;",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("installer.iss missing silent post-install failure contract %q", want)
+		}
+	}
+
+	helperStart := strings.Index(source, "procedure RecordPostInstallFailure")
+	helperEnd := strings.Index(source, "function GetCustomSetupExitCode")
+	if helperStart < 0 || helperEnd < helperStart {
+		t.Fatal("installer.iss missing post-install failure helper")
+	}
+	helper := source[helperStart:helperEnd]
+	for _, want := range []string{
+		"FullMessage := Message;",
+		"if LogPath <> '' then begin",
+		"FullMessage := FullMessage + '。日志：' + LogPath;",
+		"PostInstallFailureMessage := FullMessage;",
+		"Log(FullMessage);",
+		"if not WizardSilent then begin",
+		"MsgBox(FullMessage, mbError, MB_OK);",
+	} {
+		if !strings.Contains(helper, want) {
+			t.Fatalf("post-install failure helper missing %q:\n%s", want, helper)
+		}
+	}
+
+	runStart := strings.Index(source, "function RunEstimatedPowerShellStep")
+	runEnd := strings.Index(source, "function StopRunningAgentserverProcesses")
+	if runStart < 0 || runEnd < runStart {
+		t.Fatal("installer.iss missing boolean RunEstimatedPowerShellStep")
+	}
+	runStep := source[runStart:runEnd]
+	if strings.Contains(runStep, "RaiseException") {
+		t.Fatalf("post-install runner must record failures instead of raising:\n%s", runStep)
+	}
+	for _, want := range []string{
+		"RecordPostInstallFailure('无法准备安装步骤：' + StatusText, LogPath);",
+		"RecordPostInstallFailure('无法启动安装步骤：' + StatusText, LogPath);",
+		"RecordPostInstallFailure('无法读取安装步骤结果：' + StatusText, LogPath);",
+		"RecordPostInstallFailure(StatusText + ' 失败：' + ResultText, LogPath);",
+		"Result := True;",
+	} {
+		if !strings.Contains(runStep, want) {
+			t.Fatalf("post-install runner missing %q:\n%s", want, runStep)
+		}
+	}
+
+	curStart := strings.Index(source, "procedure CurStepChanged(CurStep: TSetupStep);")
+	curEnd := strings.Index(source, "[UninstallRun]")
+	if curStart < 0 || curEnd < curStart {
+		t.Fatal("installer.iss missing CurStepChanged post-install section")
+	}
+	curStep := source[curStart:curEnd]
+	if strings.Count(curStep, "RunEstimatedPowerShellStep(") != 9 ||
+		strings.Count(curStep, "if not RunEstimatedPowerShellStep(") != 9 {
+		t.Fatalf("every post-install runner call must stop the remaining work after failure:\n%s", curStep)
+	}
+	for _, want := range []string{
+		"RecordPostInstallFailure('无法保存电脑名称。', '');",
+		"RecordPostInstallFailure('请选择一种界面模式。', '');",
+	} {
+		if !strings.Contains(curStep, want) {
+			t.Fatalf("CurStepChanged missing recorded direct failure %q:\n%s", want, curStep)
+		}
+	}
+
+	exitStart := strings.Index(source, "function GetCustomSetupExitCode(): Integer;")
+	if exitStart < 0 || !strings.Contains(source[exitStart:], "Result := 1;") {
+		t.Fatal("GetCustomSetupExitCode must return a stable nonzero post-install failure status")
+	}
+}
+
 func TestWindowsInnoInstallerStopsRunningAppProcessesBeforeReplacingFiles(t *testing.T) {
 	body, err := os.ReadFile("../../packaging/windows/installer.iss")
 	if err != nil {
