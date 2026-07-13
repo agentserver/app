@@ -349,7 +349,7 @@ make ui-test
 make ui-build
 make cross-windows
 make ext-build
-(cd extensions/agentserver-app && npm test)
+(cd extensions/agentserver-app && xvfb-run -a npm test)
 bash -n scripts/windows-package-common.sh scripts/package-windows.sh scripts/package-windows-zip.sh
 git diff --check
 if rg -n '9NT1R1C2HH7J' internal/codexdesktop internal/ui packaging/windows scripts/windows-package-common.sh test/e2e/windows; then
@@ -360,7 +360,7 @@ else
 fi
 ~~~
 
-Expected: all Go tests/vet/scoped race checks, Vue tests/build, Windows amd64 cross-build, VS Code extension compile/package/test, Bash syntax checks, and git diff --check exit zero. The final guarded scan exits zero only when it prints no source matches. The scan has no old-ID allowlist: any matching runtime, packaging, UI, test, or E2E source text must be rewritten; only dated design documents may retain historical evidence. If any command fails, reproduce the root cause, add/tighten a regression test first, and repeat the relevant red-green task before final review.
+Expected: all Go tests/vet/scoped race checks, Vue tests/build, Windows amd64 cross-build, VS Code extension compile/package/test, Bash syntax checks, and git diff --check exit zero. On Linux, extension integration tests run through Xvfb; the Windows CI command remains npm test. The final guarded scan exits zero only when it prints no source matches. The scan has no old-ID allowlist: any matching runtime, packaging, UI, test, or E2E source text must be rewritten; only dated design documents may retain historical evidence. If any command fails, reproduce the root cause, add/tighten a regression test first, and repeat the relevant red-green task before final review.
 
 - [ ] **Step 2: Rebuild and capture bootstrapper evidence**
 
