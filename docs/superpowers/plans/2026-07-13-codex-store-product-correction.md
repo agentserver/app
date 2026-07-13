@@ -182,7 +182,8 @@ Require 9PLM9XGG6VKS and reject 9NT1R1C2HH7J for every row. For the Bash and Inn
 Run:
 
 ~~~
-go test -count=1 ./internal/vscode ./test/e2e/windows -run 'TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback|TestWindowsPackageScriptsRefreshChatGPTDesktopInstaller|TestCodexStoreProductIDSourceContract|TestWingetListCommandUsesExactStoreProductID'
+go test -count=1 ./internal/vscode -run 'TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback|TestWindowsPackageScriptsRefreshChatGPTDesktopInstaller|TestCodexStoreProductIDSourceContract'
+go test -count=1 -tags=e2e ./test/e2e/windows -run TestWingetListCommandUsesExactStoreProductID
 ~~~
 
 Expected: FAIL because current runtime and packaging layers still select the Classic product.
@@ -211,7 +212,8 @@ Leave payload file names unchanged. Retain paired manifest product_id/source_url
 Run:
 
 ~~~
-go test -count=1 ./internal/vscode ./test/e2e/windows -run 'TestEnsureCodexDesktop|TestWindowsPackageScriptsRefreshChatGPTDesktopInstaller|TestCodexStoreProductIDSourceContract|TestWingetListCommandUsesExactStoreProductID'
+go test -count=1 ./internal/vscode -run 'TestEnsureCodexDesktop|TestWindowsPackageScriptsRefreshChatGPTDesktopInstaller|TestCodexStoreProductIDSourceContract'
+go test -count=1 -tags=e2e ./test/e2e/windows -run TestWingetListCommandUsesExactStoreProductID
 if rg -n '9NT1R1C2HH7J' internal/codexdesktop internal/ui packaging/windows scripts/windows-package-common.sh test/e2e/windows; then
   exit 1
 else
@@ -340,6 +342,7 @@ Run:
 
 ~~~
 go test -count=1 ./...
+go test -count=1 -tags=e2e ./test/e2e/windows
 go vet ./...
 go test -race ./internal/codexdesktop ./internal/vscode ./internal/updater
 make ui-test

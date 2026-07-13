@@ -14,6 +14,9 @@ import (
 	"github.com/agentserver/agentserver-pkg/test/e2e/windows/harness"
 )
 
+const codexStoreProductID = "9PLM9XGG6VKS"
+const retiredCodexStoreProductID = "9NT1" + "R1C2HH7"
+
 // TestWindowsE2E runs the full install → onboard → verify → uninstall cycle.
 // Requires env: E2E_SSH_HOST/PORT/USER/PASSWORD, TEST_MS_USER/PASS, TEST_AS_USER/PASS.
 func TestWindowsE2E(t *testing.T) {
@@ -198,7 +201,7 @@ func remoteInstallerPath(remoteTemp string) (string, error) {
 }
 
 func wingetListCommand() string {
-	return `winget list --id=9NT1R1C2HH7J --source=msstore --exact --accept-source-agreements --disable-interactivity`
+	return `winget list --id=` + codexStoreProductID + ` --source=msstore --exact --accept-source-agreements --disable-interactivity`
 }
 
 func preUninstallCommand() string {
@@ -275,12 +278,12 @@ func TestPreUninstallCommandUsesCurrentUserLocalAppData(t *testing.T) {
 
 func TestWingetListCommandUsesExactStoreProductID(t *testing.T) {
 	got := wingetListCommand()
-	for _, want := range []string{"winget list", "--id=9NT1R1C2HH7J", "--source=msstore", "--exact"} {
+	for _, want := range []string{"winget list", "--id=" + codexStoreProductID, "--source=msstore", "--exact"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("winget list command missing %q: %s", want, got)
 		}
 	}
-	for _, forbidden := range []string{"winget list Codex", "-s msstore"} {
+	for _, forbidden := range []string{"winget list Codex", "-s msstore", retiredCodexStoreProductID} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("winget list command contains legacy matching %q: %s", forbidden, got)
 		}

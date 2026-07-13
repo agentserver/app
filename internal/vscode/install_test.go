@@ -20,6 +20,9 @@ import (
 	"time"
 )
 
+const codexStoreProductID = "9PLM9XGG6VKS"
+const retiredCodexStoreProductID = "9NT1" + "R1C2HH7"
+
 func TestPlanInstall_WindowsUsesStoreBootstrapper(t *testing.T) {
 	p := planInstallFor("windows", "amd64")
 	if p.BootstrapperURL == "" {
@@ -1738,8 +1741,8 @@ func TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback(t *tes
 		"Invoke-CodexDesktopLocalInstaller",
 		"chatgpt-desktop-installer.exe",
 		"chatgpt-desktop-installer.manifest.json",
-		"9NT1R1C2HH7J",
-		"get.microsoft.com/installer/download/9NT1R1C2HH7J?cid=website_cta_psi",
+		codexStoreProductID,
+		"get.microsoft.com/installer/download/" + codexStoreProductID + "?cid=website_cta_psi",
 		"ConvertFrom-Json",
 		"Get-FileHash",
 		"SHA256",
@@ -1749,7 +1752,7 @@ func TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback(t *tes
 		"-Wait",
 		"winget",
 		"install",
-		"--id=9NT1R1C2HH7J",
+		"--id=" + codexStoreProductID,
 		"--source=msstore",
 		"--exact",
 		"--accept-source-agreements",
@@ -1763,6 +1766,9 @@ func TestEnsureCodexDesktopScriptUsesBundledInstallerBeforeWingetFallback(t *tes
 	}
 	if strings.Contains(s, "winget install Codex -s msstore") {
 		t.Fatal("ensure-codex-desktop.ps1 must not install the retired product-name package")
+	}
+	if strings.Contains(s, retiredCodexStoreProductID) {
+		t.Fatalf("ensure-codex-desktop.ps1 retains retired Store ID %q", retiredCodexStoreProductID)
 	}
 }
 
@@ -1837,7 +1843,7 @@ func TestWindowsPackageScriptsRefreshChatGPTDesktopInstallerEveryBuild(t *testin
 		t.Fatal("ChatGPT desktop installer must refresh every build, not skip download when cache exists")
 	}
 	for _, want := range []string{
-		`CHATGPT_DESKTOP_PRODUCT_ID="9NT1R1C2HH7J"`,
+		`CHATGPT_DESKTOP_PRODUCT_ID="9PLM9XGG6VKS"`,
 		`CHATGPT_DESKTOP_ASSET="ChatGPT Installer.exe"`,
 		`cache/chatgpt-desktop`,
 		`CHATGPT_DESKTOP_MIN_SIZE=`,
@@ -1858,8 +1864,8 @@ func TestWindowsPackageScriptsRefreshChatGPTDesktopInstallerEveryBuild(t *testin
 			t.Fatalf("windows-package-common.sh should securely refresh ChatGPT desktop installer; missing %q", want)
 		}
 	}
-	if strings.Contains(s, "9PLM9XGG6VKS") {
-		t.Fatal("windows-package-common.sh must not retain the retired Codex Store product ID")
+	if strings.Contains(s, retiredCodexStoreProductID) {
+		t.Fatal("windows-package-common.sh must not retain the retired Classic Store product ID")
 	}
 	for _, path := range []string{
 		"../../scripts/package-windows.sh",
@@ -1872,6 +1878,36 @@ func TestWindowsPackageScriptsRefreshChatGPTDesktopInstallerEveryBuild(t *testin
 		if !strings.Contains(string(body), `fetch_windows_package_assets`) {
 			t.Fatalf("%s should call shared ChatGPT desktop refresh", path)
 		}
+	}
+}
+
+func TestCodexStoreProductIDSourceContract(t *testing.T) {
+	for _, tc := range []struct {
+		path          string
+		expectedCache string
+	}{
+		{path: "../../packaging/windows/ensure-codex-desktop.ps1"},
+		{path: "../../packaging/windows/verify-chatgpt-desktop-installer.ps1"},
+		{path: "../../scripts/windows-package-common.sh", expectedCache: "cache/chatgpt-desktop/$CHATGPT_DESKTOP_PRODUCT_ID"},
+		{path: "../../packaging/windows/installer.iss", expectedCache: "cache\\chatgpt-desktop\\" + codexStoreProductID},
+		{path: "../../test/e2e/windows/e2e_test.go"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			body, err := os.ReadFile(tc.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := string(body)
+			if !strings.Contains(source, codexStoreProductID) {
+				t.Fatalf("%s missing corrected Store ID %q", tc.path, codexStoreProductID)
+			}
+			if strings.Contains(source, retiredCodexStoreProductID) {
+				t.Fatalf("%s retains retired Store ID %q", tc.path, retiredCodexStoreProductID)
+			}
+			if tc.expectedCache != "" && !strings.Contains(source, tc.expectedCache) {
+				t.Fatalf("%s missing corrected cache contract %q", tc.path, tc.expectedCache)
+			}
+		})
 	}
 }
 

@@ -70,8 +70,8 @@ function Test-CodexDesktopInstallerFile([string]$Path, [string]$ManifestPath) {
     } catch {
         throw "ChatGPT / Codex installer manifest is invalid JSON: $($_.Exception.Message)"
     }
-    $expectedProductID = '9NT1R1C2HH7J'
-    $expectedSourceURL = 'https://get.microsoft.com/installer/download/9NT1R1C2HH7J?cid=website_cta_psi'
+    $expectedProductID = '9PLM9XGG6VKS'
+    $expectedSourceURL = 'https://get.microsoft.com/installer/download/9PLM9XGG6VKS?cid=website_cta_psi'
     if ([string]$manifest.product_id -cne $expectedProductID) {
         throw "ChatGPT / Codex installer manifest product_id mismatch"
     }
@@ -146,17 +146,17 @@ function Invoke-CodexDesktopWingetInstall {
     }
     $args = @(
         'install',
-        '--id=9NT1R1C2HH7J',
+        '--id=9PLM9XGG6VKS',
         '--source=msstore',
         '--exact',
         '--accept-package-agreements',
         '--accept-source-agreements',
         '--disable-interactivity'
     )
-    Write-Step "Running winget install --id=9NT1R1C2HH7J --source=msstore..."
+    Write-Step "Running winget install --id=9PLM9XGG6VKS --source=msstore..."
     & $winget @args
     if ($LASTEXITCODE -ne 0) {
-        throw "winget install --id=9NT1R1C2HH7J --source=msstore failed with exit code $LASTEXITCODE"
+        throw "winget install --id=9PLM9XGG6VKS --source=msstore failed with exit code $LASTEXITCODE"
     }
 }
 

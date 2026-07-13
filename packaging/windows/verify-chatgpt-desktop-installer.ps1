@@ -136,7 +136,7 @@ $signer = $sig.SignerCertificate
 $trustedSignerRootFingerprints = @(
     # Microsoft Root Certificate Authority 2011, SHA-256 fingerprint.
     # Add a replacement here only after verifying a current official
-    # Product ID 9NT1R1C2HH7J bootstrapper chain out of band.
+    # Product ID 9PLM9XGG6VKS bootstrapper chain out of band.
     '847DF6A78497943F27FC72EB93F9A637320A02B561D0A91B09E87A7807ED7C61'
 )
 $trustedTimestampRootFingerprints = @(

@@ -59,9 +59,9 @@ Source: "..\..\dist\cache\superpowers\driver-superpower-skills.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-superpower-skills.tar.gz"; Flags: ignoreversion
 Source: "..\..\dist\cache\loom\v0.0.10\driver-codex-prompts.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-codex-prompts.tar.gz"; Flags: ignoreversion
-Source: "..\..\dist\cache\chatgpt-desktop\9NT1R1C2HH7J\ChatGPT Installer.exe"; \
+Source: "..\..\dist\cache\chatgpt-desktop\9PLM9XGG6VKS\ChatGPT Installer.exe"; \
     DestDir: "{app}"; DestName: "chatgpt-desktop-installer.exe"; Flags: ignoreversion
-Source: "..\..\dist\cache\chatgpt-desktop\9NT1R1C2HH7J\chatgpt-desktop-installer.manifest.json"; \
+Source: "..\..\dist\cache\chatgpt-desktop\9PLM9XGG6VKS\chatgpt-desktop-installer.manifest.json"; \
     DestDir: "{app}"; DestName: "chatgpt-desktop-installer.manifest.json"; Flags: ignoreversion
 Source: "..\..\internal\codexdesktop\detect_windows.ps1"; \
     DestDir: "{app}"; DestName: "codex-desktop-detect.ps1"; Flags: ignoreversion
