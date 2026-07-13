@@ -42,7 +42,7 @@ export interface OnboardingHandle {
 
 export function useOnboarding(): OnboardingHandle {
   const frontendMode = ref<FrontendMode>('codex_desktop');
-  const frontendName = ref('Codex Desktop');
+  const frontendName = ref('ChatGPT / Codex');
   const steps: Ref<StepInstance[]> = ref(
     stepsForMode(frontendMode.value).map(s => ({ ...s, runtime: { status: 'pending' as StepStatus } })),
   );
@@ -70,7 +70,7 @@ export function useOnboarding(): OnboardingHandle {
       ? '极简界面'
       : nextMode === 'opencode_desktop'
         ? 'OpenCode Desktop'
-        : 'Codex Desktop');
+        : 'ChatGPT / Codex');
     if (currentIds !== nextIds) {
       steps.value = nextDefs.map(s => ({ ...s, runtime: { status: 'pending' as StepStatus } }));
     }

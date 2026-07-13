@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/modelproxy"
 	"github.com/agentserver/agentserver-pkg/internal/paths"
 	"github.com/agentserver/agentserver-pkg/internal/state"
@@ -21,8 +22,8 @@ func TestOpenTestFolderCodexDesktopUsesDeepLinkAndWritesConfig(t *testing.T) {
 	var opened string
 	runnerCalled := false
 
-	msg, err := openTestFolder(context.Background(), s, p, `C:\Project Folder`, func(url string) error {
-		opened = url
+	msg, err := openTestFolder(context.Background(), s, p, `C:\Project Folder`, func(_ context.Context, folder string) error {
+		opened = codexdesktop.ThreadURL(folder)
 		return nil
 	}, func(string, []string) (int, error) {
 		runnerCalled = true
@@ -40,7 +41,7 @@ func TestOpenTestFolderCodexDesktopUsesDeepLinkAndWritesConfig(t *testing.T) {
 	if !strings.Contains(opened, "Project+Folder") {
 		t.Fatalf("path not encoded: %q", opened)
 	}
-	if !strings.Contains(msg, "with Codex Desktop") {
+	if !strings.Contains(msg, "with ChatGPT / Codex") {
 		t.Fatalf("msg=%q", msg)
 	}
 	b, err := os.ReadFile(p.CodexConfigFile)
@@ -73,7 +74,7 @@ func TestOpenTestFolderMinimalVSCodeUsesRunner(t *testing.T) {
 	var gotArgs []string
 	openerCalled := false
 
-	msg, err := openTestFolder(context.Background(), s, p, filepath.Join(dir, "work"), func(string) error {
+	msg, err := openTestFolder(context.Background(), s, p, filepath.Join(dir, "work"), func(context.Context, string) error {
 		openerCalled = true
 		return nil
 	}, func(codeExe string, args []string) (int, error) {

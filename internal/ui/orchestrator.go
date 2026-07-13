@@ -4,11 +4,106 @@ package ui
 
 import (
 	"context"
+	"errors"
+	"strings"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/state"
 )
+
+type userVisibleError struct {
+	message string
+	cause   error
+}
+
+func (e userVisibleError) Error() string { return e.message }
+
+func (e userVisibleError) Unwrap() error { return e.cause }
+
+// SafeFrontendLaunchError hides operational details while retaining cause
+// identity for errors.Is/errors.As and internal control flow.
+func SafeFrontendLaunchError(mode state.FrontendMode, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	message := ""
+	switch state.NormalizeFrontendMode(mode) {
+	case state.FrontendModeOpenCodeDesktop:
+		message = "OpenCode Desktop 启动失败。请确认应用已安装且可正常打开，然后重试。"
+	case state.FrontendModeMinimalVSCode:
+		message = "极简界面启动失败。请确认 VS Code 已安装且可正常打开，然后重试。"
+	default:
+		switch {
+		case errors.Is(cause, codexdesktop.ErrNotFound):
+			message = "未检测到 " + codexdesktop.LongDisplayName + "。请从 Microsoft Store 安装产品 ID " + codexdesktop.CodexStoreProductID + " 后重试。"
+		case errors.Is(cause, codexdesktop.ErrSchemeMissing):
+			message = "ChatGPT / Codex 的 codex:// 协议缺失。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
+		case errors.Is(cause, codexdesktop.ErrSchemeTargetInvalid):
+			message = "ChatGPT / Codex 的 codex:// 协议已注册，但处理程序无效或不受信任。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
+		case errors.Is(cause, codexdesktop.ErrLaunchFailed):
+			message = "ChatGPT / Codex 桌面应用本身无法启动。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
+		default:
+			message = "ChatGPT / Codex 启动失败。请重新运行安装向导检查配置后重试。"
+		}
+	}
+	return userVisibleError{message: boundedUserVisibleError(message), cause: cause}
+}
+
+// SafeFrontendInstallError hides installer and detector output while retaining
+// cause identity for errors.Is/errors.As and internal diagnostics.
+func SafeFrontendInstallError(mode state.FrontendMode, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	message := ""
+	switch state.NormalizeFrontendMode(mode) {
+	case state.FrontendModeOpenCodeDesktop:
+		message = "OpenCode Desktop 安装或检查失败。请检查网络和安装程序后重试。"
+	case state.FrontendModeMinimalVSCode:
+		message = "VS Code 安装或检查失败。请检查网络、Microsoft Store 和 Windows App Installer 后重试。"
+	default:
+		switch {
+		case errors.Is(cause, codexdesktop.ErrWingetNotFound):
+			message = "未找到 winget；请安装或更新 Windows App Installer 后重试。"
+		case errors.Is(cause, codexdesktop.ErrSchemeMissing):
+			message = "ChatGPT / Codex 的 codex:// 协议缺失。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
+		case errors.Is(cause, codexdesktop.ErrSchemeTargetInvalid):
+			message = "ChatGPT / Codex 的 codex:// 协议已注册，但处理程序无效或不受信任。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
+		case errors.Is(cause, codexdesktop.ErrNotFound):
+			message = "未能安装或检测到 " + codexdesktop.LongDisplayName + "。请从 Microsoft Store 安装产品 ID " + codexdesktop.CodexStoreProductID + " 后重试。"
+		default:
+			message = codexdesktop.LongDisplayName + "安装或检查失败。请检查网络、Microsoft Store 和 Windows App Installer 后重试。"
+		}
+	}
+	return userVisibleError{message: boundedUserVisibleError(message), cause: cause}
+}
+
+// SafeFrontendStateReadError hides the state-file path from API responses.
+func SafeFrontendStateReadError(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return userVisibleError{message: "无法读取前端启动状态，请重试。", cause: cause}
+}
+
+// SafeFrontendStatePersistenceError hides the state-file path after launch.
+func SafeFrontendStatePersistenceError(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	return userVisibleError{message: "前端已启动，但无法保存启动状态。请重试。", cause: cause}
+}
+
+func boundedUserVisibleError(message string) string {
+	const maxRunes = 256
+	runes := []rune(strings.Join(strings.Fields(message), " "))
+	if len(runes) > maxRunes {
+		runes = runes[:maxRunes]
+	}
+	return string(runes)
+}
 
 // Orchestrator is the side-effecting backend driven by the SPA.
 // Each method is idempotent: calling twice after success is a no-op.
@@ -35,14 +130,12 @@ type Orchestrator interface {
 	Finalize(ctx context.Context) error
 	Abort(ctx context.Context) error
 
-	// LaunchAndShutdown spawns VS Code (via the configured Code executable)
-	// and asks the launcher to gracefully shut down its onboarding HTTP
+	// LaunchAndShutdown starts the configured frontend and asks the launcher
+	// to gracefully shut down its onboarding HTTP
 	// server. The shutdown is async (after a short delay so the HTTP
-	// response can flush). Returns once VS Code is spawned, not when it
-	// exits. If no shutdown hook is registered with the implementation,
-	// this is just a VS Code launch. The ctx is reserved for interface
-	// uniformity; the current implementation does not observe cancellation
-	// because cmd.Start returns essentially instantly.
+	// response can flush). For ChatGPT/Codex, success includes bounded trusted
+	// package-process confirmation. If no shutdown hook is registered, this
+	// only launches the frontend.
 	LaunchAndShutdown(ctx context.Context) error
 }
 
@@ -97,7 +190,7 @@ func frontendName(mode state.FrontendMode) string {
 	case state.FrontendModeOpenCodeDesktop:
 		return "OpenCode Desktop"
 	default:
-		return "Codex Desktop"
+		return codexdesktop.ShortDisplayName
 	}
 }
 
@@ -122,7 +215,7 @@ func (noopOrchestrator) State(context.Context) (SanitizedState, error) {
 		InstallID:        "noop",
 		OnboardingStatus: string(state.StatusPending),
 		FrontendMode:     string(state.FrontendModeCodexDesktop),
-		FrontendName:     "Codex Desktop",
+		FrontendName:     codexdesktop.ShortDisplayName,
 	}, nil
 }
 func (noopOrchestrator) LoginModelserver(context.Context) (string, error) {

@@ -8,11 +8,24 @@ import (
 	"testing"
 )
 
+func readyInstallDetection(version string) Detected {
+	return Detected{
+		Installed:         true,
+		Version:           version,
+		Status:            StatusReady,
+		PackageFamilyName: CodexPackageFamily,
+		InstallLocation:   `C:\Program Files\WindowsApps\Codex`,
+		AppUserModelID:    CodexPackageFamily + "!Codex",
+		SchemeRegistered:  true,
+		SchemeTargetValid: true,
+	}
+}
+
 func TestEnsureInstalledSkipsWingetWhenDetected(t *testing.T) {
 	calls := 0
 	det, err := EnsureInstalled(context.Background(), Options{
 		Detect: func() (Detected, error) {
-			return Detected{Installed: true, Version: "1.0.0"}, nil
+			return readyInstallDetection("1.0.0"), nil
 		},
 		RunWinget: func(context.Context, []string) (string, error) {
 			calls++
@@ -30,6 +43,58 @@ func TestEnsureInstalledSkipsWingetWhenDetected(t *testing.T) {
 	}
 }
 
+func TestEnsureInstalledRejectsInconsistentReadyDetectorResult(t *testing.T) {
+	calls := 0
+	_, err := EnsureInstalled(context.Background(), Options{
+		Detect: func() (Detected, error) {
+			return Detected{
+				Installed:         true,
+				Status:            StatusReady,
+				PackageFamilyName: CodexPackageFamily,
+				InstallLocation:   `C:\Program Files\WindowsApps\Codex`,
+				SchemeRegistered:  true,
+				SchemeTargetValid: true,
+			}, nil
+		},
+		RunWinget: func(context.Context, []string) (string, error) {
+			calls++
+			return "", nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "AppUserModelID") {
+		t.Fatalf("err=%v, want invalid ready AppUserModelID rejection", err)
+	}
+	if calls != 0 {
+		t.Fatalf("winget called %d times for inconsistent ready detection", calls)
+	}
+}
+
+func TestEnsureInstalledRejectsInconsistentPostInstallReadyResult(t *testing.T) {
+	detectCalls := 0
+	_, err := EnsureInstalled(context.Background(), Options{
+		Detect: func() (Detected, error) {
+			detectCalls++
+			if detectCalls == 1 {
+				return Detected{Status: StatusNotInstalled}, ErrNotFound
+			}
+			return Detected{
+				Installed:         true,
+				Status:            StatusReady,
+				PackageFamilyName: CodexPackageFamily,
+				InstallLocation:   `C:\Program Files\WindowsApps\Codex`,
+				SchemeRegistered:  true,
+				SchemeTargetValid: true,
+			}, nil
+		},
+		RunWinget: func(context.Context, []string) (string, error) {
+			return "installed", nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "AppUserModelID") {
+		t.Fatalf("err=%v, want invalid post-install ready AppUserModelID rejection", err)
+	}
+}
+
 func TestEnsureInstalledRunsWingetThenVerifies(t *testing.T) {
 	detectCalls := 0
 	var gotArgs []string
@@ -37,9 +102,9 @@ func TestEnsureInstalledRunsWingetThenVerifies(t *testing.T) {
 		Detect: func() (Detected, error) {
 			detectCalls++
 			if detectCalls == 1 {
-				return Detected{Installed: false}, nil
+				return Detected{Status: StatusNotInstalled}, ErrNotFound
 			}
-			return Detected{Installed: true, Version: "2.0.0"}, nil
+			return readyInstallDetection("2.0.0"), nil
 		},
 		RunWinget: func(_ context.Context, args []string) (string, error) {
 			gotArgs = append([]string(nil), args...)
@@ -52,8 +117,43 @@ func TestEnsureInstalledRunsWingetThenVerifies(t *testing.T) {
 	if !det.Installed || det.Version != "2.0.0" {
 		t.Fatalf("det=%+v", det)
 	}
-	if strings.Join(gotArgs, " ") != "install Codex -s msstore --accept-source-agreements --accept-package-agreements" {
+	if strings.Join(gotArgs, " ") != "install --id=9PLM9XGG6VKS --source=msstore --exact --accept-package-agreements --accept-source-agreements --disable-interactivity" {
 		t.Fatalf("args=%v", gotArgs)
+	}
+}
+
+func TestEnsureInstalledDoesNotInstallOverBrokenScheme(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status Status
+		err    error
+	}{
+		{name: "missing", status: StatusSchemeMissing, err: ErrSchemeMissing},
+		{name: "invalid", status: StatusSchemeTargetInvalid, err: ErrSchemeTargetInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			_, err := EnsureInstalled(context.Background(), Options{
+				Detect: func() (Detected, error) {
+					return Detected{Installed: true, Status: tc.status}, tc.err
+				},
+				RunWinget: func(context.Context, []string) (string, error) {
+					calls++
+					return "", nil
+				},
+			})
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("err=%v, want %v", err, tc.err)
+			}
+			for _, want := range []string{"Repair", "Reset", "Reinstall"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("err=%v, want guidance %q", err, want)
+				}
+			}
+			if calls != 0 {
+				t.Fatalf("winget called %d times", calls)
+			}
+		})
 	}
 }
 
@@ -79,7 +179,7 @@ func TestEnsureInstalledReturnsInitialDetectError(t *testing.T) {
 
 func TestEnsureInstalledClassifiesWingetFailure(t *testing.T) {
 	_, err := EnsureInstalled(context.Background(), Options{
-		Detect: func() (Detected, error) { return Detected{Installed: false}, nil },
+		Detect: func() (Detected, error) { return Detected{Status: StatusNotInstalled}, ErrNotFound },
 		RunWinget: func(context.Context, []string) (string, error) {
 			return "source msstore was not found", errors.New("exit 1")
 		},
@@ -96,7 +196,7 @@ func TestEnsureInstalledSurfacesPostInstallDetectError(t *testing.T) {
 		Detect: func() (Detected, error) {
 			detectCalls++
 			if detectCalls == 1 {
-				return Detected{Installed: false}, ErrNotFound
+				return Detected{Status: StatusNotInstalled}, ErrNotFound
 			}
 			return Detected{}, detectErr
 		},
@@ -118,9 +218,9 @@ func TestEnsureInstalledPostInstallErrNotFoundWrapsSentinel(t *testing.T) {
 		Detect: func() (Detected, error) {
 			detectCalls++
 			if detectCalls == 1 {
-				return Detected{Installed: false}, ErrNotFound
+				return Detected{Status: StatusNotInstalled}, ErrNotFound
 			}
-			return Detected{Installed: false}, ErrNotFound
+			return Detected{Status: StatusNotInstalled}, ErrNotFound
 		},
 		RunWinget: func(context.Context, []string) (string, error) {
 			return "installed output", nil
@@ -134,15 +234,48 @@ func TestEnsureInstalledPostInstallErrNotFoundWrapsSentinel(t *testing.T) {
 	}
 }
 
+func TestEnsureInstalledPostInstallBrokenSchemeWrapsSentinel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status Status
+		err    error
+	}{
+		{name: "missing", status: StatusSchemeMissing, err: ErrSchemeMissing},
+		{name: "invalid", status: StatusSchemeTargetInvalid, err: ErrSchemeTargetInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			detectCalls := 0
+			_, err := EnsureInstalled(context.Background(), Options{
+				Detect: func() (Detected, error) {
+					detectCalls++
+					if detectCalls == 1 {
+						return Detected{Status: StatusNotInstalled}, ErrNotFound
+					}
+					return Detected{Installed: true, Status: tc.status}, tc.err
+				},
+				RunWinget: func(context.Context, []string) (string, error) {
+					return "installed output", nil
+				},
+			})
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("err=%v, want %v", err, tc.err)
+			}
+			if !strings.Contains(err.Error(), "installed output") {
+				t.Fatalf("err=%v, want winget output", err)
+			}
+		})
+	}
+}
+
 func TestEnsureInstalledPostInstallInstalledFalseWrapsSentinel(t *testing.T) {
 	detectCalls := 0
 	_, err := EnsureInstalled(context.Background(), Options{
 		Detect: func() (Detected, error) {
 			detectCalls++
 			if detectCalls == 1 {
-				return Detected{Installed: false}, ErrNotFound
+				return Detected{Status: StatusNotInstalled}, ErrNotFound
 			}
-			return Detected{Installed: false}, nil
+			return Detected{Status: StatusNotInstalled}, nil
 		},
 		RunWinget: func(context.Context, []string) (string, error) {
 			return "installed output", nil

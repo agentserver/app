@@ -16,6 +16,7 @@ async function run() {
       await api.configureFrontend();
     } else if (props.step.id === 'finalize') {
       await api.finalize();
+      await api.launchFrontend();
     } else {
       throw new api.OnboardingError(`ActionStep doesn't know step ${props.step.id}`);
     }

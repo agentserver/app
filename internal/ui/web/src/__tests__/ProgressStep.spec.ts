@@ -51,7 +51,7 @@ describe('ProgressStep', () => {
     expect(onboarding.markStepError).not.toHaveBeenCalled();
   });
 
-  it('renders concrete backend error events instead of a generic launcher-log message', async () => {
+  it('renders sanitized actionable backend error events', async () => {
     vi.spyOn(api, 'startFrontendInstall').mockResolvedValue({ stream_id: 's1' });
     const onboarding = makeOnboarding();
 
@@ -63,7 +63,8 @@ describe('ProgressStep', () => {
     await Promise.resolve();
     const es = FakeEventSource.instances[0];
 
-    es.emit({ stage: 'error', msg: 'download incomplete: got 3145728 bytes' });
+    const safeMessage = 'VS Code 安装或检查失败。请检查网络、Microsoft Store 和 Windows App Installer 后重试。';
+    es.emit({ stage: 'error', msg: safeMessage });
     es.finish();
     await nextTick();
     await Promise.resolve();
@@ -72,7 +73,7 @@ describe('ProgressStep', () => {
     expect(onboarding.markStepError).toHaveBeenCalledWith(
       'vscode_install',
       '安装未完成',
-      'download incomplete: got 3145728 bytes',
+      safeMessage,
     );
   });
 
@@ -128,7 +129,7 @@ function makeOnboarding(): OnboardingHandle {
     isComplete: computed(() => false),
     connectionError: ref(null),
     frontendMode: ref('codex_desktop'),
-    frontendName: ref('Codex Desktop'),
+    frontendName: ref('ChatGPT / Codex'),
     init: vi.fn(),
     refreshState: vi.fn(),
     markStepInProgress: vi.fn(),

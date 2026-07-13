@@ -45,6 +45,7 @@ const togglingDriverDaemon = ref(false);
 let updateLoadSeq = 0;
 let slaveLoadSeq = 0;
 let driverDaemonLoadSeq = 0;
+let frontendActionSeq = 0;
 const slavePollIntervalMs = 3000;
 let slavePollTimer: number | undefined;
 let dashboardMounted = false;
@@ -143,8 +144,13 @@ async function confirmAction(message: string) {
 }
 
 async function load() {
+  const frontendSeq = frontendActionSeq;
   try {
-    state.value = await api.getConsoleState();
+    const loaded = await api.getConsoleState();
+    state.value = loaded;
+    if (frontendSeq === frontendActionSeq) {
+      frontendError.value = loaded.frontend_error || '';
+    }
     statusError.value = '';
   } catch (e) {
     statusError.value = errorMessage(e);
@@ -271,9 +277,14 @@ function syncSlavePolling() {
 
 async function refresh() {
   if (refreshing.value) return;
+  const frontendSeq = frontendActionSeq;
   refreshing.value = true;
   try {
-    state.value = await api.refreshConsoleState();
+    const loaded = await api.refreshConsoleState();
+    state.value = loaded;
+    if (frontendSeq === frontendActionSeq) {
+      frontendError.value = loaded.frontend_error || '';
+    }
     statusError.value = '';
     await loadSlaves();
   } catch (e) {
@@ -285,13 +296,18 @@ async function refresh() {
 
 async function openFrontend() {
   if (opening.value) return;
+  const seq = ++frontendActionSeq;
   opening.value = true;
+  let settledError = '';
   try {
     await api.openConsoleFrontend();
-    frontendError.value = '';
   } catch (e) {
-    frontendError.value = errorMessage(e);
+    settledError = errorMessage(e);
   } finally {
+    if (seq === frontendActionSeq) {
+      ++frontendActionSeq;
+      frontendError.value = settledError;
+    }
     opening.value = false;
   }
 }
@@ -731,7 +747,7 @@ onBeforeUnmount(() => {
     >
       <div class="section-head">
         <h2>Codex 模型</h2>
-        <p>选择 Codex Desktop 默认使用的大模型。切换后新建对话生效；旧对话保持原模型。</p>
+        <p>选择 ChatGPT / Codex 默认使用的大模型。切换后新建对话生效；旧对话保持原模型。</p>
       </div>
       <el-radio-group
         :model-value="state?.current_model"

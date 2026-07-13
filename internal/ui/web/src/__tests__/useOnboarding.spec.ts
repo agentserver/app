@@ -132,12 +132,12 @@ describe('useOnboarding', () => {
     expect(o.shouldAutoAdvance(o.current.value!)).toBe(false);
   });
 
-  it('initializes Codex Desktop steps from server mode', async () => {
+  it('initializes ChatGPT / Codex steps from server mode', async () => {
     vi.spyOn(api, 'getState').mockResolvedValue({
       schema_version: 1,
       install_id: 'x',
       frontend_mode: 'codex_desktop',
-      frontend_name: 'Codex Desktop',
+      frontend_name: 'ChatGPT / Codex',
       onboarding_status: 'pending',
       completed_steps: ['modelserver_login', 'agentserver_login'],
     });
@@ -151,7 +151,7 @@ describe('useOnboarding', () => {
       'finalize',
     ]);
     expect(o.current.value?.id).toBe('codex_desktop_install');
-    expect(o.frontendName.value).toBe('Codex Desktop');
+    expect(o.frontendName.value).toBe('ChatGPT / Codex');
   });
 
   it('initializes OpenCode Desktop steps from server mode', async () => {

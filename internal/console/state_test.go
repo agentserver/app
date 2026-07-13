@@ -954,6 +954,26 @@ func TestControllerStateUsesOpenCodeDesktopFrontendName(t *testing.T) {
 	}
 }
 
+func TestControllerStateReturnsPersistedFrontendError(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.Onboarding.Status = state.StatusComplete
+		s.FrontendError = "ChatGPT / Codex 桌面应用本身无法启动。请尝试 Repair、Reset、Reinstall。"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := NewController(Deps{State: store, Secrets: newTestSecrets()}).State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FrontendError != "ChatGPT / Codex 桌面应用本身无法启动。请尝试 Repair、Reset、Reinstall。" {
+		t.Fatalf("FrontendError=%q", got.FrontendError)
+	}
+}
+
 func TestControllerActionsInvokeCallbacks(t *testing.T) {
 	dir := t.TempDir()
 	store := state.NewStore(filepath.Join(dir, "state.json"))
@@ -1000,6 +1020,88 @@ func TestControllerActionsInvokeCallbacks(t *testing.T) {
 	}
 	if !quit {
 		t.Fatal("Quit callback was not invoked")
+	}
+}
+
+func TestControllerOpenFrontendSerializesConcurrentCalls(t *testing.T) {
+	var calls atomic.Int32
+	entered := make(chan int32, 2)
+	releaseFirst := make(chan struct{})
+	c := NewController(Deps{
+		OpenFrontend: func(context.Context) error {
+			call := calls.Add(1)
+			entered <- call
+			if call == 1 {
+				<-releaseFirst
+			}
+			return nil
+		},
+	})
+	firstDone := make(chan error, 1)
+	secondDone := make(chan error, 1)
+	go func() { firstDone <- c.OpenFrontend(context.Background()) }()
+	if call := <-entered; call != 1 {
+		t.Fatalf("first call=%d", call)
+	}
+	go func() { secondDone <- c.OpenFrontend(context.Background()) }()
+
+	var concurrentCall int32
+	select {
+	case concurrentCall = <-entered:
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if concurrentCall == 0 {
+		select {
+		case call := <-entered:
+			if call != 2 {
+				t.Fatalf("second call=%d", call)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("second launch did not run after first completed")
+		}
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	if concurrentCall != 0 {
+		t.Fatalf("second frontend launch entered while first was active; call=%d", concurrentCall)
+	}
+}
+
+func TestControllerOpenFrontendSkipsCanceledQueuedCall(t *testing.T) {
+	var calls atomic.Int32
+	entered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	c := NewController(Deps{
+		OpenFrontend: func(context.Context) error {
+			if calls.Add(1) == 1 {
+				close(entered)
+				<-releaseFirst
+			}
+			return nil
+		},
+	})
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- c.OpenFrontend(context.Background()) }()
+	<-entered
+
+	queuedCtx, cancelQueued := context.WithCancel(context.Background())
+	queuedDone := make(chan error, 1)
+	go func() { queuedDone <- c.OpenFrontend(queuedCtx) }()
+	cancelQueued()
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-queuedDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("queued error=%v, want context canceled", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("frontend callback calls=%d, want canceled queued call skipped", calls.Load())
 	}
 }
 

@@ -13,11 +13,12 @@ var ErrUnsupportedPlatform = errors.New("codex desktop winget install unsupporte
 func WingetInstallArgs() []string {
 	return []string{
 		"install",
-		"Codex",
-		"-s",
-		"msstore",
-		"--accept-source-agreements",
+		"--id=" + CodexStoreProductID,
+		"--source=msstore",
+		"--exact",
 		"--accept-package-agreements",
+		"--accept-source-agreements",
+		"--disable-interactivity",
 	}
 }
 
@@ -35,7 +36,7 @@ func ClassifyWingetError(err error, output string) error {
 	lower := strings.ToLower(output)
 	trimmed := strings.TrimSpace(output)
 	if errors.Is(err, ErrUnsupportedPlatform) {
-		return fmt.Errorf("codex desktop winget install is only supported on Windows: %w", err)
+		return fmt.Errorf("%s winget install is only supported on Windows: %w", ShortDisplayName, err)
 	}
 	if errors.Is(err, ErrWingetNotFound) {
 		return fmt.Errorf("未找到 winget；请安装或更新 Windows App Installer / Windows Package Manager 后重试: %w", err)
@@ -44,9 +45,9 @@ func ClassifyWingetError(err error, output string) error {
 		return fmt.Errorf("microsoft store source 不可用；请检查 Store 源、网络或企业策略。winget 输出: %s", trimmed)
 	}
 	if strings.Contains(lower, "network") || strings.Contains(lower, "internet") || strings.Contains(lower, "connection") {
-		return fmt.Errorf("网络不可用，无法通过 winget 安装 Codex Desktop。winget 输出: %s", trimmed)
+		return fmt.Errorf("网络不可用，无法通过 winget 安装%s。winget 输出: %s", LongDisplayName, trimmed)
 	}
-	return fmt.Errorf("winget install Codex -s msstore 失败: %w。输出: %s", err, trimmed)
+	return fmt.Errorf("winget install --id=%s --source=msstore 失败: %w。输出: %s", CodexStoreProductID, err, trimmed)
 }
 
 func isWingetSourceUnavailable(lower string) bool {

@@ -3,6 +3,8 @@ package tray
 import (
 	"context"
 	"strings"
+
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 )
 
 type State struct {
@@ -29,5 +31,5 @@ func openFrontendMenuLabel(st State) string {
 	if label := strings.TrimSpace(st.OpenFrontendLabel); label != "" {
 		return label
 	}
-	return "启动 Codex Desktop"
+	return "启动 " + codexdesktop.ShortDisplayName
 }

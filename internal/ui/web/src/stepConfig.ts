@@ -11,8 +11,8 @@ export interface StepDef {
 const CODEX_DESKTOP_STEPS: ReadonlyArray<StepDef> = [
   { id: 'modelserver_login',       label: '连接大模型',                    kind: 'oauth',    autoStart: false },
   { id: 'agentserver_login',       label: '连接星池工作区',                kind: 'oauth',    autoStart: false },
-  { id: 'codex_desktop_install',   label: '安装 Codex Desktop 智能助手',   kind: 'progress', autoStart: true  },
-  { id: 'codex_desktop_configure', label: '准备 Codex Desktop 智能助手',   kind: 'action',   autoStart: true  },
+  { id: 'codex_desktop_install',   label: '安装 ChatGPT 桌面应用（含 Codex）', kind: 'progress', autoStart: true  },
+  { id: 'codex_desktop_configure', label: '准备 ChatGPT / Codex',             kind: 'action',   autoStart: true  },
   { id: 'finalize',                label: '完成',                          kind: 'action',   autoStart: false },
 ];
 

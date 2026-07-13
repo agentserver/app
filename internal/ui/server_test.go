@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/console"
@@ -367,7 +368,7 @@ func TestServerStaticAsset(t *testing.T) {
 	}
 }
 
-func TestServerVSCodeInstallReportsErrorsOnSSE(t *testing.T) {
+func TestServerVSCodeInstallRedactsErrorsOnSSE(t *testing.T) {
 	srv := httptest.NewServer(NewServer(vscodeInstallErrorOrchestrator{}))
 	defer srv.Close()
 
@@ -397,9 +398,19 @@ func TestServerVSCodeInstallReportsErrorsOnSSE(t *testing.T) {
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
 			t.Fatal(err)
 		}
-		if ev.Stage == "error" && strings.Contains(ev.Msg, "download incomplete") {
-			return
+		if ev.Stage != "error" {
+			continue
 		}
+		want := "VS Code 安装或检查失败。请检查网络、Microsoft Store 和 Windows App Installer 后重试。"
+		if ev.Msg != want {
+			t.Fatalf("SSE VS Code install error=%q, want safe message %q", ev.Msg, want)
+		}
+		for _, forbidden := range []string{"download incomplete", "3145728", "104934400"} {
+			if strings.Contains(ev.Msg, forbidden) {
+				t.Fatalf("SSE VS Code install error leaked %q: %q", forbidden, ev.Msg)
+			}
+		}
+		return
 	}
 	if err := scanner.Err(); err != nil {
 		t.Fatal(err)
@@ -408,6 +419,10 @@ func TestServerVSCodeInstallReportsErrorsOnSSE(t *testing.T) {
 }
 
 type vscodeInstallErrorOrchestrator struct{ noopOrchestrator }
+
+func (vscodeInstallErrorOrchestrator) State(context.Context) (SanitizedState, error) {
+	return SanitizedState{FrontendMode: string(state.FrontendModeMinimalVSCode)}, nil
+}
 
 func (vscodeInstallErrorOrchestrator) EnsureVSCode(context.Context, chan<- ProgressEvent) error {
 	return errors.New("download incomplete: got 3145728 bytes, want 104934400")
@@ -437,7 +452,7 @@ func TestServerStateIncludesFrontendMode(t *testing.T) {
 	if s.FrontendMode != "codex_desktop" {
 		t.Fatalf("FrontendMode=%q", s.FrontendMode)
 	}
-	if s.FrontendName != "Codex Desktop" {
+	if s.FrontendName != "ChatGPT / Codex" {
 		t.Fatalf("FrontendName=%q", s.FrontendName)
 	}
 }
@@ -452,8 +467,43 @@ func TestSanitizeStateOpenCodeDesktopFrontendName(t *testing.T) {
 	}
 }
 
-func TestServerFrontendInstallReportsErrorsOnSSE(t *testing.T) {
-	srv := httptest.NewServer(NewServer(frontendInstallErrorOrchestrator{}))
+func TestServerFrontendInstallRedactsErrorsOnSSE(t *testing.T) {
+	msg := frontendInstallSSEError(t, frontendInstallErrorOrchestrator{})
+	want := "ChatGPT 桌面应用（含 Codex）安装或检查失败。请检查网络、Microsoft Store 和 Windows App Installer 后重试。"
+	if msg != want {
+		t.Fatalf("SSE install error=%q, want safe message %q", msg, want)
+	}
+	if got := utf8.RuneCountInString(msg); got > 256 {
+		t.Fatalf("SSE install error has %d runes, want at most 256", got)
+	}
+	for _, forbidden := range []string{"alice", "secret.txt", "token=top-secret", "PowerShell output", "winget output", `HKEY_CLASSES_ROOT\codex`} {
+		if strings.Contains(msg, forbidden) {
+			t.Fatalf("SSE install error leaked %q: %q", forbidden, msg)
+		}
+	}
+}
+
+func TestServerFrontendInstallRedactionUsesFrontendMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode state.FrontendMode
+		want string
+	}{
+		{name: "minimal vscode", mode: state.FrontendModeMinimalVSCode, want: "VS Code 安装或检查失败。请检查网络、Microsoft Store 和 Windows App Installer 后重试。"},
+		{name: "opencode desktop", mode: state.FrontendModeOpenCodeDesktop, want: "OpenCode Desktop 安装或检查失败。请检查网络和安装程序后重试。"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := frontendInstallSSEError(t, frontendInstallErrorOrchestrator{mode: tc.mode})
+			if got != tc.want {
+				t.Fatalf("SSE install error=%q, want mode-specific message %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func frontendInstallSSEError(t *testing.T, orchestrator Orchestrator) string {
+	t.Helper()
+	srv := httptest.NewServer(NewServer(orchestrator))
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/api/step/frontend_install", "application/json", nil)
@@ -482,11 +532,16 @@ func TestServerFrontendInstallReportsErrorsOnSSE(t *testing.T) {
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &ev); err != nil {
 			t.Fatal(err)
 		}
-		if ev.Stage == "error" && strings.Contains(ev.Msg, "winget missing") {
-			return
+		if ev.Stage != "error" {
+			continue
 		}
+		return ev.Msg
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
 	}
 	t.Fatal("expected frontend install error event on SSE stream")
+	return ""
 }
 
 func TestSSEHubGeneratesUniqueStreamIDs(t *testing.T) {
@@ -527,10 +582,17 @@ func TestSSEHandlerReturnsOnClientDisconnect(t *testing.T) {
 	}
 }
 
-type frontendInstallErrorOrchestrator struct{ noopOrchestrator }
+type frontendInstallErrorOrchestrator struct {
+	noopOrchestrator
+	mode state.FrontendMode
+}
+
+func (o frontendInstallErrorOrchestrator) State(context.Context) (SanitizedState, error) {
+	return SanitizedState{FrontendMode: string(o.mode)}, nil
+}
 
 func (frontendInstallErrorOrchestrator) EnsureFrontend(context.Context, chan<- ProgressEvent) error {
-	return errors.New("winget missing")
+	return errors.New(`winget output: PowerShell output C:\Users\alice\secret.txt token=top-secret HKEY_CLASSES_ROOT\codex`)
 }
 
 func TestServerConsoleStateEndpoint(t *testing.T) {

@@ -185,7 +185,7 @@ func cleanupCodexDesktopState(p paths.Paths, removeAll func(string) error) error
 			continue
 		}
 		if err := removeAll(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			errs = append(errs, fmt.Errorf("remove Codex Desktop state %s: %w", path, err))
+			errs = append(errs, fmt.Errorf("remove ChatGPT/Codex compatibility state %s: %w", path, err))
 		}
 	}
 	if p.CodexDesktopComputerUseConfigFile != "" {

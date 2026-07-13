@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -382,7 +383,7 @@ func TestFinalize_NoDepsJustMarksComplete(t *testing.T) {
 	}
 }
 
-func TestFinalizeStartsCompletedConsoleAndShutsDown(t *testing.T) {
+func TestFinalizeStartsCompletedConsoleWithoutShuttingDown(t *testing.T) {
 	dir := t.TempDir()
 	store := state.NewStore(filepath.Join(dir, "state.json"))
 	var started bool
@@ -411,8 +412,8 @@ func TestFinalizeStartsCompletedConsoleAndShutsDown(t *testing.T) {
 	if !started {
 		t.Fatal("completed console was not started")
 	}
-	if !shutdown {
-		t.Fatal("onboarding server was not asked to shut down")
+	if shutdown {
+		t.Fatal("finalize shut down onboarding before the frontend launch succeeded")
 	}
 }
 
@@ -1760,16 +1761,28 @@ func TestLaunchAndShutdownCodexDesktopUsesDeepLink(t *testing.T) {
 	store := state.NewStore(filepath.Join(dir, "state.json"))
 	if err := store.Update(func(s *state.State) error {
 		s.FrontendMode = state.FrontendModeCodexDesktop
+		s.FrontendError = "stale frontend error"
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
 	var opened string
+	var shutdown bool
 	r := &realOrchestrator{d: Deps{
 		State: store,
 		CodexDesktopOpen: func(url string) error {
 			opened = url
 			return nil
+		},
+		Shutdown: func() {
+			persisted, err := store.Load()
+			if err != nil {
+				t.Fatalf("load state during shutdown: %v", err)
+			}
+			if persisted.FrontendError != "" {
+				t.Fatalf("FrontendError=%q when shutdown was called, want cleared", persisted.FrontendError)
+			}
+			shutdown = true
 		},
 	}}
 	if err := r.LaunchAndShutdown(context.Background()); err != nil {
@@ -1778,6 +1791,322 @@ func TestLaunchAndShutdownCodexDesktopUsesDeepLink(t *testing.T) {
 	if opened != "codex://threads/new" {
 		t.Fatalf("opened=%q", opened)
 	}
+	if !shutdown {
+		t.Fatal("successful LaunchAndShutdown did not shut down onboarding")
+	}
+}
+
+func TestLaunchAndShutdownCodexDesktopFailureDoesNotShutdown(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New(`open C:\Users\alice\secret.txt token=top-secret HKEY_CLASSES_ROOT\codex`)
+	launchErr := fmt.Errorf("%w: %w", codexdesktop.ErrLaunchFailed, cause)
+	shutdown := false
+	r := &realOrchestrator{d: Deps{
+		State: store,
+		CodexDesktopOpen: func(string) error {
+			return launchErr
+		},
+		Shutdown: func() { shutdown = true },
+	}}
+	err := r.LaunchAndShutdown(context.Background())
+	if !errors.Is(err, codexdesktop.ErrLaunchFailed) {
+		t.Fatalf("err=%v, want ErrLaunchFailed", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("err=%v, want original launch cause", err)
+	}
+	want := "ChatGPT / Codex 桌面应用本身无法启动。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
+	assertSafeOnboardingLaunchError(t, err, want)
+	assertPersistedOnboardingFrontendError(t, store, want)
+	if shutdown {
+		t.Fatal("shutdown called after failed ChatGPT/Codex launch")
+	}
+}
+
+func TestLaunchAndShutdownOpenCodeDesktopFailureIsSanitizedAndDoesNotShutdown(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeOpenCodeDesktop
+		s.OpenCodeDesktop.Installed = true
+		s.OpenCodeDesktop.Path = filepath.Join(dir, "OpenCode.exe")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New(`open C:\Users\alice\secret.txt token=top-secret HKEY_CLASSES_ROOT\codex`)
+	shutdown := false
+	r := &realOrchestrator{d: Deps{
+		State:              store,
+		CodexConfigPath:    filepath.Join(dir, ".codex", "config.toml"),
+		OpenCodeConfigPath: filepath.Join(dir, ".config", "opencode", "opencode.jsonc"),
+		OpenCodeDesktopLaunch: func(context.Context, opencodedesktop.LaunchOptions) error {
+			return cause
+		},
+		Shutdown: func() { shutdown = true },
+	}}
+
+	err := r.LaunchAndShutdown(context.Background())
+
+	if !errors.Is(err, cause) {
+		t.Fatalf("err=%v, want original OpenCode cause", err)
+	}
+	want := "OpenCode Desktop 启动失败。请确认应用已安装且可正常打开，然后重试。"
+	assertSafeOnboardingLaunchError(t, err, want)
+	assertPersistedOnboardingFrontendError(t, store, want)
+	if shutdown {
+		t.Fatal("shutdown called after failed OpenCode launch")
+	}
+}
+
+func TestLaunchAndShutdownOpenCodeConfigFailureIsSanitizedAndDoesNotShutdown(t *testing.T) {
+	dir := t.TempDir()
+	badConfigPath := filepath.Join(dir, "alice-secret.txt-token=top-secret-HKEY_CLASSES_ROOT-codex")
+	if err := os.MkdirAll(badConfigPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeOpenCodeDesktop
+		s.OpenCodeDesktop.Installed = true
+		s.OpenCodeDesktop.Path = filepath.Join(dir, "OpenCode.exe")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	shutdown := false
+	r := &realOrchestrator{d: Deps{
+		State:              store,
+		CodexConfigPath:    filepath.Join(dir, ".codex", "config.toml"),
+		OpenCodeConfigPath: badConfigPath,
+		OpenCodeDesktopLaunch: func(context.Context, opencodedesktop.LaunchOptions) error {
+			t.Fatal("OpenCode launcher called after config failure")
+			return nil
+		},
+		Shutdown: func() { shutdown = true },
+	}}
+
+	err := r.LaunchAndShutdown(context.Background())
+
+	want := "OpenCode Desktop 启动失败。请确认应用已安装且可正常打开，然后重试。"
+	assertSafeOnboardingLaunchError(t, err, want)
+	assertPersistedOnboardingFrontendError(t, store, want)
+	if shutdown {
+		t.Fatal("shutdown called after failed OpenCode configuration")
+	}
+}
+
+func TestLaunchAndShutdownMinimalVSCodeFailureIsSanitizedAndDoesNotShutdown(t *testing.T) {
+	dir := t.TempDir()
+	rawPath := filepath.Join(dir, "alice-secret.txt-token=top-secret-HKEY_CLASSES_ROOT-codex", "Code.exe")
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeMinimalVSCode
+		s.VSCode.Path = rawPath
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	shutdown := false
+	r := &realOrchestrator{d: Deps{
+		State:    store,
+		Shutdown: func() { shutdown = true },
+	}}
+
+	err := r.LaunchAndShutdown(context.Background())
+
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("err=%v, want original path error", err)
+	}
+	want := "极简界面启动失败。请确认 VS Code 已安装且可正常打开，然后重试。"
+	assertSafeOnboardingLaunchError(t, err, want)
+	assertPersistedOnboardingFrontendError(t, store, want)
+	if shutdown {
+		t.Fatal("shutdown called after failed minimal VS Code launch")
+	}
+}
+
+func TestLaunchAndShutdownSuccessfulLaunchStatePersistenceFailureDoesNotShutdown(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "alice-secret.txt-token=top-secret-HKEY_CLASSES_ROOT-codex")
+	store := state.NewStore(filepath.Join(stateDir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		s.FrontendError = "stale frontend error"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	shutdown := false
+	r := &realOrchestrator{d: Deps{
+		State: store,
+		CodexDesktopOpen: func(string) error {
+			if err := os.RemoveAll(stateDir); err != nil {
+				return err
+			}
+			return os.WriteFile(stateDir, []byte("block state directory"), 0o600)
+		},
+		Shutdown: func() { shutdown = true },
+	}}
+
+	err := r.LaunchAndShutdown(context.Background())
+
+	assertSafeOnboardingLaunchError(t, err, "前端已启动，但无法保存启动状态。请重试。")
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("err=%v, want underlying state path error", err)
+	}
+	if shutdown {
+		t.Fatal("shutdown called after state persistence failure")
+	}
+}
+
+func TestLaunchAndShutdownCombinedLaunchAndStatePersistenceFailurePreservesBothCauses(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "alice-secret.txt-token=top-secret-HKEY_CLASSES_ROOT-codex")
+	store := state.NewStore(filepath.Join(stateDir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	launchCause := errors.New(`open C:\Users\alice\secret.txt token=top-secret HKEY_CLASSES_ROOT\codex`)
+	shutdown := false
+	r := &realOrchestrator{d: Deps{
+		State: store,
+		CodexDesktopOpen: func(string) error {
+			if err := os.RemoveAll(stateDir); err != nil {
+				return err
+			}
+			if err := os.WriteFile(stateDir, []byte("block state directory"), 0o600); err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: %w", codexdesktop.ErrLaunchFailed, launchCause)
+		},
+		Shutdown: func() { shutdown = true },
+	}}
+
+	err := r.LaunchAndShutdown(context.Background())
+
+	want := "ChatGPT / Codex 桌面应用本身无法启动。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
+	assertSafeOnboardingLaunchError(t, err, want)
+	if !errors.Is(err, codexdesktop.ErrLaunchFailed) {
+		t.Fatalf("err=%v, want ErrLaunchFailed", err)
+	}
+	if !errors.Is(err, launchCause) {
+		t.Fatalf("err=%v, want original launch cause", err)
+	}
+	var pathErr *os.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("err=%v, want underlying state path error", err)
+	}
+	if shutdown {
+		t.Fatal("shutdown called after combined launch and state persistence failure")
+	}
+}
+
+func TestLaunchAndShutdownStateReadFailureIsSanitizedAndDoesNotShutdown(t *testing.T) {
+	dir := t.TempDir()
+	blockedParent := filepath.Join(dir, "alice-secret.txt-token=top-secret-HKEY_CLASSES_ROOT-codex")
+	if err := os.WriteFile(blockedParent, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shutdown := false
+	r := &realOrchestrator{d: Deps{
+		State:    state.NewStore(filepath.Join(blockedParent, "state.json")),
+		Shutdown: func() { shutdown = true },
+	}}
+
+	err := r.LaunchAndShutdown(context.Background())
+
+	assertSafeOnboardingLaunchError(t, err, "无法读取前端启动状态，请重试。")
+	if shutdown {
+		t.Fatal("shutdown called after state read failure")
+	}
+}
+
+func TestLaunchEndpointCodexFailureBodyIsSanitized(t *testing.T) {
+	dir := t.TempDir()
+	store := state.NewStore(filepath.Join(dir, "state.json"))
+	if err := store.Update(func(s *state.State) error {
+		s.FrontendMode = state.FrontendModeCodexDesktop
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New(`open C:\Users\alice\secret.txt token=top-secret HKEY_CLASSES_ROOT\codex`)
+	shutdown := false
+	r := &realOrchestrator{d: Deps{
+		State: store,
+		CodexDesktopOpen: func(string) error {
+			return fmt.Errorf("%w: %w", codexdesktop.ErrLaunchFailed, cause)
+		},
+		Shutdown: func() { shutdown = true },
+	}}
+	srv := httptest.NewServer(NewServer(r))
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/launch", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	want := "ChatGPT / Codex 桌面应用本身无法启动。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。"
+	if body["error"] != want {
+		t.Fatalf("error body=%q, want %q", body["error"], want)
+	}
+	assertSafeOnboardingLaunchMessage(t, body["error"])
+	if shutdown {
+		t.Fatal("shutdown called after failed /api/launch")
+	}
+}
+
+func assertSafeOnboardingLaunchError(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected launch error")
+	}
+	if err.Error() != want {
+		t.Fatalf("launch error=%q, want %q", err, want)
+	}
+	assertSafeOnboardingLaunchMessage(t, err.Error())
+}
+
+func assertSafeOnboardingLaunchMessage(t *testing.T, message string) {
+	t.Helper()
+	for _, forbidden := range []string{`C:\Users\alice\secret.txt`, "alice", "token=top-secret", "HKEY_CLASSES_ROOT\\codex"} {
+		if strings.Contains(message, forbidden) {
+			t.Fatalf("launch error leaked %q: %q", forbidden, message)
+		}
+	}
+}
+
+func assertPersistedOnboardingFrontendError(t *testing.T, store *state.Store, want string) {
+	t.Helper()
+	persisted, err := store.Load()
+	if err != nil {
+		t.Fatalf("load persisted frontend error: %v", err)
+	}
+	if persisted.FrontendError != want {
+		t.Fatalf("persisted FrontendError=%q, want %q", persisted.FrontendError, want)
+	}
+	assertSafeOnboardingLaunchMessage(t, persisted.FrontendError)
 }
 
 func TestLaunchAndShutdownCodexDesktopWritesUILocaleBeforeOpen(t *testing.T) {
@@ -1988,9 +2317,7 @@ func TestLaunchAndShutdownOpenCodeDesktopRequiresConfigPath(t *testing.T) {
 	}}
 
 	err := r.LaunchAndShutdown(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "OpenCodeConfigPath required") {
-		t.Fatalf("err=%v, want OpenCodeConfigPath required", err)
-	}
+	assertSafeOnboardingLaunchError(t, err, "OpenCode Desktop 启动失败。请确认应用已安装且可正常打开，然后重试。")
 }
 
 func assertJSONField(t *testing.T, path, key, want string) {

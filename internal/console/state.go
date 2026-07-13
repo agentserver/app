@@ -11,6 +11,7 @@ import (
 
 	"github.com/agentserver/agentserver-pkg/internal/agentserver"
 	"github.com/agentserver/agentserver-pkg/internal/codex"
+	"github.com/agentserver/agentserver-pkg/internal/codexdesktop"
 	"github.com/agentserver/agentserver-pkg/internal/modelserver"
 	"github.com/agentserver/agentserver-pkg/internal/protoconv"
 	"github.com/agentserver/agentserver-pkg/internal/secrets"
@@ -49,6 +50,7 @@ type secretsStateStore interface {
 type State struct {
 	FrontendMode     string          `json:"frontend_mode"`
 	FrontendName     string          `json:"frontend_name"`
+	FrontendError    string          `json:"frontend_error,omitempty"`
 	OnboardingStatus string          `json:"onboarding_status"`
 	Modelserver      ModelserverView `json:"modelserver"`
 	Agentserver      AgentserverView `json:"agentserver"`
@@ -97,6 +99,7 @@ type Controller struct {
 	updateInstallMu sync.Mutex
 	refreshMu       sync.Mutex
 	driverDaemonMu  sync.Mutex
+	frontendOpenMu  sync.Mutex
 }
 
 func NewController(d Deps) *Controller {
@@ -116,6 +119,7 @@ func (c *Controller) State(ctx context.Context) (State, error) {
 	out := State{
 		FrontendMode:     string(mode),
 		FrontendName:     frontendName(mode),
+		FrontendError:    st.FrontendError,
 		OnboardingStatus: string(st.Onboarding.Status),
 		Modelserver:      ModelserverView{ProjectID: st.Modelserver.ProjectID},
 		Agentserver: AgentserverView{
@@ -295,6 +299,13 @@ func (c *Controller) Healthy(context.Context) bool {
 }
 
 func (c *Controller) OpenFrontend(ctx context.Context) error {
+	c.frontendOpenMu.Lock()
+	defer c.frontendOpenMu.Unlock()
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
 	if c.d.OpenFrontend == nil {
 		return nil
 	}
@@ -512,7 +523,7 @@ func frontendName(mode state.FrontendMode) string {
 	case state.FrontendModeOpenCodeDesktop:
 		return "OpenCode Desktop"
 	default:
-		return "Codex Desktop"
+		return codexdesktop.ShortDisplayName
 	}
 }
 

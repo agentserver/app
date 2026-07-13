@@ -35,7 +35,7 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "codexdesktop"; Description: "Codex Desktop 智能助手"; GroupDescription: "界面模式"; Flags: exclusive
+Name: "codexdesktop"; Description: "ChatGPT 桌面应用（含 Codex）"; GroupDescription: "界面模式"; Flags: exclusive
 Name: "opencodedesktop"; Description: "OpenCode Desktop 智能助手"; GroupDescription: "界面模式"; Flags: exclusive unchecked
 Name: "minimalvscode"; Description: "极简风界面（安装简化 VS Code）"; GroupDescription: "界面模式"; Flags: exclusive unchecked
 
@@ -59,8 +59,12 @@ Source: "..\..\dist\cache\superpowers\driver-superpower-skills.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-superpower-skills.tar.gz"; Flags: ignoreversion
 Source: "..\..\dist\cache\loom\v0.0.10\driver-codex-prompts.tar.gz"; \
     DestDir: "{app}"; DestName: "driver-codex-prompts.tar.gz"; Flags: ignoreversion
-Source: "..\..\dist\cache\codex-desktop\9PLM9XGG6VKS\Codex Installer.exe"; \
-    DestDir: "{app}"; DestName: "codex-desktop-installer.exe"; Flags: ignoreversion
+Source: "..\..\dist\cache\chatgpt-desktop\9PLM9XGG6VKS\ChatGPT Installer.exe"; \
+    DestDir: "{app}"; DestName: "chatgpt-desktop-installer.exe"; Flags: ignoreversion
+Source: "..\..\dist\cache\chatgpt-desktop\9PLM9XGG6VKS\chatgpt-desktop-installer.manifest.json"; \
+    DestDir: "{app}"; DestName: "chatgpt-desktop-installer.manifest.json"; Flags: ignoreversion
+Source: "..\..\internal\codexdesktop\detect_windows.ps1"; \
+    DestDir: "{app}"; DestName: "codex-desktop-detect.ps1"; Flags: ignoreversion
 ; Bundled VS Code extension
 Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.8.vsix"; \
     DestDir: "{app}"; DestName: "agentserver-app.vsix"; Flags: ignoreversion
@@ -74,6 +78,7 @@ Source: "install-driver-support.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-vscode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-codex-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "verify-chatgpt-desktop-installer.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ensure-opencode-desktop.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "write-install-mode.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "machine.ps1"; DestDir: "{app}"; Flags: ignoreversion
@@ -93,6 +98,8 @@ Filename: "{app}\{#MyAppExeName}"; \
 [Code]
 var
   ComputerNamePage: TInputQueryWizardPage;
+  PostInstallFailed: Boolean;
+  PostInstallFailureMessage: String;
 
 function ShouldInstallCodexDesktop(): Boolean;
 begin
@@ -269,7 +276,33 @@ begin
   WizardForm.Refresh;
 end;
 
-procedure RunEstimatedPowerShellStep(StepID: String; StatusText: String; ScriptName: String; ScriptArgs: String; EstimateSeconds: Integer);
+procedure RecordPostInstallFailure(Message: String; LogPath: String);
+var
+  FullMessage: String;
+begin
+  FullMessage := Message;
+  if LogPath <> '' then begin
+    FullMessage := FullMessage + '。日志：' + LogPath;
+  end;
+  if not PostInstallFailed then begin
+    PostInstallFailureMessage := FullMessage;
+    Log(FullMessage);
+    if not WizardSilent then begin
+      MsgBox(FullMessage, mbError, MB_OK);
+    end;
+  end;
+  PostInstallFailed := True;
+end;
+
+function GetCustomSetupExitCode(): Integer;
+begin
+  Result := 0;
+  if PostInstallFailed then begin
+    Result := 1;
+  end;
+end;
+
+function RunEstimatedPowerShellStep(StepID: String; StatusText: String; ScriptName: String; ScriptArgs: String; EstimateSeconds: Integer): Boolean;
 var
   RunnerPath: String;
   ExitPath: String;
@@ -281,6 +314,7 @@ var
   ElapsedSeconds: Integer;
   ResultText: AnsiString;
 begin
+  Result := False;
   RunnerPath := ExpandConstant('{tmp}\agentserver-' + StepID + '.ps1');
   ExitPath := ExpandConstant('{tmp}\agentserver-' + StepID + '.exit');
   LogPath := ExpandConstant('{tmp}\agentserver-' + StepID + '.log');
@@ -292,13 +326,15 @@ begin
 
   ScriptBody := BuildPowerShellRunner(ScriptPath, ScriptArgs, ExitPath, LogPath);
   if not SaveStringToFile(RunnerPath, ScriptBody, False) then begin
-    RaiseException('无法准备安装步骤：' + StatusText);
+    RecordPostInstallFailure('无法准备安装步骤：' + StatusText, LogPath);
+    Exit;
   end;
 
   PowerShellExe := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   UpdateEstimatedProgress(StatusText, 0, EstimateSeconds);
   if not Exec(PowerShellExe, '-NoProfile -ExecutionPolicy Bypass -File "' + RunnerPath + '"', '', SW_HIDE, ewNoWait, ResultCode) then begin
-    RaiseException('无法启动安装步骤：' + StatusText);
+    RecordPostInstallFailure('无法启动安装步骤：' + StatusText, LogPath);
+    Exit;
   end;
 
   ElapsedSeconds := 0;
@@ -314,12 +350,15 @@ begin
   WizardForm.Refresh;
 
   if not LoadStringFromFile(ExitPath, ResultText) then begin
-    RaiseException('无法读取安装步骤结果：' + StatusText + '。日志：' + LogPath);
+    RecordPostInstallFailure('无法读取安装步骤结果：' + StatusText, LogPath);
+    Exit;
   end;
   ResultText := Trim(ResultText);
   if ResultText <> '0' then begin
-    RaiseException(StatusText + ' 失败：' + ResultText + '。日志：' + LogPath);
+    RecordPostInstallFailure(StatusText + ' 失败：' + ResultText, LogPath);
+    Exit;
   end;
+  Result := True;
 end;
 
 function StopRunningAgentserverProcesses(): Boolean;
@@ -342,21 +381,16 @@ begin
     '  $localAppDataRoot = Join-Path $env:LOCALAPPDATA ''agentserver-app''' + #13#10 +
     '}' + #13#10 +
     '$codexBin = Join-Path $localAppDataRoot ''bin\codex.exe''' + #13#10 +
-    '$codexDesktopPackageFamily = ''OpenAI.Codex_2p2nqsd0c76g0''' + #13#10 +
-    '$codexDesktopPackagePrefix = ''OpenAI.Codex_''' + #13#10 +
     '$names = @(''launcher.exe'', ''onboarding-server.exe'', ''agentctl.exe'', ''codex-debug-wrapper.exe'', ''open-folder.exe'', ''token-refresher.exe'', ''driver-agent.exe'', ''slave-agent.exe'', ''codex.exe'')' + #13#10 +
     '$filter = {' + #13#10 +
     '  $exePath = [string]$_.ExecutablePath' + #13#10 +
-    '  $commandLine = [string]$_.CommandLine' + #13#10 +
     '  $exe = ""' + #13#10 +
     '  if (-not [string]::IsNullOrWhiteSpace($exePath)) {' + #13#10 +
     '    $exe = [System.IO.Path]::GetFullPath($exePath)' + #13#10 +
     '  }' + #13#10 +
     '  $inInstallDir = ($exe -ne "") -and ($names -contains $_.Name) -and $exe.StartsWith($installRoot + ''\'', [System.StringComparison]::OrdinalIgnoreCase)' + #13#10 +
     '  $isLocalCodex = ($exe -ne "") -and ($_.Name -eq ''codex.exe'') -and ($exe -ieq $codexBin)' + #13#10 +
-    '  $inCodexDesktopPackage = ($exe -ne "") -and ($exe.IndexOf(''\WindowsApps\'' + $codexDesktopPackagePrefix, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)' + #13#10 +
-    '  $usesCodexDesktopPackage = $commandLine.IndexOf($codexDesktopPackageFamily, [System.StringComparison]::OrdinalIgnoreCase) -ge 0' + #13#10 +
-    '  $inInstallDir -or $isLocalCodex -or $inCodexDesktopPackage -or $usesCodexDesktopPackage' + #13#10 +
+    '  $inInstallDir -or $isLocalCodex' + #13#10 +
     '}' + #13#10 +
     '$procs = @(Get-CimInstance Win32_Process | Where-Object $filter)' + #13#10 +
     'foreach ($p in $procs) {' + #13#10 +
@@ -380,6 +414,7 @@ end;
 procedure DeleteObsoleteBundledPayloads();
 begin
   DeleteFile(ExpandConstant('{app}\codex.exe'));
+  DeleteFile(ExpandConstant('{app}\codex-desktop-installer.exe'));
   DeleteFile(ExpandConstant('{app}\vscode-installer' + '.exe'));
   DeleteFile(ExpandConstant('{app}\vscode-manifest' + '.json'));
 end;
@@ -450,37 +485,57 @@ begin
     ComputerNamePath := ExpandConstant('{tmp}\agentserver-machine-name.txt');
     DeleteFile(ComputerNamePath);
     if not SaveUTF8Text(ComputerNamePath, ComputerName) then begin
-      RaiseException('无法保存电脑名称。');
+      RecordPostInstallFailure('无法保存电脑名称。', '');
+      Exit;
     end;
     MachineArgs := MachineArgs + ' -ComputerNamePath ' + PowerShellQuote(ComputerNamePath);
   end;
-  RunEstimatedPowerShellStep('machine', '正在初始化电脑名称...', 'machine.ps1',
-    MachineArgs, 10);
+  if not RunEstimatedPowerShellStep('machine', '正在初始化电脑名称...', 'machine.ps1',
+      MachineArgs, 10) then begin
+    Exit;
+  end;
 
-  RunEstimatedPowerShellStep('codex-runtime', '正在从国内 npm 镜像准备 Codex 运行时...', 'ensure-codex.ps1',
-    '-ManifestPath ' + PowerShellQuote(ExpandConstant('{app}\codex-manifest.json')), 300);
+  if not RunEstimatedPowerShellStep('codex-runtime', '正在从国内 npm 镜像准备 Codex 运行时...', 'ensure-codex.ps1',
+      '-ManifestPath ' + PowerShellQuote(ExpandConstant('{app}\codex-manifest.json')), 300) then begin
+    Exit;
+  end;
 
-  RunEstimatedPowerShellStep('driver-support', '正在安装 driver skills 和 Codex 指令...', 'install-driver-support.ps1',
-    '-InstallDir ' + PowerShellQuote(ExpandConstant('{app}')), 20);
+  if not RunEstimatedPowerShellStep('driver-support', '正在安装 driver skills 和 Codex 指令...', 'install-driver-support.ps1',
+      '-InstallDir ' + PowerShellQuote(ExpandConstant('{app}')), 20) then begin
+    Exit;
+  end;
 
   ModePath := ExpandConstant('{app}\install-mode.json');
   if ShouldInstallOpenCodeDesktop then begin
-    RunEstimatedPowerShellStep('opencode-mode', '正在准备 OpenCode Desktop 模式...', 'write-install-mode.ps1',
-      '-Mode ' + PowerShellQuote('opencode_desktop') + ' -Path ' + PowerShellQuote(ModePath), 10);
-    RunEstimatedPowerShellStep('opencode-install', '正在下载并安装 OpenCode Desktop（请勿关闭）...', 'ensure-opencode-desktop.ps1',
-      '', 900);
+    if not RunEstimatedPowerShellStep('opencode-mode', '正在准备 OpenCode Desktop 模式...', 'write-install-mode.ps1',
+        '-Mode ' + PowerShellQuote('opencode_desktop') + ' -Path ' + PowerShellQuote(ModePath), 10) then begin
+      Exit;
+    end;
+    if not RunEstimatedPowerShellStep('opencode-install', '正在下载并安装 OpenCode Desktop（请勿关闭）...', 'ensure-opencode-desktop.ps1',
+        '', 900) then begin
+      Exit;
+    end;
   end else if ShouldInstallCodexDesktop then begin
-    RunEstimatedPowerShellStep('codex-mode', '正在准备 Codex Desktop 模式...', 'write-install-mode.ps1',
-      '-Mode ' + PowerShellQuote('codex_desktop') + ' -Path ' + PowerShellQuote(ModePath), 10);
-    RunEstimatedPowerShellStep('codex-install', '正在安装 Codex Desktop（请在弹出的安装器中完成安装，请勿关闭）...', 'ensure-codex-desktop.ps1',
-      '', 900);
+    if not RunEstimatedPowerShellStep('codex-mode', '正在准备 ChatGPT / Codex 模式...', 'write-install-mode.ps1',
+        '-Mode ' + PowerShellQuote('codex_desktop') + ' -Path ' + PowerShellQuote(ModePath), 10) then begin
+      Exit;
+    end;
+    if not RunEstimatedPowerShellStep('codex-install', '正在安装 ChatGPT 桌面应用（含 Codex；请在弹出的安装器中完成安装，请勿关闭）...', 'ensure-codex-desktop.ps1',
+        '', 900) then begin
+      Exit;
+    end;
   end else if ShouldInstallMinimalVSCode then begin
-    RunEstimatedPowerShellStep('vscode-mode', '正在准备极简风模式...', 'write-install-mode.ps1',
-      '-Mode ' + PowerShellQuote('minimal_vscode') + ' -Path ' + PowerShellQuote(ModePath), 10);
-    RunEstimatedPowerShellStep('vscode-install', '正在安装极简 VS Code（可能需要几分钟，请勿关闭）...', 'ensure-vscode.ps1',
-      '', 300);
+    if not RunEstimatedPowerShellStep('vscode-mode', '正在准备极简风模式...', 'write-install-mode.ps1',
+        '-Mode ' + PowerShellQuote('minimal_vscode') + ' -Path ' + PowerShellQuote(ModePath), 10) then begin
+      Exit;
+    end;
+    if not RunEstimatedPowerShellStep('vscode-install', '正在安装极简 VS Code（可能需要几分钟，请勿关闭）...', 'ensure-vscode.ps1',
+        '', 300) then begin
+      Exit;
+    end;
   end else begin
-    RaiseException('请选择一种界面模式。');
+    RecordPostInstallFailure('请选择一种界面模式。', '');
+    Exit;
   end;
 end;
 

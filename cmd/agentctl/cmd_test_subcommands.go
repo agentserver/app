@@ -181,7 +181,7 @@ func runTestInstallCodexDesktop() {
 	}); err != nil {
 		die(err)
 	}
-	fmt.Printf("Codex Desktop installed (version %s)\n", det.Version)
+	fmt.Printf("%s installed (version %s)\n", codexdesktop.ShortDisplayName, det.Version)
 }
 
 func runTestConfigureCodexDesktop() {
@@ -227,15 +227,18 @@ func runTestOpenFolder(args []string) {
 	fmt.Println(msg)
 }
 
-func openTestFolder(ctx context.Context, s *state.State, p paths.Paths, folder string, opener codexdesktop.Opener, runVSCode func(string, []string) (int, error)) (string, error) {
+func openTestFolder(ctx context.Context, s *state.State, p paths.Paths, folder string, launcher codexdesktop.Launcher, runVSCode func(string, []string) (int, error)) (string, error) {
 	if state.NormalizeFrontendMode(s.FrontendMode) == state.FrontendModeCodexDesktop {
 		if err := configureTestCodex(p); err != nil {
 			return "", err
 		}
-		if err := codexdesktop.Launch(ctx, folder, opener); err != nil {
+		if launcher == nil {
+			launcher = codexdesktop.Launch
+		}
+		if err := launcher(ctx, folder); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("opened %s with Codex Desktop", folder), nil
+		return fmt.Sprintf("opened %s with %s", folder, codexdesktop.ShortDisplayName), nil
 	}
 	if s.VSCode.Path == "" {
 		return "", fmt.Errorf("VS Code path unknown")

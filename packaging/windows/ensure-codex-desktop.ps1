@@ -1,5 +1,8 @@
 ﻿param(
-    [string]$LocalInstallerPath = (Join-Path $PSScriptRoot 'codex-desktop-installer.exe'),
+    [string]$LocalInstallerPath = (Join-Path $PSScriptRoot 'chatgpt-desktop-installer.exe'),
+    [string]$LocalInstallerManifestPath = (Join-Path $PSScriptRoot 'chatgpt-desktop-installer.manifest.json'),
+    [string]$DetectionScriptPath = (Join-Path $PSScriptRoot 'codex-desktop-detect.ps1'),
+    [string]$SignatureVerifierPath = (Join-Path $PSScriptRoot 'verify-chatgpt-desktop-installer.ps1'),
     [int]$InstallTimeoutSeconds = 1800
 )
 
@@ -17,26 +20,31 @@ function Set-ScriptOutputEncoding {
 
 Set-ScriptOutputEncoding
 
+if (-not (Test-Path -LiteralPath $DetectionScriptPath -PathType Leaf)) {
+    throw "ChatGPT / Codex detection script missing: $DetectionScriptPath"
+}
+. $DetectionScriptPath
+
 function Write-Step([string]$Message) {
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
+function Get-CodexDesktopStatus {
+    return Get-ChatGPTCodexDetection
+}
+
 function Test-CodexDesktopInstalled {
-    $schemePaths = @(
-        'Registry::HKEY_CURRENT_USER\Software\Classes\codex\shell\open\command',
-        'Registry::HKEY_LOCAL_MACHINE\Software\Classes\codex\shell\open\command'
-    )
-    foreach ($p in $schemePaths) {
-        if (Test-Path $p) { return $true }
+    return (Get-CodexDesktopStatus).status -ceq 'ready'
+}
+
+function Get-CodexDesktopRepairMessage([string]$Status) {
+    if ($Status -ceq 'scheme_missing') {
+        return 'ChatGPT 桌面应用（含 Codex）已安装，但 codex:// 协议缺失。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。'
     }
-    try {
-        $pkg = Get-AppxPackage | Where-Object {
-            $_.PackageFamilyName -eq 'OpenAI.Codex_2p2nqsd0c76g0'
-        } | Select-Object -First 1
-        if ($pkg) { return $true }
-    } catch {
+    if ($Status -ceq 'scheme_target_invalid') {
+        return 'codex:// 协议已注册，但处理器无效或不可信。请在 Windows 已安装的应用 > ChatGPT > 高级选项中依次尝试 Repair、Reset；仍失败请从 Microsoft Store Reinstall。'
     }
-    return $false
+    return "ChatGPT / Codex 状态异常：$Status"
 }
 
 function Wait-CodexDesktopInstalled([int]$TimeoutSeconds) {
@@ -50,13 +58,37 @@ function Wait-CodexDesktopInstalled([int]$TimeoutSeconds) {
     return $false
 }
 
-function Test-CodexDesktopInstallerFile([string]$Path) {
+function Test-CodexDesktopInstallerFile([string]$Path, [string]$ManifestPath) {
     if (-not (Test-Path -LiteralPath $Path)) {
-        throw "Codex Desktop installer missing: $Path"
+        throw "ChatGPT / Codex installer missing: $Path"
+    }
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        throw "ChatGPT / Codex installer manifest missing: $ManifestPath"
+    }
+    try {
+        $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+    } catch {
+        throw "ChatGPT / Codex installer manifest is invalid JSON: $($_.Exception.Message)"
+    }
+    $expectedProductID = '9PLM9XGG6VKS'
+    $expectedSourceURL = 'https://get.microsoft.com/installer/download/9PLM9XGG6VKS?cid=website_cta_psi'
+    if ([string]$manifest.product_id -cne $expectedProductID) {
+        throw "ChatGPT / Codex installer manifest product_id mismatch"
+    }
+    if ([string]$manifest.source_url -cne $expectedSourceURL) {
+        throw "ChatGPT / Codex installer manifest source_url mismatch"
     }
     $item = Get-Item -LiteralPath $Path
     if ($item.Length -lt 65536) {
-        throw "Codex Desktop installer is too small: $($item.Length) bytes"
+        throw "ChatGPT / Codex installer is too small: $($item.Length) bytes"
+    }
+    if ([int64]$manifest.size -ne [int64]$item.Length) {
+        throw "ChatGPT / Codex installer manifest size mismatch"
+    }
+    $actualHash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    if ([string]::IsNullOrWhiteSpace([string]$manifest.sha256) -or
+        $actualHash -ine [string]$manifest.sha256) {
+        throw "ChatGPT / Codex installer manifest SHA256 mismatch"
     }
 
     $fs = [System.IO.File]::OpenRead($Path)
@@ -64,58 +96,38 @@ function Test-CodexDesktopInstallerFile([string]$Path) {
         $magic = New-Object byte[] 2
         $read = $fs.Read($magic, 0, 2)
         if ($read -ne 2 -or $magic[0] -ne 0x4d -or $magic[1] -ne 0x5a) {
-            throw "Codex Desktop installer is not a valid MZ executable"
+            throw "ChatGPT / Codex installer is not a valid MZ executable"
         }
     } finally {
         $fs.Dispose()
     }
 
-    $sig = Get-AuthenticodeSignature -FilePath $Path
-    if ($sig.Status -ne 'Valid') {
-        throw "Codex Desktop installer Authenticode signature is $($sig.Status)"
+    if (-not (Test-Path -LiteralPath $SignatureVerifierPath -PathType Leaf)) {
+        throw 'ChatGPT / Codex installer signature verifier is missing'
     }
-    if ($null -eq $sig.SignerCertificate) {
-        throw "Codex Desktop installer has no signer certificate"
-    }
-    $subject = $sig.SignerCertificate.Subject
-    if ($subject -notmatch 'O=Microsoft Corporation' -and $subject -notmatch 'Microsoft Corporation') {
-        throw "Codex Desktop installer signer is not Microsoft Corporation: $subject"
-    }
-    $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
-    $chain.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
-    if (-not $chain.Build($sig.SignerCertificate)) {
-        $chainErrors = @($chain.ChainStatus | Where-Object { $_.Status -ne [System.Security.Cryptography.X509Certificates.X509ChainStatusFlags]::NotTimeValid })
-        if ($chainErrors.Count -gt 0) {
-            $statuses = ($chainErrors | ForEach-Object { $_.Status }) -join ', '
-            throw "Codex Desktop installer signer chain is invalid: $statuses"
-        }
-    }
-    $chainSubjects = @($chain.ChainElements | ForEach-Object { $_.Certificate.Subject })
-    if (-not ($chainSubjects -match 'Microsoft')) {
-        throw "Codex Desktop installer signer chain is not Microsoft"
-    }
+    & $SignatureVerifierPath -Path $Path
 }
 
 function Invoke-CodexDesktopLocalInstaller {
     if (-not (Test-Path $LocalInstallerPath)) {
         return $false
     }
-    Write-Step "Running bundled Codex Desktop installer..."
+    Write-Step "Running bundled ChatGPT / Codex installer..."
     Write-Step $LocalInstallerPath
     try {
-        Test-CodexDesktopInstallerFile $LocalInstallerPath
+        Test-CodexDesktopInstallerFile $LocalInstallerPath $LocalInstallerManifestPath
         $p = Start-Process -FilePath $LocalInstallerPath -Wait -PassThru
     } catch {
-        Write-Warning "Bundled Codex Desktop installer failed verification or startup: $($_.Exception.Message); falling back to winget."
+        Write-Warning "Bundled ChatGPT / Codex installer failed verification or startup: $($_.Exception.Message); falling back to winget."
         return $false
     }
     if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0) {
-        Write-Warning "Bundled Codex Desktop installer failed with exit code $($p.ExitCode); falling back to winget."
+        Write-Warning "Bundled ChatGPT / Codex installer failed with exit code $($p.ExitCode); falling back to winget."
         return $false
     }
-    Write-Step "Waiting for Codex Desktop to become available..."
+    Write-Step "Waiting for ChatGPT / Codex to become available..."
     if (-not (Wait-CodexDesktopInstalled -TimeoutSeconds $InstallTimeoutSeconds)) {
-        Write-Warning "Bundled Codex Desktop installer exited, but Codex Desktop was not detected within $InstallTimeoutSeconds seconds; falling back to winget."
+        Write-Warning "Bundled ChatGPT / Codex installer exited, but the app was not ready within $InstallTimeoutSeconds seconds; falling back to winget."
         return $false
     }
     return $true
@@ -134,32 +146,43 @@ function Invoke-CodexDesktopWingetInstall {
     }
     $args = @(
         'install',
-        'Codex',
-        '-s',
-        'msstore',
-        '--accept-source-agreements',
+        '--id=9PLM9XGG6VKS',
+        '--source=msstore',
+        '--exact',
         '--accept-package-agreements',
+        '--accept-source-agreements',
         '--disable-interactivity'
     )
-    Write-Step "Running winget install Codex -s msstore..."
+    Write-Step "Running winget install --id=9PLM9XGG6VKS --source=msstore..."
     & $winget @args
     if ($LASTEXITCODE -ne 0) {
-        throw "winget install Codex -s msstore failed with exit code $LASTEXITCODE"
+        throw "winget install --id=9PLM9XGG6VKS --source=msstore failed with exit code $LASTEXITCODE"
     }
 }
 
-Write-Step "Checking for Codex Desktop..."
-if (Test-CodexDesktopInstalled) {
-    Write-Step "Detected existing Codex Desktop; skipping install."
+Write-Step "Checking for ChatGPT / Codex..."
+$initialStatus = Get-CodexDesktopStatus
+if ($initialStatus.status -ceq 'ready') {
+    Write-Step "Detected existing ChatGPT / Codex; skipping install."
     exit 0
+}
+if ($initialStatus.status -ceq 'scheme_missing' -or $initialStatus.status -ceq 'scheme_target_invalid') {
+    throw (Get-CodexDesktopRepairMessage -Status ([string]$initialStatus.status))
+}
+if ($initialStatus.status -cne 'not_installed') {
+    throw "Unexpected ChatGPT / Codex detection status: $($initialStatus.status)"
 }
 
 if (-not (Invoke-CodexDesktopLocalInstaller)) {
     Invoke-CodexDesktopWingetInstall
 }
 
-Write-Step "Verifying Codex Desktop installation..."
-if (-not (Test-CodexDesktopInstalled)) {
-    throw "Codex Desktop 安装完成后仍未检测到。"
+Write-Step "Verifying ChatGPT / Codex installation..."
+$finalStatus = Get-CodexDesktopStatus
+if ($finalStatus.status -cne 'ready') {
+    if ($finalStatus.status -ceq 'scheme_missing' -or $finalStatus.status -ceq 'scheme_target_invalid') {
+        throw (Get-CodexDesktopRepairMessage -Status ([string]$finalStatus.status))
+    }
+    throw "ChatGPT 桌面应用（含 Codex）安装完成后仍未检测到。状态：$($finalStatus.status)"
 }
-Write-Step "Codex Desktop is ready."
+Write-Step "ChatGPT / Codex is ready."

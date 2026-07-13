@@ -2,12 +2,15 @@
 
 package browser
 
-import "os/exec"
+import (
+	"context"
+	"os/exec"
+)
 
-func openPlatform(url string) error {
+func openPlatform(ctx context.Context, url string) error {
 	// Best-effort on dev hosts; Linux has xdg-open, macOS has open.
 	for _, prog := range []string{"xdg-open", "open"} {
-		if err := exec.Command(prog, url).Start(); err == nil {
+		if err := exec.CommandContext(ctx, prog, url).Start(); err == nil {
 			return nil
 		}
 	}
