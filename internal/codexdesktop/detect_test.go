@@ -301,7 +301,7 @@ func TestWindowsDetectFiltersManifestCapablePackagesBeforeStatusClassification(t
 		t.Fatalf("detect_windows.ps1 must define a manifest-capable package filter:\n%s", source)
 	}
 	capable := source[capableStart:capableEnd]
-	for _, want := range []string{"Get-CodexProtocolApplications -Package $package", "$capable += $package"} {
+	for _, want := range []string{"[AllowEmptyCollection()]", "Get-CodexProtocolApplications -Package $package", "$capable += $package"} {
 		if !strings.Contains(capable, want) {
 			t.Fatalf("manifest-capable package filter missing %q:\n%s", want, capable)
 		}

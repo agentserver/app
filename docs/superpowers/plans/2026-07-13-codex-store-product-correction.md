@@ -126,7 +126,7 @@ function Get-CodexProtocolCapablePackages {
 }
 ~~~
 
-At the start of Get-ChatGPTCodexDetection, enumerate the two exact families, compute $capablePackages, then query the effective ProgID for scheme_registered. If no capable package exists, return only not_installed plus that boolean. Feed $capablePackages, not $packages, to unique AUMID mapping and diagnostic package selection. Do not catch manifest retrieval or XML exceptions; the embedded invocation has ErrorActionPreference Stop, so callers receive an operational error rather than a false installation decision.
+At the start of Get-ChatGPTCodexDetection, enumerate the two exact families, compute $capablePackages, then query the effective ProgID for scheme_registered. Get-CodexProtocolCapablePackages must declare [AllowEmptyCollection()] on its mandatory array parameter so a clean machine enters the no-capable branch rather than failing PowerShell parameter binding. If no capable package exists, return only not_installed plus that boolean. Feed $capablePackages, not $packages, to unique AUMID mapping and diagnostic package selection. Do not catch manifest retrieval or XML exceptions; the embedded invocation has ErrorActionPreference Stop, so callers receive an operational error rather than a false installation decision.
 
 - [ ] **Step 5: Re-run focused regression suite**
 

@@ -165,7 +165,7 @@ function Get-CodexProtocolApplications {
 }
 
 function Get-CodexProtocolCapablePackages {
-    param([Parameter(Mandatory = $true)][object[]]$Packages)
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Packages)
 
     $capable = @()
     foreach ($package in $Packages) {
