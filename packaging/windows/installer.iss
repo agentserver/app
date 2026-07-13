@@ -4,7 +4,7 @@
 
 #define MyAppId "agentserver-app"
 #define MyAppName "星池指挥官"
-#define MyAppVersion "0.1.8"
+#define MyAppVersion "0.1.9"
 #define MyAppPublisher "agentserver"
 #define MyAppURL "https://agent.cs.ac.cn"
 #define MyAppExeName "launcher.exe"
@@ -66,7 +66,7 @@ Source: "..\..\dist\cache\chatgpt-desktop\9PLM9XGG6VKS\chatgpt-desktop-installer
 Source: "..\..\internal\codexdesktop\detect_windows.ps1"; \
     DestDir: "{app}"; DestName: "codex-desktop-detect.ps1"; Flags: ignoreversion
 ; Bundled VS Code extension
-Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.8.vsix"; \
+Source: "..\..\extensions\agentserver-app\agentserver-app-0.1.9.vsix"; \
     DestDir: "{app}"; DestName: "agentserver-app.vsix"; Flags: ignoreversion
 ; Icon
 Source: "icon.ico"; DestDir: "{app}"; Flags: ignoreversion
