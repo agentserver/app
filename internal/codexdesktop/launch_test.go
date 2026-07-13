@@ -418,6 +418,8 @@ func TestWindowsLaunchDirectlyActivatesDetectedAUMID(t *testing.T) {
 		"activateForProtocol",
 		"applicationActivationManagerVtbl",
 		"ActivateForProtocol",
+		"ActivateApplication",
+		"protocolActivationNeedsAppActivationFallback",
 		"CoCreateInstance",
 		"SHCreateItemFromParsingName",
 		"SHCreateShellItemArrayFromShellItem",
@@ -455,6 +457,24 @@ func TestHRESULTFailureClassificationAcceptsSFalse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := hresultFailed(tc.hresult); got != tc.wantFailed {
 				t.Fatalf("hresultFailed(0x%08X)=%t, want %t", uint32(tc.hresult), got, tc.wantFailed)
+			}
+		})
+	}
+}
+
+func TestProtocolActivationContractFallbackIsRestricted(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		hr   uintptr
+		want bool
+	}{
+		{name: "observed unsupported contract", hr: 0x80270254, want: true},
+		{name: "success", hr: 0, want: false},
+		{name: "unrelated app-model failure", hr: 0x80073CF9, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := protocolActivationNeedsAppActivationFallback(tc.hr); got != tc.want {
+				t.Fatalf("protocolActivationNeedsAppActivationFallback(0x%08X)=%t, want %t", uint32(tc.hr), got, tc.want)
 			}
 		})
 	}

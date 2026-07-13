@@ -176,7 +176,50 @@ func activateForProtocol(ctx context.Context, det Detected, rawURL string) error
 	runtime.KeepAlive(aumid)
 	runtime.KeepAlive(protocolURL)
 	if hresultFailed(hr) {
+		if protocolActivationNeedsAppActivationFallback(hr) {
+			return activateApplication(ctx, manager, det, rawURL)
+		}
 		return hresultError("IApplicationActivationManager.ActivateForProtocol", hr)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func activateApplication(ctx context.Context, manager *applicationActivationManager, det Detected, rawURL string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateDetected(det); err != nil {
+		return fmt.Errorf("validate direct application activation target: %w", err)
+	}
+	if manager == nil || manager.lpVtbl == nil {
+		return fmt.Errorf("IApplicationActivationManager is nil")
+	}
+
+	aumid, err := windows.UTF16PtrFromString(det.AppUserModelID)
+	if err != nil {
+		return fmt.Errorf("encode AppUserModelID: %w", err)
+	}
+	arguments, err := windows.UTF16PtrFromString(rawURL)
+	if err != nil {
+		return fmt.Errorf("encode codex protocol URL: %w", err)
+	}
+
+	var processID uint32
+	hr, _, _ := syscall.SyscallN(
+		manager.lpVtbl.ActivateApplication,
+		uintptr(unsafe.Pointer(manager)),
+		uintptr(unsafe.Pointer(aumid)),
+		uintptr(unsafe.Pointer(arguments)),
+		0,
+		uintptr(unsafe.Pointer(&processID)),
+	)
+	runtime.KeepAlive(aumid)
+	runtime.KeepAlive(arguments)
+	if hresultFailed(hr) {
+		return hresultError("IApplicationActivationManager.ActivateApplication", hr)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
